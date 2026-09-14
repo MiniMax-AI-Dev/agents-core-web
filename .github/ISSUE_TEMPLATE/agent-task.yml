@@ -1,0 +1,39 @@
+name: Agent task candidate
+description: Propose a bounded task for maintainer review and the self-iteration pilot
+title: "[agent] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Submitting this form does not start an Agent. A maintainer must review the scope and add `agent-ready`. Eligible runs are isolated and may open a draft PR; they never auto-merge or release.
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What is wrong or missing, with links to relevant code or evidence?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List the externally observable conditions that must be true.
+      placeholder: |
+        - [ ] Normal path works
+        - [ ] Regression test covers the change
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation
+      description: Commands or scenarios that prove completion.
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals
+      description: State what this task must not change.
+    validations:
+      required: true

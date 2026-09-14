@@ -1,0 +1,43 @@
+name: Agent issue intake
+
+on:
+  issues:
+    types:
+      - labeled
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: agent-issue-intake-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.event.label.name == 'agent-ready'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the public intake contract
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Use the supported Node.js baseline
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Validate and normalize the issue
+        env:
+          AGENT_TASK_OUTPUT: ${{ runner.temp }}/agent-task.json
+        run: node scripts/agent-issue-intake.mjs "$GITHUB_EVENT_PATH"
+
+      - name: Publish the untrusted task packet
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-task-${{ github.event.issue.number }}
+          path: ${{ runner.temp }}/agent-task.json
+          if-no-files-found: error
+          retention-days: 7

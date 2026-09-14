@@ -1,0 +1,22 @@
+node_modules/
+dist/
+coverage/
+.vite/
+*.tsbuildinfo
+*.log
+.DS_Store
+/.pnpm-store/
+/playwright-report/
+/test-results/
+
+# Local configuration. Commit only the documented example.
+.env
+.env.*
+!.env.example
+
+# Local Agent/Issue self-iteration material. These prompts and state must never
+# enter Git; public workflow contracts belong in docs/ and .github/ instead.
+/.agents/
+/.issue-agent/
+/AGENTS.md
+/ISSUE_AGENT.md

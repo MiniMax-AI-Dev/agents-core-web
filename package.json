@@ -1,0 +1,34 @@
+{
+  "name": "agents-core-web",
+  "version": "0.1.0",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MiniMax-AI-Dev/agents-core-web.git"
+  },
+  "homepage": "https://github.com/MiniMax-AI-Dev/agents-core-web#readme",
+  "bugs": {
+    "url": "https://github.com/MiniMax-AI-Dev/agents-core-web/issues"
+  },
+  "type": "module",
+  "packageManager": "pnpm@10.30.3",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @agents-core-web/web dev",
+    "build": "pnpm -r --filter \"@agents-core-web/*\" --if-present build",
+    "typecheck": "pnpm -r --filter \"@agents-core-web/*\" --if-present typecheck",
+    "test:root": "node --test scripts/agent-issue-intake.test.mjs",
+    "test": "pnpm test:root && pnpm -r --filter \"@agents-core-web/*\" --if-present test",
+    "check:root": "node --check scripts/init-agent-workspace.mjs && node --check scripts/agent-issue-intake.mjs && node --check scripts/agent-issue-intake.test.mjs",
+    "check": "pnpm check:root && pnpm typecheck && pnpm test && pnpm build",
+    "agent:workspace": "node scripts/init-agent-workspace.mjs",
+    "agent:issue:intake": "node scripts/agent-issue-intake.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.9"
+  }
+}
