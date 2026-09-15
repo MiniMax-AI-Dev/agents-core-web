@@ -15,6 +15,7 @@ import type {
   SavedAgent,
   SessionEvent,
   SessionItem,
+  UpdateAgentInput,
 } from "@agents-core-web/agents-client";
 
 import { ConnectionModal } from "./components/ConnectionModal";
@@ -22,6 +23,13 @@ import { StatusIcon } from "./components/StatusIcon";
 import { ThemeMenu } from "./components/ThemeMenu";
 import { useToast } from "./components/Toast";
 import { AgentsView } from "./features/agents/AgentsView";
+import {
+  removeSavedAgent,
+  replaceSavedAgent,
+  requestAgentDelete,
+  requestAgentDetail,
+  requestAgentUpdate,
+} from "./features/agents/agent-actions";
 import {
   SessionsView,
   type SessionDetailState,
@@ -508,6 +516,25 @@ export function App() {
     setAgents((current) => [agent, ...current]);
   };
 
+  const retrieveAgent = async (agentId: string) => {
+    return run(() => requestAgentDetail(core, agentId));
+  };
+
+  const updateAgent = async (agentId: string, input: UpdateAgentInput) => {
+    const agent = await run(() => requestAgentUpdate(core, agentId, input), "Agent updated.");
+    if (!agent || coreGeneration !== connectionGenerationRef.current) return undefined;
+    agentCollectionRevisionRef.current += 1;
+    setAgents((current) => replaceSavedAgent(current, agent));
+    return agent;
+  };
+
+  const deleteAgent = async (agentId: string) => {
+    const deleted = await run(() => requestAgentDelete(core, agentId), "Agent deleted.");
+    if (!deleted || coreGeneration !== connectionGenerationRef.current) return;
+    agentCollectionRevisionRef.current += 1;
+    setAgents((current) => removeSavedAgent(current, agentId));
+  };
+
   const createSession = async (agentId: string) => {
     const session = await run(
       () => core.createSession({ agent_id: agentId, environment: { type: "none" }, stream: false }),
@@ -721,8 +748,11 @@ export function App() {
               coreError={agentCollectionError}
               coreState={agentCollectionState}
               onCreate={createAgent}
+              onDelete={deleteAgent}
               onRefresh={() => void refreshAgents()}
+              onRetrieve={retrieveAgent}
               onStartSession={createSession}
+              onUpdate={updateAgent}
             />
           ) : null}
           {view === "system" ? <SystemView /> : null}

@@ -740,6 +740,45 @@ html[data-theme="dark"] .brand-mark-dark {
   white-space: nowrap;
 }
 
+.agent-detail-trigger {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: baseline;
+  padding: 2px 0;
+  gap: 6px;
+  overflow: hidden;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+}
+
+.agent-detail-trigger:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
+}
+
+.agent-detail-trigger strong {
+  max-width: 44%;
+  flex: 0 0 auto;
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-detail-trigger small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ledger-model {
   overflow: hidden;
   color: var(--fg);
@@ -2158,6 +2197,7 @@ button.trace-step-row:hover {
 
 .modal-card {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   width: min(448px, 100%);
   max-height: min(760px, calc(100vh - 40px));
   overflow: hidden;
@@ -2300,6 +2340,241 @@ button.trace-step-row:hover {
 .model-picker-note code {
   color: var(--fg);
   font-size: 11px;
+}
+
+.agent-dialog .modal-card {
+  width: min(680px, calc(100vw - 40px));
+}
+
+.agent-dialog .button.danger {
+  margin-right: auto;
+  color: var(--danger);
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+}
+
+.agent-dialog .button.danger:hover:not(:disabled) {
+  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.agent-metadata-input,
+.agent-structured-value {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.field .field-error {
+  color: var(--danger);
+}
+
+.agent-detail-loading,
+.agent-capability-warning,
+.agent-action-error {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 17px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.agent-detail-loading {
+  color: var(--fg);
+}
+
+.agent-capability-warning {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 35%, var(--line));
+}
+
+.agent-action-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  color: var(--danger);
+  gap: 6px;
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
+}
+
+.agent-details dl {
+  display: grid;
+  margin: 0;
+  gap: 0;
+}
+
+.agent-details dl > div {
+  display: grid;
+  grid-template-columns: 124px minmax(0, 1fr);
+  padding: 8px 0;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.agent-details dt {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.agent-details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-details code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.agent-null-value {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.agent-capabilities {
+  margin-top: 18px;
+}
+
+.agent-capabilities h3 {
+  margin: 0 0 4px;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.agent-structured-value {
+  max-height: 180px;
+  margin: 0;
+  padding: 7px 8px;
+  overflow: auto;
+  color: var(--fg);
+  white-space: pre-wrap;
+  background: var(--surface-muted);
+  border-radius: 5px;
+}
+
+.agent-delete-confirmation p {
+  margin: 0 0 10px;
+  line-height: 20px;
+}
+
+.agent-delete-confirmation p:last-child {
+  margin-bottom: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  body {
+    min-width: 0;
+  }
+
+  .app-sidebar {
+    width: 52px;
+    min-width: 52px;
+    flex-basis: 52px;
+    padding: 8px 6px;
+  }
+
+  .brand-lockup,
+  .main-nav button {
+    justify-content: center;
+    padding-right: 0;
+    padding-left: 0;
+  }
+
+  .brand-name,
+  .nav-label,
+  .main-nav button span,
+  .main-nav button em,
+  .core-switcher > span:nth-child(2),
+  .core-switcher > svg:last-child {
+    display: none;
+  }
+
+  .main-nav {
+    margin-top: 8px;
+  }
+
+  .sidebar-footer {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    padding-left: 0;
+    gap: 6px;
+  }
+
+  .core-switcher {
+    display: flex;
+    justify-content: center;
+  }
+
+  .theme-menu {
+    flex-direction: column;
+  }
+
+  .agents-page .page-header {
+    min-height: auto;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+  }
+
+  .agents-page .page-actions {
+    width: 100%;
+  }
+
+  .agents-page .search-control {
+    width: auto;
+    max-width: none;
+    flex: 1;
+  }
+
+  .agent-ledger .ledger-header,
+  .agent-ledger .ledger-row {
+    grid-template-columns: minmax(0, 1fr) 36px;
+    min-width: 0;
+    padding-right: 8px;
+    padding-left: 12px;
+  }
+
+  .agent-ledger .ledger-header > :nth-child(2),
+  .agent-ledger .ledger-header > :nth-child(3),
+  .agent-ledger .ledger-header > :nth-child(4),
+  .agent-ledger .ledger-row > :nth-child(2),
+  .agent-ledger .ledger-row > :nth-child(3),
+  .agent-ledger .ledger-row > :nth-child(4) {
+    display: none;
+  }
+
+  .agent-ledger .ledger-actions {
+    position: static;
+    opacity: 1;
+    transform: none;
+  }
+
+  .agents-loading {
+    min-width: 0;
+  }
+
+  .agent-dialog .modal-backdrop {
+    align-items: flex-end;
+    padding: 8px;
+  }
+
+  .agent-dialog .modal-card {
+    width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px);
+  }
+
+  .agent-details dl > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
 }
 
 .connection-guide {
