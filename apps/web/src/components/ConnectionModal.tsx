@@ -1,9 +1,12 @@
 import { ExternalLink, Info, KeyRound } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
-import { isLocalProxyBaseUrl, type CoreConnection } from "../lib/connection";
 import {
+  isLocalProxyBaseUrl,
   isValidDirectCoreBaseUrl,
+  type CoreConnection,
+} from "../lib/connection";
+import {
   probeCore,
   type CoreProbeResult,
 } from "../lib/core-probe";
@@ -49,6 +52,11 @@ function resultCopy(result: CoreProbeResult): { title: string; detail: string } 
       return {
         title: "Core API authenticated",
         detail: "The read-only Agents API request returned a valid collection.",
+      };
+    case "invalid_configuration":
+      return {
+        title: "Core URL blocked",
+        detail: "Remote Core URLs must use HTTPS. Plain HTTP is allowed only for an explicit loopback host.",
       };
     case "unauthorized":
       return {
@@ -254,12 +262,12 @@ export function ConnectionModal({
               }
             />
             <small id={`${modeName}-advanced-url-help`}>
-              Direct HTTP(S) access requires a compatible Core that allows this Web origin, GET/POST methods,
-              Authorization, and OpenAI-Beta through CORS. Do not enter credentials in the URL.
+              Remote Core access requires HTTPS. Plain HTTP is allowed only for an explicit loopback host.
+              The Core must allow this Web origin, GET/POST methods, Authorization, and OpenAI-Beta through CORS.
             </small>
             {advancedDraft.baseUrl && !advancedUrlValid ? (
               <small id={`${modeName}-advanced-url-error`} className="field-error" role="alert">
-                Enter an HTTP(S) base URL without credentials, query parameters, or fragments.
+                Enter an HTTPS URL, or an HTTP loopback URL, without credentials, query parameters, or fragments.
               </small>
             ) : null}
           </label>

@@ -71,7 +71,16 @@ describe("Agent Core connection modes", () => {
   it("rejects credentials and query data embedded in an Advanced URL", () => {
     const markup = renderModal("https://core.example/v1?token=unsafe", true);
 
-    expect(markup).toContain("without credentials, query parameters, or fragments");
+    expect(markup).toContain("an HTTP loopback URL, without credentials, query parameters, or fragments");
+    expect(markup).toContain('aria-invalid="true"');
+    expect(markup.match(/disabled=""/g)).toHaveLength(2);
+  });
+
+  it("rejects remote HTTP while explaining the HTTPS and loopback boundary", () => {
+    const markup = renderModal("http://core.example/v1", true, "must-not-leave-browser");
+
+    expect(markup).toContain("Remote Core access requires HTTPS");
+    expect(markup).toContain("Plain HTTP is allowed only for an explicit loopback host");
     expect(markup).toContain('aria-invalid="true"');
     expect(markup.match(/disabled=""/g)).toHaveLength(2);
   });
@@ -118,6 +127,13 @@ describe("Connection probe status", () => {
         result: { kind: "authenticated", executionReadiness: "unknown", httpStatus: 200 },
       },
       "Core API authenticated",
+    ],
+    [
+      {
+        status: "complete",
+        result: { kind: "invalid_configuration", executionReadiness: "unknown" },
+      },
+      "Core URL blocked",
     ],
     [
       {

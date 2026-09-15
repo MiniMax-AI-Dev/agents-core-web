@@ -7,6 +7,7 @@ interface ProbeInstrumentationWindow extends Window {
   __probeAbortCount?: number;
   __probeCallCount?: number;
   __resolveFirstProbe?: (() => void) | null;
+  __stalledProbeCallCount?: number;
 }
 
 async function resetFixture(request: APIRequestContext) {
@@ -61,6 +62,78 @@ test("migrates a stale local token without sending browser authorization when pr
 
   await dialog.getByRole("radio", { name: /Other compatible Core/ }).click();
   await expect(dialog.getByLabel("Bearer token")).toHaveValue("");
+});
+
+test("scrubs a legacy remote HTTP connection before any bearer can leave the page", async ({ page, request }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("agents-core-web.core-base-url", "http://core.example/v1");
+    sessionStorage.setItem("agents-core-web.core-token", "legacy-remote-token");
+  });
+  let unsafeRequests = 0;
+  await page.route("http://core.example/**", (route) => {
+    unsafeRequests += 1;
+    return route.abort("blockedbyclient");
+  });
+
+  await boot(page, request);
+
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("agents-core-web.core-base-url"))).toBe("/v1");
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("agents-core-web.core-token"))).toBeNull();
+  expect(unsafeRequests).toBe(0);
+  const { dialog } = await openConnection(page);
+  await expect(dialog.getByRole("radio", { name: /Local Parsar Core/ })).toBeChecked();
+});
+
+test("rejects an unsafe runtime target before a local proxy write can be attempted", async ({ page, request }) => {
+  await boot(page, request);
+
+  const outcome = await page.evaluate(async () => {
+    const modulePath = "/src/lib/connection.ts";
+    const { createCore } = await import(/* @vite-ignore */ modulePath);
+    const originalFetch = window.fetch;
+    const calls: Array<{ method: string; url: string }> = [];
+    window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({
+        method: init?.method ?? "GET",
+        url: typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+      });
+      return new Response(JSON.stringify({ id: "must-not-be-created" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const core = createCore({
+        baseUrl: "http://core.example/v1",
+        token: "must-not-leave-browser",
+      });
+      await core.createAgent({ model: "must-not-create-locally" });
+      return { calls, error: null };
+    } catch (error) {
+      return {
+        calls,
+        error: error instanceof Error
+          ? {
+              code: "code" in error ? String(error.code) : null,
+              message: error.message,
+              name: error.name,
+            }
+          : null,
+      };
+    } finally {
+      window.fetch = originalFetch;
+    }
+  });
+
+  expect(outcome.calls).toEqual([]);
+  expect(outcome.error).toEqual({
+    code: "invalid_core_base_url",
+    message: "The Agent Core base URL is invalid or unsafe.",
+    name: "InvalidCoreConnectionError",
+  });
+  expect(JSON.stringify(outcome)).not.toContain("must-not-leave-browser");
+  expect(JSON.stringify(outcome)).not.toContain("http://core.example/v1");
 });
 
 test("switches real connection modes and fences stale probes when the draft changes or reopens", async ({
@@ -137,6 +210,27 @@ test("switches real connection modes and fences stale probes when the draft chan
   const directBase = `${new URL(page.url()).origin}/v1`;
   const baseUrl = dialog.getByLabel("Compatible Core base URL");
   const token = dialog.getByLabel("Bearer token");
+  for (const loopback of [
+    "http://localhost:8091/v1",
+    "http://worker.localhost:8091/v1",
+    "http://127.0.0.42:8091/v1",
+    "http://[::1]:8091/v1",
+  ]) {
+    await baseUrl.fill(loopback);
+    await expect(testConnection).toBeEnabled();
+  }
+  for (const unsafe of [
+    "http://core.example/v1",
+    `${directBase}?`,
+    `${directBase}#`,
+  ]) {
+    await baseUrl.fill(unsafe);
+    await expect(dialog.getByText(/Enter an HTTPS URL, or an HTTP loopback URL/)).toBeVisible();
+    await expect(testConnection).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Apply connection" })).toBeDisabled();
+  }
+  expect(await page.evaluate(() => (window as ProbeInstrumentationWindow).__probeCallCount)).toBe(1);
+
   await baseUrl.fill(directBase);
   await token.fill("current-tab-token");
   await testConnection.click();
@@ -171,9 +265,34 @@ test("announces loading, authenticated access, and each safe failure state from 
   request,
 }) => {
   const replies = [
-    { status: 200, body: { object: "list", data: [], has_more: false, first_id: null, last_id: null } },
+    {
+      status: 200,
+      body: {
+        object: "list",
+        data: [{
+          id: "agent_empty_model",
+          object: "agent",
+          model: "",
+          name: null,
+          instructions: null,
+          metadata: {},
+          multi_agent: { enabled: false, max_concurrent_subagents: null },
+          reasoning: {},
+          service_tier: "auto",
+          text: { format: { type: "text" }, verbosity: "medium" },
+          tools: [],
+          created_at: 1_700_000_000,
+          updated_at: 1_700_000_001,
+        }],
+        has_more: false,
+        first_id: "agent_empty_model",
+        last_id: "agent_empty_model",
+      },
+    },
     { status: 202, body: { object: "list", data: [], has_more: false, first_id: null, last_id: null } },
+    { status: 200, body: { object: "list", data: [null], has_more: false, first_id: null, last_id: null } },
     { status: 401, body: { error: { code: "invalid_api_key", message: "safe fixture failure" } } },
+    { status: 401, body: { error: { code: "gateway_auth_required", message: "safe fixture failure" } } },
     { status: 400, body: { error: { code: "invalid_beta_header", message: "safe fixture failure" } } },
     { status: 503, body: { error: { code: "unavailable", message: "safe fixture failure" } } },
     { abort: true },
@@ -196,10 +315,12 @@ test("announces loading, authenticated access, and each safe failure state from 
   await boot(page, request);
   const { dialog } = await openConnection(page);
   const action = dialog.getByRole("button", { name: "Test connection" });
-  const cases: Array<{ role: "status" | "alert"; text: string }> = [
+  const cases: Array<{ role: "status" | "alert"; text: string; absentText?: string }> = [
     { role: "status", text: "Core API authenticated" },
     { role: "alert", text: "Agents API protocol mismatch" },
+    { role: "alert", text: "Agents API protocol mismatch" },
     { role: "alert", text: "Authentication failed" },
+    { role: "alert", text: "Core returned HTTP 401", absentText: "invalid_api_key" },
     { role: "alert", text: "Agents API protocol mismatch" },
     { role: "alert", text: "Core returned HTTP 503" },
     { role: "alert", text: "Core unreachable" },
@@ -213,10 +334,47 @@ test("announces loading, authenticated access, and each safe failure state from 
     const terminal = dialog.getByRole(expected.role);
     await expect(terminal).toContainText(expected.text);
     await expect(terminal).toContainText("Execution readiness: Unknown / not verified");
+    if (expected.absentText) await expect(terminal).not.toContainText(expected.absentText);
   }
 
-  expect(methods).toEqual(["GET", "GET", "GET", "GET", "GET", "GET"]);
+  expect(methods).toEqual(["GET", "GET", "GET", "GET", "GET", "GET", "GET", "GET"]);
   expect(replies).toHaveLength(0);
+});
+
+test("turns a stalled probe into one bounded unreachable result", async ({ page, request }) => {
+  await page.addInitScript(() => {
+    const target = window as ProbeInstrumentationWindow;
+    const originalFetch = window.fetch.bind(window);
+    target.__stalledProbeCallCount = 0;
+    window.fetch = (input, init) => {
+      const value = typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+      const candidate = new URL(value, window.location.href);
+      const stalledProbe = candidate.pathname.endsWith("/v1/agents")
+        && candidate.searchParams.get("limit") === "1";
+      if (!stalledProbe) return originalFetch(input, init);
+      target.__stalledProbeCallCount = (target.__stalledProbeCallCount ?? 0) + 1;
+      return new Promise<Response>((_resolve, reject) => {
+        const rejectAbort = () => reject(init?.signal?.reason ?? new DOMException("Aborted", "AbortError"));
+        if (init?.signal?.aborted) rejectAbort();
+        else init?.signal?.addEventListener("abort", rejectAbort, { once: true });
+      });
+    };
+  });
+
+  await boot(page, request);
+  const { dialog } = await openConnection(page);
+  await dialog.getByRole("button", { name: "Test connection" }).click();
+  await expect(dialog.getByRole("status")).toContainText("Testing Core connection…");
+  await expect.poll(() => page.evaluate(() => (
+    (window as ProbeInstrumentationWindow).__stalledProbeCallCount ?? 0
+  ))).toBe(1);
+  await expect(dialog.getByRole("alert")).toContainText("Core unreachable", { timeout: 7_500 });
+  await expect(dialog.getByRole("alert")).toContainText("Execution readiness: Unknown / not verified");
+  expect(await page.evaluate(() => (window as ProbeInstrumentationWindow).__stalledProbeCallCount)).toBe(1);
 });
 
 test("supports keyboard mode selection, traps focus, and returns focus on Escape", async ({ page, request }) => {
