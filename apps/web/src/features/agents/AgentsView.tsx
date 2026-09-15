@@ -1,18 +1,14 @@
-import { Bot, Info, MessageSquare, Plus, RefreshCw, Search } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { Bot, MessageSquare, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import { useRef, useState } from "react";
 
-import type { CreateAgentInput, SavedAgent } from "@agents-core-web/agents-client";
+import type { CreateAgentInput, SavedAgent, UpdateAgentInput } from "@agents-core-web/agents-client";
 
 import { ErrorState } from "../../components/ErrorState";
-import { Modal } from "../../components/Modal";
 import { Skeleton } from "../../components/Skeleton";
 import type { CoreConnectionState } from "../../lib/connection";
-import {
-  buildModelOptionGroups,
-  CUSTOM_MODEL_OPTION,
-  modelIdFromOption,
-  modelOptionValue,
-} from "../../lib/model-options";
+import { AgentDialog } from "./AgentDialog";
+import { AgentForm } from "./AgentForm";
+import { createRequestGate } from "./agent-form";
 
 interface AgentsViewProps {
   agents: SavedAgent[];
@@ -20,8 +16,17 @@ interface AgentsViewProps {
   coreError: string | null;
   coreState: CoreConnectionState;
   onCreate: (input: CreateAgentInput) => Promise<void>;
+  onDelete?: (agentId: string) => Promise<void>;
   onRefresh: () => void;
+  onRetrieve?: (agentId: string) => Promise<SavedAgent | undefined>;
   onStartSession: (agentId: string) => Promise<void>;
+  onUpdate?: (agentId: string, input: UpdateAgentInput) => Promise<SavedAgent | undefined>;
+}
+
+type DialogMode = "closed" | "create" | "detail" | "edit" | "delete";
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "The Agent Core request failed.";
 }
 
 function AgentsLoadingSkeleton() {
@@ -42,12 +47,60 @@ function AgentsLoadingSkeleton() {
   );
 }
 
-function formatDate(seconds: number): string {
+function formatShortDate(seconds: number): string {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(seconds * 1000));
+}
+
+function formatTimestamp(seconds: number): string {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" }).format(new Date(seconds * 1000));
 }
 
 function initial(name: string | null): string {
   return (name?.trim().charAt(0) || "A").toUpperCase();
+}
+
+function StructuredValue({ value }: { value: unknown }) {
+  return <pre className="agent-structured-value">{JSON.stringify(value, null, 2)}</pre>;
+}
+
+export function AgentDetails({ agent }: { agent: SavedAgent }) {
+  return (
+    <div className="agent-details">
+      <div className="agent-detail-summary">
+        <dl>
+          <div><dt>ID</dt><dd><code>{agent.id}</code></dd></div>
+          <div><dt>Created</dt><dd><time dateTime={new Date(agent.created_at * 1000).toISOString()}>{formatTimestamp(agent.created_at)}</time></dd></div>
+          <div><dt>Updated</dt><dd><time dateTime={new Date(agent.updated_at * 1000).toISOString()}>{formatTimestamp(agent.updated_at)}</time></dd></div>
+          <div><dt>Model</dt><dd><code>{agent.model}</code></dd></div>
+          <div><dt>Name</dt><dd>{agent.name ?? <span className="agent-null-value">Not set</span>}</dd></div>
+          <div><dt>Instructions</dt><dd>{agent.instructions ?? <span className="agent-null-value">Not set</span>}</dd></div>
+          <div><dt>Metadata</dt><dd><StructuredValue value={agent.metadata} /></dd></div>
+        </dl>
+      </div>
+      <div className="agent-capability-warning" role="note">
+        Saved advanced configuration is capability information only. It does not prove the current executor supports or can run tools, multi-agent, MCP, web search, plugins, reasoning, text, or service-tier settings.
+      </div>
+      <section className="agent-capabilities" aria-labelledby="agent-capabilities-title">
+        <h3 id="agent-capabilities-title">Advanced configuration · read only</h3>
+        <dl>
+          <div><dt>Tools</dt><dd><StructuredValue value={agent.tools} /></dd></div>
+          <div><dt>Reasoning</dt><dd><StructuredValue value={agent.reasoning} /></dd></div>
+          <div><dt>Text</dt><dd><StructuredValue value={agent.text} /></dd></div>
+          <div><dt>Service tier</dt><dd><code>{agent.service_tier}</code></dd></div>
+          <div><dt>Multi-agent</dt><dd><StructuredValue value={agent.multi_agent} /></dd></div>
+        </dl>
+      </section>
+    </div>
+  );
+}
+
+export function AgentDeleteConfirmation({ agent }: { agent: SavedAgent }) {
+  return (
+    <div className="agent-delete-confirmation">
+      <p>Delete <strong>{agent.name || "Untitled Agent"}</strong> from Agent Core?</p>
+      <p>This removes the saved Agent only after Core confirms success. Existing Sessions keep their durable Agent snapshots.</p>
+    </div>
+  );
 }
 
 export function AgentsView({
@@ -56,51 +109,98 @@ export function AgentsView({
   coreError,
   coreState,
   onCreate,
+  onDelete,
   onRefresh,
+  onRetrieve,
   onStartSession,
+  onUpdate,
 }: AgentsViewProps) {
-  const modelOptions = buildModelOptionGroups(
-    agents.map((agent) => agent.model),
-    import.meta.env.VITE_AGENT_MODEL_PRESETS,
-    import.meta.env.VITE_AGENT_DEFAULT_MODEL,
-  );
-  const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [modelChoice, setModelChoice] = useState(modelOptionValue(modelOptions.defaultModel));
-  const [customModel, setCustomModel] = useState("");
-  const [instructions, setInstructions] = useState("");
+  const [mode, setMode] = useState<DialogMode>("closed");
+  const [selectedAgent, setSelectedAgent] = useState<SavedAgent | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const selectedModel = modelIdFromOption(modelChoice);
-  const model = modelChoice === CUSTOM_MODEL_OPTION ? customModel.trim() : selectedModel ?? "";
-
+  const requestGate = useRef(createRequestGate());
+  const knownModels = agents.map((agent) => agent.model);
   const normalizedQuery = query.trim().toLowerCase();
   const filteredAgents = normalizedQuery
     ? agents.filter((agent) => [agent.name, agent.model, agent.instructions, agent.id]
       .some((value) => value?.toLowerCase().includes(normalizedQuery)))
     : agents;
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (coreState !== "ready" || !model.trim()) return;
+  const closeDialog = () => {
+    requestGate.current.invalidate();
+    setMode("closed");
+    setActionError(null);
+    setDetailLoading(false);
+  };
+
+  const retrieve = async (agent: SavedAgent) => {
+    const request = requestGate.current.begin();
+    setSelectedAgent(agent);
+    setMode("detail");
+    setActionError(null);
+    setDetailLoading(true);
     try {
-      await onCreate({
-        model: model.trim(),
-        name: name.trim() || null,
-        instructions: instructions.trim() || null,
-      });
-    } catch {
-      return;
+      if (!onRetrieve) throw new Error("Agent retrieval is unavailable for this Agent Core connection.");
+      const latest = await onRetrieve(agent.id);
+      if (!latest) throw new Error("The Agent detail request was interrupted by a connection change.");
+      if (requestGate.current.isCurrent(request)) setSelectedAgent(latest);
+    } catch (error) {
+      if (requestGate.current.isCurrent(request)) setActionError(errorMessage(error));
+    } finally {
+      if (requestGate.current.isCurrent(request)) setDetailLoading(false);
     }
-    setName("");
-    setModelChoice(modelOptionValue(modelOptions.defaultModel));
-    setCustomModel("");
-    setInstructions("");
-    setOpen(false);
+  };
+
+  const submitCreate = async (input: CreateAgentInput) => {
+    setActionError(null);
+    try {
+      await onCreate(input);
+      closeDialog();
+    } catch (error) {
+      setActionError(errorMessage(error));
+    }
+  };
+
+  const submitUpdate = async (input: CreateAgentInput) => {
+    if (!selectedAgent) return;
+    setActionError(null);
+    try {
+      if (!onUpdate) throw new Error("Agent updates are unavailable for this Agent Core connection.");
+      const updated = await onUpdate(selectedAgent.id, input);
+      if (!updated) throw new Error("The Agent update was interrupted by a connection change.");
+      setSelectedAgent(updated);
+      setMode("detail");
+    } catch (error) {
+      setActionError(errorMessage(error));
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!selectedAgent) return;
+    setActionError(null);
+    try {
+      if (!onDelete) throw new Error("Delete is unavailable for this Agent Core connection.");
+      await onDelete(selectedAgent.id);
+      closeDialog();
+    } catch (error) {
+      setActionError(errorMessage(error));
+    }
   };
 
   const startSession = (agentId: string) => {
     void onStartSession(agentId).catch(() => undefined);
   };
+
+  const dialogTitle = mode === "create"
+    ? "Create an Agent"
+    : mode === "edit"
+      ? "Edit Agent"
+      : mode === "delete"
+        ? "Delete Agent?"
+        : selectedAgent?.name || "Agent details";
+  const formId = mode === "create" ? "create-agent" : "edit-agent";
 
   return (
     <section className="page-section agents-page">
@@ -121,7 +221,7 @@ export function AgentsView({
           <button className="icon-button outline" type="button" onClick={onRefresh} disabled={coreState === "connecting"} aria-label="Refresh Agents">
             <RefreshCw className={coreState === "connecting" ? "refresh-spinning" : undefined} size={14} strokeWidth={1.5} />
           </button>
-          <button className="button primary" type="button" onClick={() => setOpen(true)} disabled={coreState !== "ready"}>
+          <button className="button primary" type="button" onClick={() => { setActionError(null); setMode("create"); }} disabled={coreState !== "ready"}>
             <Plus size={14} strokeWidth={1.5} /> New Agent
           </button>
         </div>
@@ -157,14 +257,14 @@ export function AgentsView({
               <div className="ledger-row" role="row" key={agent.id}>
                 <div className="agent-identity" role="cell">
                   <span className="initial-tile">{initial(agent.name)}</span>
-                  <span className="agent-copy">
+                  <button className="agent-detail-trigger" type="button" onClick={() => void retrieve(agent)} aria-label={`Open details for ${agent.name || "this Agent"}`}>
                     <strong>{agent.name || "Untitled Agent"}</strong>
                     <small>{agent.instructions || agent.id}</small>
-                  </span>
+                  </button>
                 </div>
                 <code className="ledger-model" role="cell" title={agent.model}>{agent.model}</code>
                 <span className="ledger-number" role="cell">{agent.tools.length}</span>
-                <span className="ledger-age" role="cell">{formatDate(agent.updated_at)}</span>
+                <span className="ledger-age" role="cell">{formatShortDate(agent.updated_at)}</span>
                 <span className="ledger-actions" role="cell">
                   <span className="action-tooltip">
                     <button
@@ -192,93 +292,60 @@ export function AgentsView({
           {agents.length ? (
             <button className="button outline" type="button" onClick={() => setQuery("")}>Clear search</button>
           ) : (
-            <button className="button primary" type="button" onClick={() => setOpen(true)}>Create Agent</button>
+            <button className="button primary" type="button" onClick={() => setMode("create")}>Create Agent</button>
           )}
         </div>
       ) : null}
 
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        title="Create an Agent"
-        footer={
+      <AgentDialog
+        open={mode !== "closed"}
+        onClose={closeDialog}
+        title={dialogTitle}
+        footer={mode === "create" || mode === "edit" ? (
           <>
-            <button className="button outline" type="button" onClick={() => setOpen(false)}>Cancel</button>
-            <button className="button primary" type="submit" form="create-agent" disabled={busy || coreState !== "ready" || !model.trim()}>
-              {busy ? "Creating…" : "Create Agent"}
+            <button key="cancel-form" className="button outline" type="button" onClick={mode === "edit" ? () => { setActionError(null); setMode("detail"); } : closeDialog}>Cancel</button>
+            <button key="submit-form" className="button primary" type="submit" form={formId} disabled={busy}>
+              {busy ? (mode === "create" ? "Creating…" : "Saving…") : (mode === "create" ? "Create Agent" : "Save changes")}
             </button>
           </>
-        }
+        ) : mode === "detail" ? (
+          <>
+            <button key="open-delete" className="button danger" type="button" onClick={() => { setActionError(null); setMode("delete"); }} disabled={busy || detailLoading}>
+              <Trash2 size={14} strokeWidth={1.5} /> Delete
+            </button>
+            <button key="open-edit" className="button primary" type="button" onClick={() => { setActionError(null); setMode("edit"); }} disabled={busy || detailLoading || Boolean(actionError)}>
+              <Pencil size={14} strokeWidth={1.5} /> Edit
+            </button>
+          </>
+        ) : mode === "delete" ? (
+          <>
+            <button key="cancel-delete" className="button outline" type="button" onClick={() => { setActionError(null); setMode("detail"); }}>Cancel</button>
+            <button key="confirm-delete" className="button danger" type="button" onClick={() => void confirmDelete()} disabled={busy} autoFocus>
+              {busy ? "Deleting…" : "Delete Agent"}
+            </button>
+          </>
+        ) : null}
       >
-        <form id="create-agent" className="form-stack" onSubmit={(event) => void submit(event)}>
-          <label className="field">
-            <span>Name</span>
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Repository builder" />
-          </label>
-          <div className="field">
-            <label className="field-label" htmlFor="create-agent-model">
-              <span>Model</span>
-              <span className="field-optional">Web suggestions</span>
-            </label>
-            <select
-              id="create-agent-model"
-              value={modelChoice}
-              onChange={(event) => setModelChoice(event.target.value)}
-              aria-describedby="create-agent-model-help create-agent-model-note"
-              required
-            >
-              <optgroup label="Configured suggestions">
-                {modelOptions.configured.map((modelId) => (
-                  <option value={modelOptionValue(modelId)} key={modelId}>
-                    {modelId}{modelId === modelOptions.defaultModel ? " · Default" : ""}
-                  </option>
-                ))}
-              </optgroup>
-              {modelOptions.previouslyUsed.length ? (
-                <optgroup label="Previously used by saved Agents">
-                  {modelOptions.previouslyUsed.map((modelId) => (
-                    <option value={modelOptionValue(modelId)} key={modelId}>{modelId}</option>
-                  ))}
-                </optgroup>
-              ) : null}
-              <option value={CUSTOM_MODEL_OPTION}>Custom model ID…</option>
-            </select>
-            <small id="create-agent-model-help">
-              Start with the Web default, choose a previously used ID, or enter one configured for your runtime.
-            </small>
+        {actionError ? (
+          <div className="agent-action-error" role="alert">
+            <strong>Request failed</strong>
+            <span>{actionError}</span>
+            {mode === "detail" && selectedAgent ? <button className="button outline" type="button" onClick={() => void retrieve(selectedAgent)}>Retry latest Agent</button> : null}
           </div>
-          {modelChoice === CUSTOM_MODEL_OPTION ? (
-            <label className="field">
-              <span>Custom model ID</span>
-              <input
-                value={customModel}
-                onChange={(event) => setCustomModel(event.target.value)}
-                placeholder="provider/model-name"
-                spellCheck={false}
-                autoFocus
-                aria-describedby="create-agent-model-note"
-                required
-              />
-            </label>
-          ) : null}
-          <div className="model-picker-note" id="create-agent-model-note" role="note">
-            <Info size={14} strokeWidth={1.5} aria-hidden="true" />
-            <span>
-              These options are Web-side suggestions, not live discovery. The connected runtime decides whether{" "}
-              <code>{model || "your custom model ID"}</code> can execute.
-            </span>
-          </div>
-          <label className="field">
-            <span>Instructions</span>
-            <textarea
-              value={instructions}
-              onChange={(event) => setInstructions(event.target.value)}
-              placeholder="Describe how this Agent should work…"
-              rows={5}
-            />
-          </label>
-        </form>
-      </Modal>
+        ) : null}
+        {mode === "create" ? (
+          <AgentForm formId={formId} knownModels={knownModels} onSubmit={submitCreate} />
+        ) : mode === "edit" && selectedAgent ? (
+          <AgentForm key={`${selectedAgent.id}:${selectedAgent.updated_at}`} agent={selectedAgent} formId={formId} knownModels={knownModels} onSubmit={submitUpdate} />
+        ) : mode === "delete" && selectedAgent ? (
+          <AgentDeleteConfirmation agent={selectedAgent} />
+        ) : selectedAgent ? (
+          <>
+            {detailLoading ? <p className="agent-detail-loading" aria-live="polite">Retrieving the latest saved Agent…</p> : null}
+            <AgentDetails agent={selectedAgent} />
+          </>
+        ) : null}
+      </AgentDialog>
     </section>
   );
 }
