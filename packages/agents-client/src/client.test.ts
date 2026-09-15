@@ -57,6 +57,51 @@ describe("OpenAIAgentsClient", () => {
     expect(headers.get("OpenAI-Beta")).toBe("agents=v1");
   });
 
+  it("sends exact encoded Session update and delete requests without idempotency or delete body", async () => {
+    const calls: FetchCall[] = [];
+    const session = {
+      id: "session/one",
+      object: "agent.session",
+      agent: {},
+      environment: { type: "none" },
+      status: "idle",
+      error: null,
+      metadata: { title: "Renamed", team: "web" },
+      required_actions: [],
+      vault_ids: [],
+      usage: null,
+      created_at: 1,
+      last_active_at: 1,
+    };
+    const client = new OpenAIAgentsClient({
+      baseUrl: "https://core.example/v1/",
+      token: "tenant-key",
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ input, init });
+        return init?.method === "DELETE"
+          ? jsonResponse({ id: "session/one", object: "agent.session.deleted", deleted: true })
+          : jsonResponse(session);
+      }) as typeof fetch,
+    });
+
+    await client.updateSession("session/one", session.metadata);
+    await client.deleteSession("session/one");
+
+    expect(calls).toHaveLength(2);
+    expect(String(calls[0]?.input)).toBe("https://core.example/v1/agents/sessions/session%2Fone");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ metadata: session.metadata });
+    expect(new Headers(calls[0]?.init?.headers).get("Idempotency-Key")).toBeNull();
+    expect(String(calls[1]?.input)).toBe("https://core.example/v1/agents/sessions/session%2Fone");
+    expect(calls[1]?.init?.method).toBe("DELETE");
+    expect(calls[1]?.init?.body).toBeUndefined();
+    for (const call of calls) {
+      const headers = new Headers(call.init?.headers);
+      expect(headers.get("Authorization")).toBe("Bearer tenant-key");
+      expect(headers.get("OpenAI-Beta")).toBe("agents=v1");
+    }
+  });
+
   it("preserves the event-stream Accept header and decodes streamed events", async () => {
     const calls: FetchCall[] = [];
     const encoder = new TextEncoder();
