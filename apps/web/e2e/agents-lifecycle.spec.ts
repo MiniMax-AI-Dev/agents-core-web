@@ -17,7 +17,7 @@ async function resetFixture(request: APIRequestContext) {
   expect(response.ok()).toBe(true);
 }
 
-async function controlFixture(request: APIRequestContext, control: Record<string, number>) {
+async function controlFixture(request: APIRequestContext, control: Record<string, number | string>) {
   const response = await request.post(`${fixtureBaseUrl}/__fixture/control`, { data: control });
   expect(response.ok()).toBe(true);
 }
@@ -340,8 +340,8 @@ test("renders self-hosted Environment and Workspace state safely across reconnec
   await expect.poll(async () => (
     await fixtureRequests(request)
   ).filter((entry) => entry.method === "GET" && entry.path.endsWith("/events")).length).toBeGreaterThanOrEqual(2);
-  await expect(panel).toContainText("Connection required");
-  await expect(panel).not.toContainText("Pending");
+  await expect(panel).toContainText("Pending");
+  await expect(panel).toContainText("Status comes from the durable Environment resource");
   await panel.evaluate((element) => element.scrollIntoView({ block: "start" }));
   await attachElementScreenshot(panel, testInfo, "desktop-light-environment-panel");
   await attachScreenshot(page, testInfo, "desktop-light-self-hosted-environment");
@@ -382,6 +382,124 @@ test("renders self-hosted Environment and Workspace state safely across reconnec
   const missing = page.getByRole("region", { name: "Environment and Workspace status" });
   await expect(missing).toContainText("ID unavailable");
   await expect(missing).toContainText("unsafe or malformed URL");
+});
+
+test("hydrates durable expired and unavailable Environment states without a write or paid Turn", async ({ page, request }) => {
+  await resetFixture(request);
+  await controlFixture(request, {
+    environmentScenario: 4,
+    environmentResourceStatus: "expired",
+    environmentEventStatus: 0,
+  });
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+
+  const panel = page.getByRole("region", { name: "Environment and Workspace status" });
+  await expect(panel).toContainText("Expired");
+  await expect(panel).toContainText("Environment expired");
+  await expect(panel).toContainText("no API-managed files, plugins, or skills");
+  await expect(page.getByLabel("Message the Agent")).toBeVisible();
+
+  const initialRequests = await fixtureRequests(request);
+  const sessionReadIndex = initialRequests.findIndex(
+    (entry) => entry.method === "GET" && /^\/v1\/agents\/sessions\/[^/]+$/.test(entry.path),
+  );
+  const environmentReadIndex = initialRequests.findIndex(
+    (entry) => entry.method === "GET" && entry.path.startsWith("/v1/agents/environments/"),
+  );
+  expect(sessionReadIndex).toBeGreaterThanOrEqual(0);
+  expect(environmentReadIndex).toBeGreaterThan(sessionReadIndex);
+
+  let environmentRequests = initialRequests.filter(
+    (entry) => entry.path.startsWith("/v1/agents/environments/"),
+  );
+  expect(environmentRequests.length).toBeGreaterThanOrEqual(1);
+  expect(environmentRequests.every((entry) => entry.method === "GET" && entry.body === undefined)).toBe(true);
+
+  await controlFixture(request, { environmentRetrieveStatus: 503 });
+  await page.reload();
+  await expect(panel).toContainText("Unavailable");
+  await expect(panel).toContainText("conversation remains usable");
+  await expect(panel).not.toContainText("Expired");
+  await expect(panel).not.toContainText("Connected");
+  await expect(page.getByLabel("Message the Agent")).toBeVisible();
+
+  await controlFixture(request, {
+    environmentRetrieveStatus: 200,
+    environmentResourceVariant: "missing_skills",
+  });
+  await page.reload();
+  await expect(panel).toContainText("Unavailable");
+  await expect(page.getByLabel("Message the Agent")).toBeVisible();
+
+  environmentRequests = (await fixtureRequests(request)).filter(
+    (entry) => entry.path.startsWith("/v1/agents/environments/"),
+  );
+  expect(environmentRequests.every((entry) => entry.method === "GET")).toBe(true);
+});
+
+test("hydrates durable Environment state even when the live stream is rejected", async ({ page, request }) => {
+  await resetFixture(request);
+  await controlFixture(request, {
+    environmentScenario: 4,
+    environmentResourceStatus: "expired",
+    streamStatus: 401,
+  });
+  await page.goto("/");
+
+  const panel = page.getByRole("region", { name: "Environment and Workspace status" });
+  await expect(panel).toContainText("Expired");
+  await expect(panel).toContainText("Status comes from the durable Environment resource");
+  await expect(page.getByText("failed", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Message the Agent")).toBeVisible();
+
+  const requests = await fixtureRequests(request);
+  expect(requests.some((entry) => (
+    entry.method === "GET" && entry.path.startsWith("/v1/agents/environments/")
+  ))).toBe(true);
+});
+
+test("keeps canonical Environment UUID identity across Session and resource projections", async ({ page, request }) => {
+  await resetFixture(request);
+  const canonicalEnvironmentUuid = "0f745b0d-b545-49cd-8d7e-4c31c80dc564";
+  await controlFixture(request, {
+    environmentScenario: 5,
+    environmentResourceStatus: "connected",
+    environmentEventStatus: 0,
+  });
+  await page.goto("/");
+
+  const panel = page.getByRole("region", { name: "Environment and Workspace status" });
+  await expect(panel).toContainText("Connected");
+  await expect(panel).toContainText("Status comes from the durable Environment resource");
+  await expect(panel).not.toContainText("Durable Environment status is unavailable");
+  await expect(panel).toContainText(canonicalEnvironmentUuid.toUpperCase());
+
+  const environmentRequests = (await fixtureRequests(request)).filter(
+    (entry) => entry.method === "GET" && entry.path.startsWith("/v1/agents/environments/"),
+  );
+  expect(environmentRequests.length).toBeGreaterThanOrEqual(1);
+  expect(environmentRequests.every(
+    (entry) => entry.path === `/v1/agents/environments/${canonicalEnvironmentUuid.toUpperCase()}` &&
+      entry.body === undefined,
+  )).toBe(true);
+});
+
+test("applies a buffered live Environment event after an earlier durable snapshot", async ({ page, request }) => {
+  await resetFixture(request);
+  await controlFixture(request, {
+    environmentScenario: 4,
+    environmentRetrieveDelayMs: 500,
+    environmentResourceStatus: "pending",
+    environmentEventStatus: 3,
+    environmentEventCount: 1,
+  });
+  await page.goto("/");
+
+  const panel = page.getByRole("region", { name: "Environment and Workspace status" });
+  await expect(panel).toContainText("Connected");
+  await expect(panel).toContainText("last supported live event observed after the durable Environment snapshot");
+  await expect(panel).not.toContainText("Pending");
 });
 
 test("renders Parsar patches as accessible read-only diffs in desktop and narrow themes", async ({ page, request }, testInfo) => {

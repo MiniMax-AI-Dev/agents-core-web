@@ -144,6 +144,18 @@ export interface UnknownAgentEnvironment {
 
 export type AgentEnvironment = NoneAgentEnvironment | SelfHostedAgentEnvironment | UnknownAgentEnvironment;
 
+export type EnvironmentResourceStatus = "pending" | "connected" | "disconnected" | "expired" | "failed";
+
+export interface AgentEnvironmentResource {
+  id: string;
+  object: "agent.environment";
+  type: "self_hosted";
+  status: EnvironmentResourceStatus;
+  files: unknown[];
+  plugins: unknown[];
+  skills: unknown[];
+}
+
 export type SessionStatus = "idle" | "in_progress" | "requires_action" | "failed";
 
 export interface FunctionCallAction {
@@ -288,12 +300,12 @@ export interface StreamError {
   message: string;
 }
 
-export type EnvironmentStatus = "pending" | "ready" | "connected" | "disconnected" | "failed";
+export type SessionEnvironmentStatus = "pending" | "ready" | "connected" | "disconnected" | "failed";
 
 export interface SessionEnvironmentState {
   id: string;
   type: string;
-  status: EnvironmentStatus;
+  status: SessionEnvironmentStatus;
   error: StreamError | null;
 }
 
@@ -314,11 +326,11 @@ export interface SessionEventBase {
 }
 
 export type AgentSessionEnvironmentEvent = {
-  [Status in EnvironmentStatus]: SessionEventBase & {
+  [Status in SessionEnvironmentStatus]: SessionEventBase & {
     type: `agent.session.environment.${Status}`;
     environment: SessionEnvironmentState & { status: Status };
   };
-}[EnvironmentStatus];
+}[SessionEnvironmentStatus];
 
 export type KnownSessionEventType =
   | "agent.session.created"
@@ -390,6 +402,7 @@ export interface AgentCore {
   listSessions(options?: PageOptions & { agentId?: string }): Promise<ListPage<AgentSession>>;
   createSession(input: CreateSessionInput, idempotencyKey?: string): Promise<AgentSession>;
   retrieveSession(sessionId: string, options?: ReadOptions): Promise<AgentSession>;
+  retrieveEnvironment(environmentId: string, options?: ReadOptions): Promise<AgentEnvironmentResource>;
   updateSession(sessionId: string, metadata: Record<string, string> | null): Promise<AgentSession>;
   deleteSession(sessionId: string): Promise<SessionDeleted>;
   listItems(sessionId: string, options?: PageOptions & ReadOptions): Promise<ListPage<SessionItem>>;

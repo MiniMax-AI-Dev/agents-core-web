@@ -18,7 +18,7 @@ This boundary is intentional:
   simulated in Web.
 
 The current compatibility baseline is Parsar
-[`8cc2898c`](https://github.com/MiniMax-AI-Dev/parsar/commit/8cc2898ca42b272cb3771234ee6a0ad0d2e932ba),
+[`0438880a`](https://github.com/MiniMax-AI-Dev/parsar/commit/0438880ab21aa16d05cb91a4c7f91cc0abc12358),
 whose contract is pinned to `openai-python` 3.13.0 commit
 [`d7c41efe`](https://github.com/openai/openai-python/tree/d7c41efee1b0802b79f3f88a678ef2052b06e9ce/src/openai/resources/beta/agents).
 This is a fixed beta subset, not a claim that every current OpenAI Agents API
@@ -69,7 +69,7 @@ that is a separate product layer.
 | Layer | Owns | Does not own |
 | --- | --- | --- |
 | Agents Core Web | navigation, Agent forms, Session timeline, live-state projection, reconnect recovery, function-result UI | durable truth, engine selection, sandbox or provider credentials |
-| `@agents-core-web/agents-client` | `/v1/agents/**` wire types, beta/auth headers, pagination, fetch-based SSE parsing | uncertain-write retries, native protocol translation |
+| `@agents-core-web/agents-client` | `/v1/agents/**` wire types, beta/auth headers, pagination, strict Environment retrieval, fetch-based SSE parsing | uncertain-write retries, native protocol translation |
 | Agent Core | principal authentication, validation, idempotency, durable Agent/Session/Turn/Item state, live events, scheduling | product organization UI or Web user sessions |
 | `parsar-daemon` | device connection, host capability advertisement, native process lifecycle and translation | public Agents HTTP semantics or product policy |
 | Native adapter | Codex app-server or Claude Agent SDK integration | public API and Web deployment policy |
@@ -122,18 +122,25 @@ sequenceDiagram
   D-->>C: private execution envelopes
   C-->>W: live Session / Turn / Item events
   W->>C: GET Session + Items
-  Note over W,C: SSE is live-only. Buffer new events after reconnect,<br/>then recover current UI state and merge by Item ID.
+  opt current Session has a valid self_hosted Environment ID
+    W->>C: GET Environment
+  end
+  Note over W,C: SSE is live-only. Buffer new events after reconnect,<br/>recover durable Session/Items/Environment, then apply newer live state.
 ```
 
 Creating an idle Session before sending the first message lets the browser open the
 live stream before work starts. A successful submission means Core admitted the
 event; it is not by itself proof that a native Turn completed.
 
-Core persists the authoritative Session, Turn, and Item views. Reconnecting SSE does
-not replay missed events, including when `Last-Event-ID` is sent. The current UI
-therefore reconnects, buffers newly arriving events, retrieves the Session and Items,
-and merges Items by stable ID. The TypeScript client exposes Turn list/retrieve for
-diagnostics, but the current UI does not use them in recovery.
+Core persists the authoritative Session, Turn, Item, and supported Environment views.
+Reconnecting SSE does not replay missed events, including when `Last-Event-ID` is
+sent. The current UI therefore reconnects, buffers newly arriving events, retrieves
+the Session and Items, retrieves Environment only after that Session supplies a valid
+`self_hosted` ID, then applies newer buffered live state. A failed or malformed
+Environment read degrades only the Environment panel to unavailable. Core generation,
+Session and Environment identity, request/event revisions, stream epoch, selection,
+and abort checks reject late state. The TypeScript client exposes Turn list/retrieve
+for diagnostics, but the current UI does not use them in recovery.
 
 The client never retries an uncertain write automatically. The current UI does not
 persist one generated idempotency key across a manual resend, so it must not imply
@@ -143,10 +150,13 @@ pending-operation key persistence remain M1 hardening work.
 ## Runtime profiles
 
 The Web currently creates `environment: {"type":"none"}` Sessions. On Parsar
-`8cc2898c`, Core also contains a narrow, disabled-by-default Codex `self_hosted`
-profile for empty Sessions followed by constrained idle text input. That upstream
-profile is not exposed by this UI and is not equivalent to the internal daemon
-socket, Docker, E2B, or AWS Bedrock AgentCore Runtime.
+`0438880a`, Core also contains a narrow Codex `self_hosted` profile for empty Sessions
+followed by constrained idle text input. The Web does not create or connect that
+profile, but for an already selected self-hosted Session it reads the durable
+Environment's exact safe projection and status. Durable `expired` and live-only
+`ready` remain separate states; empty installation arrays do not describe a host or
+Workspace. This profile is not equivalent to the internal daemon socket, Docker,
+E2B, or AWS Bedrock AgentCore Runtime.
 
 `AGENTS_API_ENGINE` selects `codex` by default or the operator-enabled `claude_sdk`
 profile for new Sessions. The request's model is passed to that engine; it is not an
@@ -192,5 +202,6 @@ and hold the Core bearer in a reverse proxy/BFF. See
 - [Official OpenAI Agents API overview](https://developers.openai.com/api/docs/guides/agents-api/overview)
 - [Official OpenAI Session lifecycle](https://developers.openai.com/api/docs/guides/agents-api/sessions)
 - [Pinned `openai-python` Agents resources](https://github.com/openai/openai-python/tree/d7c41efee1b0802b79f3f88a678ef2052b06e9ce/src/openai/resources/beta/agents)
-- [Parsar Agents API contract at `8cc2898c`](https://github.com/MiniMax-AI-Dev/parsar/blob/8cc2898ca42b272cb3771234ee6a0ad0d2e932ba/contracts/agents-api/README.md)
-- [Parsar standalone service guide at `8cc2898c`](https://github.com/MiniMax-AI-Dev/parsar/blob/8cc2898ca42b272cb3771234ee6a0ad0d2e932ba/services/agents-api/README.md)
+- [Parsar Agents API contract at `0438880a`](https://github.com/MiniMax-AI-Dev/parsar/blob/0438880ab21aa16d05cb91a4c7f91cc0abc12358/contracts/agents-api/README.md)
+- [Parsar Environment contract at `0438880a`](https://github.com/MiniMax-AI-Dev/parsar/blob/0438880ab21aa16d05cb91a4c7f91cc0abc12358/contracts/agents-api/environments.md)
+- [Parsar standalone service guide at `0438880a`](https://github.com/MiniMax-AI-Dev/parsar/blob/0438880ab21aa16d05cb91a4c7f91cc0abc12358/services/agents-api/README.md)

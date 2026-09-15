@@ -36,10 +36,15 @@ import {
   type StreamState,
 } from "./features/sessions/SessionsView";
 import {
+  environmentObservationFromResource,
+  environmentIdsMatch,
+  environmentReadIsCurrent,
+  matchingSessionSnapshot,
   reduceEnvironmentObservation,
-  reconcileEnvironmentObservation,
+  selfHostedEnvironmentId,
   type EnvironmentObservation,
   type ScopedEnvironmentObservation,
+  unavailableEnvironmentObservation,
   visibleEnvironmentObservation,
 } from "./features/sessions/environment/environment-state";
 import { SystemView } from "./features/system/SystemView";
@@ -190,6 +195,8 @@ export function App() {
   const sessionEventRevisionRef = useRef(new Map<string, number>());
   const itemEventRevisionRef = useRef(new Map<string, number>());
   const environmentEventRevisionRef = useRef(new Map<string, number>());
+  const environmentRequestRef = useRef(new Map<string, number>());
+  const sessionEnvironmentIdRef = useRef(new Map<string, string | null>());
   const operationRequestRef = useRef(0);
   const streamEpochRef = useRef(0);
   selectedIdRef.current = selectedId;
@@ -266,6 +273,37 @@ export function App() {
     ) return false;
     if (result.status === "fulfilled") {
       if (sessionRevision === sessionCollectionRevisionRef.current) {
+        const nextEnvironmentIds = new Map(
+          result.value.data.map((session) => [session.id, selfHostedEnvironmentId(session.environment)]),
+        );
+        const changedEnvironmentSessions = new Set<string>();
+        for (const [sessionId, environmentId] of nextEnvironmentIds) {
+          if (!environmentIdsMatch(sessionEnvironmentIdRef.current.get(sessionId), environmentId)) {
+            changedEnvironmentSessions.add(sessionId);
+          }
+        }
+        for (const sessionId of sessionEnvironmentIdRef.current.keys()) {
+          if (!nextEnvironmentIds.has(sessionId)) changedEnvironmentSessions.add(sessionId);
+        }
+        for (const sessionId of changedEnvironmentSessions) {
+          environmentRequestRef.current.set(
+            sessionId,
+            (environmentRequestRef.current.get(sessionId) ?? 0) + 1,
+          );
+          environmentEventRevisionRef.current.set(
+            sessionId,
+            (environmentEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+          );
+        }
+        sessionEnvironmentIdRef.current = nextEnvironmentIds;
+        if (changedEnvironmentSessions.size) {
+          setEnvironmentObservations((current) => {
+            if (![...changedEnvironmentSessions].some((sessionId) => current.has(sessionId))) return current;
+            const next = new Map(current);
+            for (const sessionId of changedEnvironmentSessions) next.delete(sessionId);
+            return next;
+          });
+        }
         setSessions(result.value.data);
         setSelectedId((current) => {
           if (current && result.value.data.some((session) => session.id === current)) return current;
@@ -299,24 +337,17 @@ export function App() {
           coreGeneration !== connectionGenerationRef.current ||
           request !== sessionRequestRef.current.get(sessionId)
         ) return false;
-        if (sessionRevision === (sessionEventRevisionRef.current.get(sessionId) ?? 0)) {
+        const currentSessionRevision = sessionEventRevisionRef.current.get(sessionId) ?? 0;
+        const sessionIsCurrent = sessionRevision === currentSessionRevision;
+        const environmentId = selfHostedEnvironmentId(session.environment);
+        if (sessionIsCurrent) {
+          sessionEnvironmentIdRef.current.set(sessionId, environmentId);
           sessionCollectionRevisionRef.current += 1;
           setSessions((current) => {
             const found = current.some((value) => value.id === session.id);
             return found
               ? current.map((value) => (value.id === session.id ? session : value))
               : [session, ...current];
-          });
-        }
-        if (environmentRevision === (environmentEventRevisionRef.current.get(sessionId) ?? 0)) {
-          setEnvironmentObservations((current) => {
-            const existing = current.get(sessionId);
-            const reconciled = reconcileEnvironmentObservation(existing?.observation ?? null, session);
-            if (reconciled === existing?.observation) return current;
-            const next = new Map(current);
-            if (reconciled && existing) next.set(sessionId, { ...existing, observation: reconciled });
-            else next.delete(sessionId);
-            return next;
           });
         }
         if (selectedIdRef.current === sessionId) {
@@ -336,6 +367,59 @@ export function App() {
         if (selectedIdRef.current === sessionId) {
           setSelectedSessionLoad({ sessionId, state: "ready", error: null });
         }
+
+        if (!sessionIsCurrent) return true;
+        if (!environmentId) {
+          if (environmentRevision === (environmentEventRevisionRef.current.get(sessionId) ?? 0)) {
+            setEnvironmentObservations((current) => {
+              if (!current.has(sessionId)) return current;
+              const next = new Map(current);
+              next.delete(sessionId);
+              return next;
+            });
+          }
+          return true;
+        }
+        if (signal?.aborted || selectedIdRef.current !== sessionId) return false;
+
+        const environmentStreamEpoch = streamEpochRef.current;
+        const environmentRequest = (environmentRequestRef.current.get(sessionId) ?? 0) + 1;
+        environmentRequestRef.current.set(sessionId, environmentRequest);
+        const environmentRead = {
+          coreGeneration,
+          sessionId,
+          environmentId,
+          sessionRequest: request,
+          environmentRequest,
+          streamEpoch: environmentStreamEpoch,
+          sessionRevision,
+          environmentRevision,
+        };
+        let observation: EnvironmentObservation;
+        try {
+          const resource = await core.retrieveEnvironment(environmentId, { signal });
+          observation = environmentObservationFromResource(resource, environmentId)
+            ?? unavailableEnvironmentObservation(environmentId);
+        } catch (error) {
+          if (isAbort(error)) return false;
+          observation = unavailableEnvironmentObservation(environmentId);
+        }
+        if (signal?.aborted || !environmentReadIsCurrent(environmentRead, {
+          coreGeneration: connectionGenerationRef.current,
+          sessionId,
+          environmentId: sessionEnvironmentIdRef.current.get(sessionId) ?? "",
+          sessionRequest: sessionRequestRef.current.get(sessionId) ?? 0,
+          environmentRequest: environmentRequestRef.current.get(sessionId) ?? 0,
+          streamEpoch: streamEpochRef.current,
+          sessionRevision: sessionEventRevisionRef.current.get(sessionId) ?? 0,
+          environmentRevision: environmentEventRevisionRef.current.get(sessionId) ?? 0,
+          selectedSessionId: selectedIdRef.current,
+        })) return false;
+        setEnvironmentObservations((current) => {
+          const next = new Map(current);
+          next.set(sessionId, { observation, sessionId, streamEpoch: environmentStreamEpoch });
+          return next;
+        });
         return true;
       } catch (error) {
         if (
@@ -394,6 +478,10 @@ export function App() {
       selectedId,
       (environmentEventRevisionRef.current.get(selectedId) ?? 0) + 1,
     );
+    environmentRequestRef.current.set(
+      selectedId,
+      (environmentRequestRef.current.get(selectedId) ?? 0) + 1,
+    );
     setEnvironmentObservations((current) => {
       if (!current.has(selectedId)) return current;
       const next = new Map(current);
@@ -436,6 +524,28 @@ export function App() {
       if (!isCurrentStream()) return;
       if (typeof event.session_id === "string" && event.session_id && event.session_id !== sessionId) return;
       const eventType = typeof event.type === "string" ? event.type : "";
+      const eventSession = matchingSessionSnapshot(event, sessionId);
+      if (eventSession) {
+        const nextEnvironmentId = selfHostedEnvironmentId(eventSession.environment);
+        const previousEnvironmentId = sessionEnvironmentIdRef.current.get(sessionId);
+        if (!environmentIdsMatch(previousEnvironmentId, nextEnvironmentId)) {
+          sessionEnvironmentIdRef.current.set(sessionId, nextEnvironmentId);
+          environmentRequestRef.current.set(
+            sessionId,
+            (environmentRequestRef.current.get(sessionId) ?? 0) + 1,
+          );
+          environmentEventRevisionRef.current.set(
+            sessionId,
+            (environmentEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+          );
+          setEnvironmentObservations((current) => {
+            if (!current.has(sessionId)) return current;
+            const next = new Map(current);
+            next.delete(sessionId);
+            return next;
+          });
+        }
+      }
       const isEnvironmentEvent = eventType.startsWith("agent.session.environment.");
       if (isEnvironmentEvent) {
         environmentEventRevisionRef.current.set(
@@ -446,19 +556,24 @@ export function App() {
           const next = new Map(current);
           const existing = current.get(sessionId);
           const previous = existing?.streamEpoch === streamEpoch ? existing.observation : null;
-          const reduced = reduceEnvironmentObservation(previous, event, sessionId);
+          const reduced = reduceEnvironmentObservation(
+            previous,
+            event,
+            sessionId,
+            sessionEnvironmentIdRef.current.get(sessionId) ?? null,
+          );
           if (reduced) next.set(sessionId, { observation: reduced, sessionId, streamEpoch });
           else next.delete(sessionId);
           return next;
         });
       }
-      if (event.session) {
+      if (eventSession) {
         sessionEventRevisionRef.current.set(
           sessionId,
           (sessionEventRevisionRef.current.get(sessionId) ?? 0) + 1,
         );
         sessionCollectionRevisionRef.current += 1;
-        setSessions((current) => current.map((session) => (session.id === event.session?.id ? event.session : session)));
+        setSessions((current) => current.map((session) => (session.id === eventSession.id ? eventSession : session)));
       }
       if (event.item || eventType.includes(".output_text.")) {
         itemEventRevisionRef.current.set(
@@ -513,6 +628,10 @@ export function App() {
               environmentEventRevisionRef.current.set(
                 sessionId,
                 (environmentEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+              );
+              environmentRequestRef.current.set(
+                sessionId,
+                (environmentRequestRef.current.get(sessionId) ?? 0) + 1,
               );
               setEnvironmentObservations((current) => {
                 if (!current.has(sessionId)) return current;
@@ -706,6 +825,8 @@ export function App() {
     sessionEventRevisionRef.current.clear();
     itemEventRevisionRef.current.clear();
     environmentEventRevisionRef.current.clear();
+    environmentRequestRef.current.clear();
+    sessionEnvironmentIdRef.current.clear();
     operationRequestRef.current += 1;
     streamEpochRef.current += 1;
     saveConnection(normalized);

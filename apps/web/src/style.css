@@ -1526,6 +1526,13 @@ html[data-theme="dark"] .brand-mark-dark {
   color: var(--warning);
 }
 
+.environment-panel-status-expired,
+.environment-panel-status-disconnected,
+.environment-panel-status-unavailable,
+.environment-panel-status-unknown {
+  color: var(--fg-muted);
+}
+
 .environment-panel-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
@@ -1622,6 +1629,15 @@ html[data-theme="dark"] .brand-mark-dark {
   font-size: 12px;
   line-height: 17px;
   overflow-wrap: anywhere;
+}
+
+.environment-panel-expired {
+  background: color-mix(in srgb, var(--warning) 7%, transparent);
+  border-left-color: var(--warning);
+}
+
+.environment-panel-expired strong {
+  color: var(--warning);
 }
 
 .environment-panel-footer {
