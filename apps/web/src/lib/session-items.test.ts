@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import type { SessionItem } from "@agents-core-web/agents-client";
 
-import { mergeDurableAndLiveItems, updateLiveSessionItems } from "./session-items";
+import {
+  mergeDurableAndLiveItems,
+  reconcileSessionItem,
+  updateLiveSessionItems,
+  upsertSessionItem,
+} from "./session-items";
 
 function message(id: string, text: string, status: SessionItem["status"] = "completed"): SessionItem {
   return {
@@ -41,5 +46,37 @@ describe("Session Item reconciliation", () => {
       [durableFirst, durableSecond],
       [liveSecond, liveOnly],
     )).toEqual([durableFirst, liveSecond, liveOnly]);
+  });
+
+  it.each(["completed", "failed", "incomplete"] as const)(
+    "does not regress a durable %s Item to stale live in_progress",
+    (status) => {
+      const durable = message("item-1", `durable ${status}`, status);
+      const staleLive = message("item-1", "stale live", "in_progress");
+
+      expect(mergeDurableAndLiveItems([durable], [staleLive])).toEqual([durable]);
+      expect(upsertSessionItem([durable], staleLive)).toEqual([durable]);
+    },
+  );
+
+  it("allows a terminal live Item to replace an in-progress durable Item", () => {
+    const durable = message("item-1", "durable pending", "in_progress");
+    const live = message("item-1", "live completed", "completed");
+
+    expect(reconcileSessionItem(durable, live)).toEqual(live);
+  });
+
+  it("is idempotent for duplicate same-ID terminal events", () => {
+    const terminal = message("item-1", "completed", "completed");
+
+    expect(upsertSessionItem(upsertSessionItem([], terminal), terminal)).toEqual([terminal]);
+  });
+
+  it("deduplicates out-of-order live values without regressing their terminal state", () => {
+    const terminal = message("item-1", "completed", "completed");
+    const stale = message("item-1", "stale", "in_progress");
+
+    expect(mergeDurableAndLiveItems([], [terminal, stale, terminal])).toEqual([terminal]);
+    expect(mergeDurableAndLiveItems([stale], [terminal, stale])).toEqual([terminal]);
   });
 });

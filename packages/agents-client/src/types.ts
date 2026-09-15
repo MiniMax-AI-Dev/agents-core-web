@@ -14,6 +14,10 @@ export interface PageOptions {
   order?: PageOrder;
 }
 
+export interface ReadOptions {
+  signal?: AbortSignal;
+}
+
 export type AgentTextFormat =
   | { type: "text" }
   | { type: "json_schema"; schema: Record<string, unknown> };
@@ -385,10 +389,10 @@ export interface AgentCore {
   deleteAgent(agentId: string): Promise<AgentDeleted>;
   listSessions(options?: PageOptions & { agentId?: string }): Promise<ListPage<AgentSession>>;
   createSession(input: CreateSessionInput, idempotencyKey?: string): Promise<AgentSession>;
-  retrieveSession(sessionId: string): Promise<AgentSession>;
+  retrieveSession(sessionId: string, options?: ReadOptions): Promise<AgentSession>;
   updateSession(sessionId: string, metadata: Record<string, string> | null): Promise<AgentSession>;
   deleteSession(sessionId: string): Promise<SessionDeleted>;
-  listItems(sessionId: string, options?: PageOptions): Promise<ListPage<SessionItem>>;
+  listItems(sessionId: string, options?: PageOptions & ReadOptions): Promise<ListPage<SessionItem>>;
   listTurns(sessionId: string, options?: PageOptions): Promise<ListPage<AgentTurn>>;
   retrieveTurn(sessionId: string, turnId: string): Promise<AgentTurn>;
   sendMessage(sessionId: string, text: string, idempotencyKey?: string): Promise<void>;

@@ -168,8 +168,8 @@ export class OpenAIAgentsClient implements AgentCore {
     });
   }
 
-  retrieveSession(sessionId: string): Promise<AgentSession> {
-    return this.request(`/agents/sessions/${encodeURIComponent(sessionId)}`);
+  retrieveSession(sessionId: string, options?: { signal?: AbortSignal }): Promise<AgentSession> {
+    return this.request(`/agents/sessions/${encodeURIComponent(sessionId)}`, { signal: options?.signal });
   }
 
   updateSession(sessionId: string, metadata: Record<string, string> | null): Promise<AgentSession> {
@@ -183,10 +183,12 @@ export class OpenAIAgentsClient implements AgentCore {
     return this.request(`/agents/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
   }
 
-  listItems(sessionId: string, options?: PageOptions): Promise<ListPage<SessionItem>> {
+  listItems(sessionId: string, options?: PageOptions & { signal?: AbortSignal }): Promise<ListPage<SessionItem>> {
     const params = new URLSearchParams();
     addPageOptions(params, options);
-    return this.request(withQuery(`/agents/sessions/${encodeURIComponent(sessionId)}/items`, params));
+    return this.request(withQuery(`/agents/sessions/${encodeURIComponent(sessionId)}/items`, params), {
+      signal: options?.signal,
+    });
   }
 
   listTurns(sessionId: string, options?: PageOptions): Promise<ListPage<AgentTurn>> {

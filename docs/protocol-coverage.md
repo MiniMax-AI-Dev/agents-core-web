@@ -32,7 +32,7 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 | Sessions create/list/retrieve | Yes | Yes | UI creates idle `environment:none` Sessions; client types also cover the pinned `self_hosted` request and safe response projection |
 | Sessions update/delete | Yes | Later | Metadata/delete UI deferred |
 | Session live events | Yes | Yes | Authenticated `fetch` stream, not `EventSource` |
-| Input message | Yes | Yes | Opens SSE before submission; each submission uses an idempotency key, but the UI does not persist it across a manual resend |
+| Input message | Yes | Yes | Opens SSE before submission; uncertain failures retain the in-memory payload/key for an explicit unchanged manual retry only |
 | Active Turn cancel | Yes | Yes | Submitted as a Session event, not a Turn-create endpoint |
 | Turn retrieve/list | Yes | No | Durable diagnostics UI deferred |
 | Item list/recovery | Yes | Yes | Authoritative recovery after stream loss |
@@ -89,19 +89,34 @@ scope. This type coverage does not advertise those capabilities.
 before submitting input. A reconnect, including one with `Last-Event-ID`, does not
 replay missed work.
 
-Recovery therefore follows this order:
+Every accepted replacement stream follows this order:
 
 1. reconnect the stream and buffer newly arriving events;
 2. retrieve the persisted Session and Items;
-3. merge buffered Items by stable Item ID under the current reconciliation policy;
+3. apply the durable snapshot, then merge buffered Items by stable Item ID;
 4. inspect durable state before resubmitting an uncertain write.
 
-Turn list/retrieve methods exist in the TypeScript client for diagnostics, but the
-current UI does not invoke them during recovery. The client never retries a write
-automatically. The current UI restores a failed draft but does not retain its original
-idempotency key, so manually pressing Send again can create a distinct write. Same-ID
-durable/live terminal precedence and pending-operation key persistence remain M1
-hardening work.
+For a same-ID Item, `completed`, `failed`, or `incomplete` beats `in_progress`
+regardless of whether the terminal value came from the durable read or the live
+buffer. Otherwise, the later live projection wins while durable ordering remains
+authoritative. Duplicate, out-of-order, unknown, and no-op events do not stop later
+events. A Session or Core switch aborts its fetch-based stream and durable reads;
+generation checks also isolate any late result that could not be cancelled.
+
+Terminal Session (`idle`, `requires_action`, `failed`), Turn (`completed`, `failed`,
+`cancelled`), and Environment (`ready`, `connected`, `disconnected`, `failed`)
+events schedule a coalesced durable Session/Items refresh. They do not restart the
+stream. Turn list/retrieve methods exist for diagnostics, but the current UI does not
+invoke them during recovery.
+
+The client never retries a write automatically. For an input message that fails with
+a network/response-loss error, HTTP 5xx, or transient 408/409/425/429, the Web keeps
+the original payload and idempotency key in memory. Only a later user-initiated Send
+of the byte-for-byte unchanged payload reuses that key. Editing the payload, changing
+Session/Core, a successful response, or a permanent 4xx starts a new operation with a
+new key. This state is intentionally not stored in browser persistence, and the UI
+cannot prove whether an uncertain request was accepted until durable Core state
+reconciles.
 
 HTTP acceptance, `/healthz`, an open SSE connection, and successful Agent creation
 do not prove that a daemon, native harness, model ID, or provider credential can
