@@ -14,6 +14,8 @@ export const CORE_DOCTOR_EXIT_CODES = Object.freeze({
   usageOrInternalError: 2,
 });
 
+export const PARSAR_PROTOCOL_BASELINE_REVISION = "0438880ab21aa16d05cb91a4c7f91cc0abc12358";
+
 const DEFAULT_TARGET = "http://127.0.0.1:8091";
 const DEFAULT_TOKEN_FILE = "~/.parsar/agents-api/web-token";
 const DEFAULT_PROFILE = "default";
@@ -40,6 +42,14 @@ The doctor performs only GET requests. It never creates an Agent, Session, Turn,
 or Item, and it never makes a model/provider call. The optional Parsar checkout is
 used only to run the upstream daemon status command. No credential value, response
 body, daemon output, or private filesystem path is printed.
+
+The authenticated read validates only the basic Agent resource envelope. Known
+tool variants receive basic field validation; additive JSON fields and unknown
+nonempty tool-type discriminants are accepted. A passing result does not prove
+that the Web supports those tools or complete Parsar protocol compatibility.
+
+Pinned Parsar Agents API contract:
+  ${PARSAR_PROTOCOL_BASELINE_REVISION}
 
 Exit codes:
   0  Core liveness and an authenticated basic Agents API read succeeded.
@@ -249,11 +259,17 @@ function createReport() {
       checks.push({ level, layer, message });
     },
     render(exitCode) {
-      const lines = ["Agents Core Doctor (read-only)", ""];
+      const lines = [
+        "Agents Core Doctor (read-only)",
+        `Parsar protocol baseline: ${PARSAR_PROTOCOL_BASELINE_REVISION}`,
+        "",
+      ];
       for (const check of checks) lines.push(`[${check.level}] ${check.layer}: ${check.message}`);
       lines.push("");
       if (exitCode === CORE_DOCTOR_EXIT_CODES.ok) {
-        lines.push("Result: Core API checks passed; execution readiness remains unknown.");
+        lines.push(
+          "Result: Core API checks passed for the basic Agent resource envelope; tool/Web compatibility, full protocol compatibility, and execution readiness remain unknown.",
+        );
       } else if (exitCode === CORE_DOCTOR_EXIT_CODES.diagnosticFailure) {
         lines.push("Result: actionable local configuration or Core check failures were found.");
       } else {
@@ -287,7 +303,11 @@ async function inspectPrivateFile(path, label, { platform, report, required = tr
     report.add("FAIL", label, "path is not a bounded regular file.");
     return { exitCode: CORE_DOCTOR_EXIT_CODES.diagnosticFailure, value: undefined };
   }
-  if (platform !== "win32" && (metadata.mode & 0o077) !== 0) {
+  if (platform === "win32") {
+    report.add("FAIL", label, "owner-only permissions cannot be verified on this platform; file was not read.");
+    return { exitCode: CORE_DOCTOR_EXIT_CODES.diagnosticFailure, value: undefined };
+  }
+  if ((metadata.mode & 0o077) !== 0) {
     report.add("FAIL", label, "file is group/world accessible; use owner-only permissions.");
     return { exitCode: CORE_DOCTOR_EXIT_CODES.diagnosticFailure, value: undefined };
   }
@@ -417,6 +437,159 @@ async function fetchOnce(fetchImpl, url, init, timeoutMs) {
   return fetchImpl(url, { ...init, signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
 }
 
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isNullableString(value) {
+  return value === null || typeof value === "string";
+}
+
+function isStringRecord(value) {
+  return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+
+function isCanonicalMultiAgent(value) {
+  if (
+    !isRecord(value) ||
+    !hasOwn(value, "enabled") ||
+    typeof value.enabled !== "boolean" ||
+    !hasOwn(value, "max_concurrent_subagents")
+  ) {
+    return false;
+  }
+  if (!value.enabled) return value.max_concurrent_subagents === null;
+  return (
+    Number.isSafeInteger(value.max_concurrent_subagents) &&
+    value.max_concurrent_subagents > 0 &&
+    value.max_concurrent_subagents <= 4_294_967_295
+  );
+}
+
+const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const REASONING_SUMMARIES = new Set(["concise", "detailed", "auto"]);
+const SERVICE_TIERS = new Set(["auto", "default", "flex", "priority", "fast"]);
+const TEXT_VERBOSITIES = new Set(["low", "medium", "high"]);
+
+function isOptionalNullableEnum(value, key, allowed) {
+  return !hasOwn(value, key) || value[key] === null || allowed.has(value[key]);
+}
+
+function isCanonicalReasoning(value) {
+  return (
+    isRecord(value) &&
+    isOptionalNullableEnum(value, "effort", REASONING_EFFORTS) &&
+    isOptionalNullableEnum(value, "summary", REASONING_SUMMARIES)
+  );
+}
+
+function isCanonicalTextFormat(value) {
+  if (!isRecord(value) || !hasOwn(value, "type")) return false;
+  if (value.type === "text") return !hasOwn(value, "schema");
+  return value.type === "json_schema" && hasOwn(value, "schema") && isRecord(value.schema);
+}
+
+function isCanonicalText(value) {
+  return (
+    isRecord(value) &&
+    hasOwn(value, "format") &&
+    isCanonicalTextFormat(value.format) &&
+    hasOwn(value, "verbosity") &&
+    TEXT_VERBOSITIES.has(value.verbosity)
+  );
+}
+
+function isBasicSavedAgentToolEnvelope(value) {
+  if (!isRecord(value) || !isNonEmptyString(value.type)) return false;
+  if (value.type === "tool_search") return true;
+  if (value.type === "programmatic_tool_calling") {
+    return hasOwn(value, "enabled") && typeof value.enabled === "boolean";
+  }
+  if (value.type === "function") {
+    return (
+      hasOwn(value, "name") &&
+      typeof value.name === "string" &&
+      hasOwn(value, "description") &&
+      typeof value.description === "string" &&
+      hasOwn(value, "parameters") &&
+      isRecord(value.parameters) &&
+      hasOwn(value, "defer_loading") &&
+      typeof value.defer_loading === "boolean"
+    );
+  }
+  return true;
+}
+
+function isCanonicalSavedAgent(value) {
+  const requiredFields = [
+    "id",
+    "object",
+    "model",
+    "name",
+    "instructions",
+    "metadata",
+    "multi_agent",
+    "reasoning",
+    "service_tier",
+    "text",
+    "tools",
+    "created_at",
+    "updated_at",
+  ];
+  return (
+    isRecord(value) &&
+    requiredFields.every((field) => hasOwn(value, field)) &&
+    isNonEmptyString(value.id) &&
+    value.object === "agent" &&
+    typeof value.model === "string" &&
+    isNullableString(value.name) &&
+    isNullableString(value.instructions) &&
+    isStringRecord(value.metadata) &&
+    isCanonicalMultiAgent(value.multi_agent) &&
+    isCanonicalReasoning(value.reasoning) &&
+    SERVICE_TIERS.has(value.service_tier) &&
+    isCanonicalText(value.text) &&
+    Array.isArray(value.tools) &&
+    value.tools.every(isBasicSavedAgentToolEnvelope) &&
+    Number.isSafeInteger(value.created_at) &&
+    value.created_at >= 0 &&
+    Number.isSafeInteger(value.updated_at) &&
+    value.updated_at >= 0
+  );
+}
+
+function isCanonicalSavedAgentList(value, limit) {
+  if (
+    !isRecord(value) ||
+    value.object !== "list" ||
+    !hasOwn(value, "data") ||
+    !Array.isArray(value.data) ||
+    value.data.length > limit ||
+    !value.data.every(isCanonicalSavedAgent) ||
+    !hasOwn(value, "has_more") ||
+    typeof value.has_more !== "boolean" ||
+    !hasOwn(value, "first_id") ||
+    !hasOwn(value, "last_id") ||
+    !(value.first_id === null || isNonEmptyString(value.first_id)) ||
+    !(value.last_id === null || isNonEmptyString(value.last_id))
+  ) {
+    return false;
+  }
+
+  if (value.data.length === 0) {
+    return value.has_more === false && value.first_id === null && value.last_id === null;
+  }
+  return value.first_id === value.data[0].id && value.last_id === value.data.at(-1).id;
+}
+
 export async function probeCore({ target, token, timeoutMs, fetchImpl, report }) {
   let exitCode = CORE_DOCTOR_EXIT_CODES.ok;
   let reachable = false;
@@ -424,7 +597,7 @@ export async function probeCore({ target, token, timeoutMs, fetchImpl, report })
   try {
     const response = await fetchOnce(fetchImpl, target.healthUrl, { method: "GET" }, timeoutMs);
     reachable = true;
-    if (response.ok) {
+    if (response.status === 200) {
       let health;
       try {
         health = await readJsonResponse(response);
@@ -470,20 +643,19 @@ export async function probeCore({ target, token, timeoutMs, fetchImpl, report })
       timeoutMs,
     );
 
-    if (response.ok) {
+    if (response.status === 200) {
       let payload;
       try {
         payload = await readJsonResponse(response);
       } catch {
         payload = undefined;
       }
-      if (
-        payload &&
-        typeof payload === "object" &&
-        Array.isArray(payload.data) &&
-        typeof payload.has_more === "boolean"
-      ) {
-        report.add("PASS", "Core API", "Core API authenticated; basic Agents read succeeded.");
+      if (isCanonicalSavedAgentList(payload, 1)) {
+        report.add(
+          "PASS",
+          "Core API",
+          "Core API authenticated; basic Agent resource envelope parsed.",
+        );
       } else {
         report.add("FAIL", "Core API", "authenticated response did not match the expected list contract.");
         exitCode = CORE_DOCTOR_EXIT_CODES.diagnosticFailure;

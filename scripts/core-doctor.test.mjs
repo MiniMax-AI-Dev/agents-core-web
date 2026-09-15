@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   CORE_DOCTOR_EXIT_CODES,
+  PARSAR_PROTOCOL_BASELINE_REVISION,
   parseDaemonStatus,
   runCoreDoctor,
 } from "./core-doctor.mjs";
@@ -70,11 +71,43 @@ async function successfulFetchRecorder({ apiStatus = 200, apiBody, healthStatus 
   return { fetchImpl, requests };
 }
 
+function canonicalAgent(overrides = {}) {
+  return {
+    id: "agent_fixture",
+    object: "agent",
+    model: "fixture/model",
+    name: "Fixture Agent",
+    instructions: null,
+    metadata: { fixture: "safe" },
+    multi_agent: { enabled: false, max_concurrent_subagents: null },
+    reasoning: {},
+    service_tier: "auto",
+    text: { format: { type: "text" }, verbosity: "medium" },
+    tools: [],
+    created_at: 1_789_438_200,
+    updated_at: 1_789_438_800,
+    ...overrides,
+  };
+}
+
+function canonicalAgentPage(agent = canonicalAgent(), overrides = {}) {
+  const cursor = agent && typeof agent === "object" ? agent.id : null;
+  return {
+    object: "list",
+    data: [agent],
+    first_id: cursor,
+    last_id: cursor,
+    has_more: false,
+    ...overrides,
+  };
+}
+
 async function runScenario({
   argv = [],
   env = {},
   cwd,
   homeDir,
+  platform = "darwin",
   fetchImpl,
   runCommand = async () => ({ code: 0, stdout: await fixture("daemon-status-absent.txt"), stderr: "" }),
 } = {}) {
@@ -85,7 +118,7 @@ async function runScenario({
     env,
     cwd,
     homeDir,
-    platform: "darwin",
+    platform,
     fetchImpl,
     runCommand,
     stdout: stdout.stream,
@@ -106,6 +139,9 @@ test("documents the read-only command and exit-code contract", async () => {
 
   assert.equal(result.result.exitCode, CORE_DOCTOR_EXIT_CODES.ok);
   assert.match(result.stdout, /performs only GET requests/);
+  assert.match(result.stdout, new RegExp(PARSAR_PROTOCOL_BASELINE_REVISION));
+  assert.match(result.stdout, /additive JSON fields and unknown\nnonempty tool-type discriminants are accepted/);
+  assert.match(result.stdout, /does not prove\s+that the Web supports those tools/);
   assert.match(result.stdout, /Exit codes:\n  0[\s\S]*\n  1[\s\S]*\n  2/);
   assert.equal(result.stderr, "");
 });
@@ -132,7 +168,9 @@ test("authenticates a basic GET without leaking the token or daemon output", asy
   });
 
   assert.equal(result.result.exitCode, CORE_DOCTOR_EXIT_CODES.ok);
-  assert.match(result.stdout, /Core API authenticated; basic Agents read succeeded/);
+  assert.match(result.stdout, new RegExp(PARSAR_PROTOCOL_BASELINE_REVISION));
+  assert.match(result.stdout, /Core API authenticated; basic Agent resource envelope parsed/);
+  assert.match(result.stdout, /tool\/Web compatibility, full protocol compatibility/);
   assert.match(result.stdout, /paired profile and pid file reported; process and connection remain unknown/);
   assert.doesNotMatch(result.stdout, /\[PASS\] Daemon/);
   assert.match(result.stdout, /executor, model, and provider readiness were not verified/);
@@ -232,7 +270,7 @@ test("allows an in-memory caller token when no local keys file is configured", a
 
   assert.equal(result.result.exitCode, CORE_DOCTOR_EXIT_CODES.ok);
   assert.match(result.stdout, /no local keys file is configured; digest comparison was skipped/);
-  assert.match(result.stdout, /Core API authenticated; basic Agents read succeeded/);
+  assert.match(result.stdout, /Core API authenticated; basic Agent resource envelope parsed/);
   assert.equal(requests.length, 2);
 });
 
@@ -289,6 +327,176 @@ test("distinguishes a 401 from liveness and discards the response body", async (
   assert.equal(result.result.exitCode, CORE_DOCTOR_EXIT_CODES.diagnosticFailure);
   assert.match(result.stdout, /authentication was rejected \(HTTP 401\)/);
   assert.doesNotMatch(result.stdout, /session-private-marker|invalid_api_key/);
+});
+
+test("accepts only HTTP 200 for health and authenticated Agents reads", async (t) => {
+  const state = await createLocalState(t);
+  for (const status of [202, 206]) {
+    await t.test(`health HTTP ${status}`, async () => {
+      const { fetchImpl, requests } = await successfulFetchRecorder({ healthStatus: status });
+      const result = await runScenario({
+        env: { AGENTS_API_PROXY_TARGET: fixtureTarget },
+        cwd: state.root,
+        homeDir: state.homeDir,
+        fetchImpl,
+      });
+
+      assert.equal(result.result.exitCode, CORE_DOCTOR_EXIT_CODES.diagnosticFailure);
+      assert.match(result.stdout, new RegExp(`Core health endpoint returned HTTP ${status}`));
+      assert.deepEqual(requests.map(({ method }) => method), ["GET", "GET"]);
+    });
+
+    await t.test(`Agents HTTP ${status}`, async () => {
+      const { fetchImpl, requests } = await successfulFetchRecorder({ apiStatus: status });
+      const result = await runScenario({
+        env: { AGENTS_API_PROXY_TARGET: fixtureTarget },
+        cwd: state.root,
+        homeDir: state.homeDir,
+        fetchImpl,
+      });
+
+      assert.equal(result.result.exitCode, CORE_DOCTOR_EXIT_CODES.diagnosticFailure);
+      assert.match(result.stdout, new RegExp(`basic Agents read failed \\(HTTP ${status}\\)`));
+      assert.deepEqual(requests.map(({ method }) => method), ["GET", "GET"]);
+    });
+  }
+});
+
+test("accepts a canonical non-empty page with additive and unknown tool variants", async (t) => {
+  const state = await createLocalState(t);
+  const { fetchImpl, requests } = await successfulFetchRecorder({
+    apiBody: JSON.stringify(canonicalAgentPage(canonicalAgent({
+      model: "",
+      multi_agent: { enabled: true, max_concurrent_subagents: 6, additive_nested: true },
+      reasoning: { effort: "max", summary: "detailed", additive_nested: true },
+      service_tier: "fast",
+      text: {
+        format: { type: "json_schema", schema: { type: "object" }, additive_nested: true },
+        verbosity: "high",
+        additive_nested: true,
+      },
+      tools: [
+        { type: "function", name: "", description: "", parameters: {}, defer_loading: false },
+        { type: "tool_search", additive_nested: true },
+        { type: "programmatic_tool_calling", enabled: true },
+        {
+          type: "mcp",
+          server_label: "records",
+          transport: { type: "http", server_url: "https://mcp.fixture.invalid/tools", headers: {} },
+          allowed_tools: null,
+          connection_origin: "service",
+          credential_id: null,
+          request_metadata: {},
+          required: false,
+        },
+        { type: "future_tool", additive_nested: true },
+      ],
+      additive_agent: true,
+    }), { additive_page: true })),
+  });
+  const result = await runScenario({
+    env: { AGENTS_API_PROXY_TARGET: fixtureTarget },
+    cwd: state.root,
+    homeDir: state.homeDir,
+    fetchImpl,
+  });
+
+  assert.equal(result.result.exitCode, CORE_DOCTOR_EXIT_CODES.ok);
+  assert.match(result.stdout, /Core API authenticated; basic Agent resource envelope parsed/);
+  assert.match(
+    result.stdout,
+    /tool\/Web compatibility, full protocol compatibility, and execution readiness remain unknown/,
+  );
+  assert.equal(requests.length, 2);
+});
+
+test("rejects malformed or non-canonical Agents list pages", async (t) => {
+  const state = await createLocalState(t);
+  const emptyPage = {
+    object: "list",
+    data: [],
+    first_id: null,
+    last_id: null,
+    has_more: false,
+  };
+  const missingModel = canonicalAgent();
+  delete missingModel.model;
+  const scenarios = [
+    ["wrong list object", { ...emptyPage, object: "agents" }],
+    ["missing list object", Object.fromEntries(Object.entries(emptyPage).filter(([key]) => key !== "object"))],
+    ["null Agent", canonicalAgentPage(null, { first_id: null, last_id: null })],
+    ["missing Agent field", canonicalAgentPage(missingModel)],
+    ["wrong Agent object", canonicalAgentPage(canonicalAgent({ object: "agent.snapshot" }))],
+    ["wrong Agent field type", canonicalAgentPage(canonicalAgent({ created_at: "1789438200" }))],
+    ["wrong nested Agent field type", canonicalAgentPage(canonicalAgent({
+      multi_agent: { enabled: "false", max_concurrent_subagents: null },
+    }))],
+    ["null tool", canonicalAgentPage(canonicalAgent({ tools: [null] }))],
+    ["missing tool discriminant", canonicalAgentPage(canonicalAgent({ tools: [{}] }))],
+    ["empty tool discriminant", canonicalAgentPage(canonicalAgent({ tools: [{ type: "" }] }))],
+    ["incomplete function tool", canonicalAgentPage(canonicalAgent({
+      tools: [{ type: "function", name: "lookup", description: "", parameters: {} }],
+    }))],
+    ["wrong function tool field type", canonicalAgentPage(canonicalAgent({
+      tools: [{ type: "function", name: 3, description: "", parameters: {}, defer_loading: false }],
+    }))],
+    ["incomplete programmatic tool", canonicalAgentPage(canonicalAgent({
+      tools: [{ type: "programmatic_tool_calling" }],
+    }))],
+    ["wrong programmatic tool field type", canonicalAgentPage(canonicalAgent({
+      tools: [{ type: "programmatic_tool_calling", enabled: "true" }],
+    }))],
+    ["inconsistent disabled multi-agent maximum", canonicalAgentPage(canonicalAgent({
+      multi_agent: { enabled: false, max_concurrent_subagents: 4 },
+    }))],
+    ["missing enabled multi-agent maximum", canonicalAgentPage(canonicalAgent({
+      multi_agent: { enabled: true, max_concurrent_subagents: null },
+    }))],
+    ["invalid cursor type", { ...emptyPage, first_id: 7 }],
+    ["empty page with cursor", { ...emptyPage, first_id: "agent_fixture", last_id: "agent_fixture" }],
+    ["empty page claiming more results", { ...emptyPage, has_more: true }],
+    ["non-empty page with mismatched cursor", canonicalAgentPage(canonicalAgent(), { last_id: "agent_other" })],
+    ["missing cursor", Object.fromEntries(Object.entries(emptyPage).filter(([key]) => key !== "last_id"))],
+    ["more than requested limit", canonicalAgentPage(canonicalAgent(), {
+      data: [canonicalAgent(), canonicalAgent({ id: "agent_second" })],
+      last_id: "agent_second",
+    })],
+  ];
+
+  for (const [name, payload] of scenarios) {
+    await t.test(name, async () => {
+      const { fetchImpl, requests } = await successfulFetchRecorder({ apiBody: JSON.stringify(payload) });
+      const result = await runScenario({
+        env: { AGENTS_API_PROXY_TARGET: fixtureTarget },
+        cwd: state.root,
+        homeDir: state.homeDir,
+        fetchImpl,
+      });
+
+      assert.equal(result.result.exitCode, CORE_DOCTOR_EXIT_CODES.diagnosticFailure);
+      assert.match(result.stdout, /authenticated response did not match the expected list contract/);
+      assert.equal(requests.length, 2);
+    });
+  }
+});
+
+test("does not read or authorize from a token file when private permissions cannot be proven", async (t) => {
+  const state = await createLocalState(t);
+  const { fetchImpl, requests } = await successfulFetchRecorder();
+  const result = await runScenario({
+    env: { AGENTS_API_PROXY_TARGET: fixtureTarget },
+    cwd: state.root,
+    homeDir: state.homeDir,
+    platform: "win32",
+    fetchImpl,
+  });
+
+  assert.equal(result.result.exitCode, CORE_DOCTOR_EXIT_CODES.diagnosticFailure);
+  assert.match(result.stdout, /owner-only permissions cannot be verified on this platform; file was not read/);
+  assert.doesNotMatch(result.stdout, /file is present with private permissions/);
+  assert.deepEqual(requests.map(({ url }) => url.pathname), ["/healthz"]);
+  assert.equal(requests[0].headers.has("authorization"), false);
+  assert.doesNotMatch(result.stdout, new RegExp(fixtureToken));
 });
 
 test("loads Vite-style proxy dotenv configuration without exposing unrelated values", async (t) => {
@@ -403,7 +611,9 @@ test("never includes credential, response, URL suffix, provider, or private-path
   const { fetchImpl } = await successfulFetchRecorder({
     apiBody: JSON.stringify({
       object: "list",
-      data: [{ id: "agent_fixture", name: "session-private-marker" }],
+      data: [canonicalAgent({ name: "session-private-marker" })],
+      first_id: "agent_fixture",
+      last_id: "agent_fixture",
       has_more: false,
     }),
   });
