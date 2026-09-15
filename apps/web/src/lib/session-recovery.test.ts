@@ -41,6 +41,21 @@ describe("Session durable recovery", () => {
     expect(apply).not.toHaveBeenCalled();
   });
 
+  it("drops a late buffered Environment observation after reconnect generation changes", () => {
+    const apply = vi.fn();
+    const recovery = createStreamRecoveryBuffer();
+    const firstConnection = recovery.begin();
+    recovery.accept({
+      ...event("agent.session.environment.connected", "environment_connected"),
+      environment: { id: "environment_1", type: "self_hosted", status: "connected", error: null },
+    } as SessionEvent, apply);
+    const replacementConnection = recovery.begin();
+
+    expect(recovery.finish(firstConnection, () => true, apply)).toBe(false);
+    expect(recovery.finish(replacementConnection, () => true, apply)).toBe(true);
+    expect(apply).not.toHaveBeenCalled();
+  });
+
   it("keeps unknown and no-op events from blocking later events", () => {
     const applied: string[] = [];
     const recovery = createStreamRecoveryBuffer();
@@ -57,6 +72,8 @@ describe("Session durable recovery", () => {
       ...event("agent.session.environment.failed", "3"),
       environment: { id: "env-1", type: "docker", status: "failed", error: null },
     } as SessionEvent)).toBe("environment:env-1");
+    expect(terminalDurableRefreshKey(event("agent.session.environment.pending", "pending"))).toBeNull();
+    expect(terminalDurableRefreshKey(event("agent.session.environment.expired", "future"))).toBeNull();
     expect(terminalDurableRefreshKey(event("agent.session.turn.in_progress", "4"))).toBeNull();
     expect(terminalDurableRefreshKey(event("unknown.future.event", "5"))).toBeNull();
   });

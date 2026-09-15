@@ -67,6 +67,7 @@ describe("Parsar 8cc2898c Environment protocol types", () => {
     const environment = fixture.environments.unknown as unknown as UnknownAgentEnvironment;
     const item = fixture.unknown_item as unknown as UnknownSessionItem;
     const event = fixture.unknown_event as unknown as UnknownSessionEvent;
+    const expired = fixture.unknown_expired_event as unknown as UnknownSessionEvent;
 
     expect(environment.type).toBe("future_remote");
     expect(environment.contract_marker).toBe("preserved");
@@ -74,5 +75,7 @@ describe("Parsar 8cc2898c Environment protocol types", () => {
     expect(item.contract_marker).toBe("preserved");
     expect(event.type).toBe("agent.session.environment.paused");
     expect(event.contract_marker).toBe("preserved");
+    expect(expired.type).toBe("agent.session.environment.expired");
+    expect(expired.contract_marker).toBe("unsupported_session_event_status");
   });
 });

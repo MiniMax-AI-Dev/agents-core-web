@@ -35,6 +35,13 @@ import {
   type SessionDetailState,
   type StreamState,
 } from "./features/sessions/SessionsView";
+import {
+  reduceEnvironmentObservation,
+  reconcileEnvironmentObservation,
+  type EnvironmentObservation,
+  type ScopedEnvironmentObservation,
+  visibleEnvironmentObservation,
+} from "./features/sessions/environment/environment-state";
 import { SystemView } from "./features/system/SystemView";
 import {
   createCore,
@@ -150,6 +157,9 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [items, setItems] = useState<SessionItem[]>([]);
   const [itemsSessionId, setItemsSessionId] = useState<string | null>(null);
+  const [environmentObservations, setEnvironmentObservations] = useState<Map<string, ScopedEnvironmentObservation>>(
+    () => new Map(),
+  );
   const [agentCollectionState, setAgentCollectionState] = useState<CoreConnectionState>("connecting");
   const [agentCollectionError, setAgentCollectionError] = useState<string | null>(null);
   const [sessionCollectionState, setSessionCollectionState] = useState<CoreConnectionState>("connecting");
@@ -179,6 +189,7 @@ export function App() {
   const sessionRequestRef = useRef(new Map<string, number>());
   const sessionEventRevisionRef = useRef(new Map<string, number>());
   const itemEventRevisionRef = useRef(new Map<string, number>());
+  const environmentEventRevisionRef = useRef(new Map<string, number>());
   const operationRequestRef = useRef(0);
   const streamEpochRef = useRef(0);
   selectedIdRef.current = selectedId;
@@ -206,6 +217,12 @@ export function App() {
     ? streamConnection.error
     : null;
   const sendError = selectedId ? sessionSendFailures.get(selectedId) ?? null : null;
+  const environmentObservation: EnvironmentObservation | null = visibleEnvironmentObservation(
+    selectedId ? environmentObservations.get(selectedId) : undefined,
+    selectedId,
+    streamConnection.sessionId,
+    streamEpochRef.current,
+  );
   const streamReady = streamState === "listening";
   const notify = useCallback((message: string, tone: "success" | "error") => {
     showToast(message, { tone, key: `${tone}:${message}` });
@@ -271,6 +288,7 @@ export function App() {
       const request = (sessionRequestRef.current.get(sessionId) ?? 0) + 1;
       const sessionRevision = sessionEventRevisionRef.current.get(sessionId) ?? 0;
       const itemRevision = itemEventRevisionRef.current.get(sessionId) ?? 0;
+      const environmentRevision = environmentEventRevisionRef.current.get(sessionId) ?? 0;
       sessionRequestRef.current.set(sessionId, request);
       try {
         const [session, sessionItems] = await Promise.all([
@@ -288,6 +306,17 @@ export function App() {
             return found
               ? current.map((value) => (value.id === session.id ? session : value))
               : [session, ...current];
+          });
+        }
+        if (environmentRevision === (environmentEventRevisionRef.current.get(sessionId) ?? 0)) {
+          setEnvironmentObservations((current) => {
+            const existing = current.get(sessionId);
+            const reconciled = reconcileEnvironmentObservation(existing?.observation ?? null, session);
+            if (reconciled === existing?.observation) return current;
+            const next = new Map(current);
+            if (reconciled && existing) next.set(sessionId, { ...existing, observation: reconciled });
+            else next.delete(sessionId);
+            return next;
           });
         }
         if (selectedIdRef.current === sessionId) {
@@ -340,6 +369,7 @@ export function App() {
     setAgents([]);
     setSessions([]);
     setItems([]);
+    setEnvironmentObservations(new Map());
     itemsSessionIdRef.current = null;
     setItemsSessionId(null);
     setSelectedId(null);
@@ -360,6 +390,16 @@ export function App() {
     itemsSessionIdRef.current = selectedId;
     setItemsSessionId(selectedId);
     setSelectedSessionLoad({ sessionId: selectedId, state: "loading", error: null });
+    environmentEventRevisionRef.current.set(
+      selectedId,
+      (environmentEventRevisionRef.current.get(selectedId) ?? 0) + 1,
+    );
+    setEnvironmentObservations((current) => {
+      if (!current.has(selectedId)) return current;
+      const next = new Map(current);
+      next.delete(selectedId);
+      return next;
+    });
     const controller = new AbortController();
     void refreshSession(selectedId, controller.signal);
     return () => controller.abort();
@@ -394,7 +434,24 @@ export function App() {
 
     const applyEvent = (event: SessionEvent) => {
       if (!isCurrentStream()) return;
+      if (typeof event.session_id === "string" && event.session_id && event.session_id !== sessionId) return;
       const eventType = typeof event.type === "string" ? event.type : "";
+      const isEnvironmentEvent = eventType.startsWith("agent.session.environment.");
+      if (isEnvironmentEvent) {
+        environmentEventRevisionRef.current.set(
+          sessionId,
+          (environmentEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+        );
+        setEnvironmentObservations((current) => {
+          const next = new Map(current);
+          const existing = current.get(sessionId);
+          const previous = existing?.streamEpoch === streamEpoch ? existing.observation : null;
+          const reduced = reduceEnvironmentObservation(previous, event, sessionId);
+          if (reduced) next.set(sessionId, { observation: reduced, sessionId, streamEpoch });
+          else next.delete(sessionId);
+          return next;
+        });
+      }
       if (event.session) {
         sessionEventRevisionRef.current.set(
           sessionId,
@@ -452,6 +509,17 @@ export function App() {
           await core.streamEvents(sessionId, {
             signal: controller.signal,
             onOpen: () => {
+              if (!isCurrentStream()) return;
+              environmentEventRevisionRef.current.set(
+                sessionId,
+                (environmentEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+              );
+              setEnvironmentObservations((current) => {
+                if (!current.has(sessionId)) return current;
+                const next = new Map(current);
+                next.delete(sessionId);
+                return next;
+              });
               openedAt = beginStreamReconciliation(
                 isCurrentStream,
                 () => setCurrentStreamState("listening"),
@@ -637,6 +705,7 @@ export function App() {
     sessionRequestRef.current.clear();
     sessionEventRevisionRef.current.clear();
     itemEventRevisionRef.current.clear();
+    environmentEventRevisionRef.current.clear();
     operationRequestRef.current += 1;
     streamEpochRef.current += 1;
     saveConnection(normalized);
@@ -649,6 +718,7 @@ export function App() {
     setSelectedSessionLoad({ sessionId: null, state: "idle", error: null });
     setStreamConnection({ sessionId: null, state: "idle", error: null });
     setSessionSendFailures(new Map());
+    setEnvironmentObservations(new Map());
     itemsSessionIdRef.current = null;
     setItemsSessionId(null);
     setConnection(normalized);
@@ -746,6 +816,7 @@ export function App() {
               coreState={sessionCollectionState}
               detailError={detailError}
               detailState={detailState}
+              environmentObservation={environmentObservation}
               sendError={sendError}
               streamError={streamError}
               streamState={streamState}

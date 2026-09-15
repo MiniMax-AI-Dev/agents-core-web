@@ -110,5 +110,17 @@
       "status": "paused",
       "error": null
     }
+  },
+  "unknown_expired_event": {
+    "type": "agent.session.environment.expired",
+    "event_id": "event_expired_unproven",
+    "session_id": "session_01",
+    "contract_marker": "unsupported_session_event_status",
+    "environment": {
+      "id": "environment_01",
+      "type": "self_hosted",
+      "status": "expired",
+      "error": null
+    }
   }
 }

@@ -41,7 +41,7 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 | Initial-input creation stream | Later | No | Idle-create flow avoids the early-event race |
 | Artifacts/files | Later | No | Required Core resources are not implemented |
 | Environment connection action | Yes | Render-only | `environment_connection` is distinct from a function call; Web shows an operator-owned, non-actionable state and sends no result |
-| Environment lifecycle events | Yes | No | Client models pending, ready, connected, disconnected, and failed snapshots; current UI does not project a Workspace lifecycle |
+| Environment lifecycle events | Yes | Read-only | UI projects pinned pending, ready, connected, disconnected, and failed live snapshots; unknown/malformed status events clear prior live claims and render as unavailable |
 | Environment resources | Blocked upstream | No | No public create/list/retrieve Environment resource is implemented at the pinned Core revision |
 | Vaults | Later | No | Credentials must never be stored in browser metadata |
 | Protocol Subagents / enabled multi-agent | Later | No | Distinct from storing multiple Agent configurations |
@@ -66,8 +66,30 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 - The pinned event contract defines Environment status snapshots for `pending`,
   `ready`, `connected`, `disconnected`, and `failed`, with a nullable structured
   error. At `8cc2898c`, retained public transport observations emit only
-  `connected` and `disconnected`; the broader vocabulary is typed for safe receipt,
-  not proof that every transition is currently emitted or rendered.
+  `connected` and `disconnected`; the broader vocabulary is typed and rendered for
+  safe receipt, not proof that every transition is currently emitted. `expired` is
+  present in internal Environment/input resource lifecycles but is not a proven
+  Session Environment event state. The Web therefore treats `expired` and future
+  status events as unknown/unavailable and clears any older live connection claim.
+- The durable `self_hosted` Session Environment projection has no connection-status
+  or error field. The UI renders its ID, sanitized HTTP(S) remote URL,
+  `workspace_directory`, and `capability_directories` as read-only data. It removes
+  URL userinfo, query, and fragment, renders even safe HTTP(S) executor URLs as
+  non-clickable text, never displays non-HTTP(S) or malformed values, and never
+  turns directory strings into `file://` or browser/executor access.
+  Missing fields fail closed as unavailable. A matching `environment_connection`
+  action is labeled as durable Core-required work, never as proof of pending or
+  available execution.
+- Environment failures render generic copy only; raw error code, type, and message
+  fields are hidden because they can contain arbitrary credentials, Vault IDs,
+  paths, or private URLs. Unknown and incomplete required actions block
+  the composer rather than selecting a guessed form. A valid
+  `environment_connection` notice remains separate from any simultaneous
+  `function_call` result form and has no result submission control.
+- Workspace means the execution directory within this Environment. It is not a
+  top-level workspaces API, file browser, editor, or artifact capability. The UI
+  links to the immutable pinned Core and caller-started launcher setup documentation;
+  it does not connect to daemon/executor transports or mutate Environments.
 - Known Item and Session-event discriminants remain typed. Unknown variants retain
   their raw fields for inspection, but consumers must treat them as unavailable
   rather than infer a known rendering or action.
@@ -105,6 +127,17 @@ Every accepted replacement stream follows this order:
 2. retrieve the persisted Session and Items;
 3. apply the durable snapshot, then merge buffered Items by stable Item ID;
 4. inspect durable state before resubmitting an uncertain write.
+
+At replacement-stream acceptance the Web clears the previous live Environment
+observation before the durable read. Supported Environment events arriving during
+that read are buffered and applied afterward. A late stream callback, stale durable
+read, changed Session/Core generation, mismatched Environment identity, or unknown
+Environment status cannot preserve or overwrite a current live claim. Because the
+durable Session projection at `8cc2898c` does not contain connection status, the UI
+labels retained supported SSE state as the last live observation and falls back to
+explicit unknown (or a durable connection-required action) after reconnect when no
+new supported event arrives; it never infers connected from health, stream state,
+Agent/model metadata, or absence of an action.
 
 For a same-ID Item, `completed`, `failed`, or `incomplete` beats `in_progress`
 regardless of whether the terminal value came from the durable read or the live

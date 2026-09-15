@@ -9,7 +9,6 @@ import {
   Plus,
   RefreshCw,
   Square,
-  TerminalSquare,
 } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
@@ -30,6 +29,11 @@ import { Skeleton } from "../../components/Skeleton";
 import { StatusIcon, type StatusKind } from "../../components/StatusIcon";
 import type { CoreConnectionState } from "../../lib/connection";
 import { useThreadScroll } from "../../lib/use-thread-scroll";
+import {
+  EnvironmentConnectionNotice,
+  EnvironmentPanel,
+} from "./environment/EnvironmentPanel";
+import type { EnvironmentObservation } from "./environment/environment-state";
 import { ThreadItems } from "./items/ItemRenderers";
 
 export type StreamState = "idle" | "connecting" | "listening" | "recovering" | "failed";
@@ -45,6 +49,7 @@ interface SessionsViewProps {
   coreState: CoreConnectionState;
   detailError: string | null;
   detailState: SessionDetailState;
+  environmentObservation?: EnvironmentObservation | null;
   sendError?: FailedPendingSend | null;
   streamError: string | null;
   streamState: StreamState;
@@ -142,15 +147,45 @@ function streamStatusKind(state: StreamState): StatusKind {
   return "queued";
 }
 
+function isEnvironmentConnectionAction(value: unknown): value is EnvironmentConnectionAction {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const action = value as Record<string, unknown>;
+  return action.type === "environment_connection" && typeof action.environment_id === "string" && Boolean(action.environment_id);
+}
+
+function isFunctionCallAction(value: unknown): value is FunctionCallAction {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const action = value as Record<string, unknown>;
+  return action.type === "function_call" &&
+    typeof action.call_id === "string" && Boolean(action.call_id) &&
+    typeof action.turn_id === "string" && Boolean(action.turn_id) &&
+    typeof action.name === "string" && Boolean(action.name) &&
+    Object.hasOwn(action, "arguments");
+}
+
+function UnsupportedActionNotice() {
+  return (
+    <section className="environment-connection-notice" aria-label="Unsupported required action">
+      <div className="environment-connection-notice-heading">
+        <StatusIcon status="interrupted" />
+        <strong>Required action unavailable</strong>
+      </div>
+      <p>Core returned an unknown or incomplete required action. This Web will not infer a form or continue the Session.</p>
+    </section>
+  );
+}
+
 function FunctionActionBar({
   actions,
   agentName,
+  autoFocus,
   busy,
   onCancel,
   onSubmit,
 }: {
   actions: FunctionCallAction[];
   agentName: string;
+  autoFocus: boolean;
   busy: boolean;
   onCancel: () => void;
   onSubmit: (input: FunctionResultInput) => Promise<void>;
@@ -161,8 +196,8 @@ function FunctionActionBar({
 
   useEffect(() => {
     setResult("");
-    inputRef.current?.focus({ preventScroll: true });
-  }, [current?.call_id]);
+    if (autoFocus) inputRef.current?.focus({ preventScroll: true });
+  }, [autoFocus, current?.call_id]);
 
   if (!current) return null;
 
@@ -217,21 +252,6 @@ function FunctionActionBar({
   );
 }
 
-function EnvironmentConnectionBar({ action }: { action: EnvironmentConnectionAction }) {
-  return (
-    <section className="approval-bar" aria-label="Environment connection required">
-      <div className="approval-heading">
-        <TerminalSquare size={14} strokeWidth={1.5} aria-hidden="true" />
-        <span>Environment connection required</span>
-      </div>
-      <p>
-        Environment <code>{action.environment_id}</code> must be connected by the Core operator.
-        This Web cannot complete or approve the connection.
-      </p>
-    </section>
-  );
-}
-
 export function SessionsView({
   agents,
   sessions,
@@ -242,6 +262,7 @@ export function SessionsView({
   coreState,
   detailError,
   detailState,
+  environmentObservation = null,
   sendError = null,
   streamError,
   streamState,
@@ -340,8 +361,13 @@ export function SessionsView({
     void onCancel().catch(() => undefined);
   };
 
-  const environmentConnection = selected?.required_actions.find(
-    (action): action is EnvironmentConnectionAction => action.type === "environment_connection",
+  const requiredActionsValue: unknown = selected?.required_actions;
+  const requiredActionsAreValid = Array.isArray(requiredActionsValue);
+  const requiredActions: unknown[] = requiredActionsAreValid ? requiredActionsValue : [];
+  const environmentConnections = requiredActions.filter(isEnvironmentConnectionAction);
+  const functionActions = requiredActions.filter(isFunctionCallAction);
+  const unsupportedActionCount = requiredActions.length - environmentConnections.length - functionActions.length + (
+    !requiredActionsAreValid || selected?.status === "requires_action" && !requiredActions.length ? 1 : 0
   );
 
   return (
@@ -437,6 +463,12 @@ export function SessionsView({
                   <code>{selected.id}</code>
                 </div>
 
+                <EnvironmentPanel
+                  environment={selected.environment}
+                  observation={environmentObservation}
+                  connectionActions={environmentConnections}
+                />
+
                 <div className="message-stack">
                   <ThreadItems items={items} agentName={selected.agent.name || "Agent"} />
                 </div>
@@ -520,21 +552,20 @@ export function SessionsView({
           </div>
 
           <footer className="composer-footer">
-            {selected.required_actions.length ? (
-              environmentConnection ? (
-                <EnvironmentConnectionBar action={environmentConnection} />
-              ) : (
+            {environmentConnections.map((action, index) => (
+              <EnvironmentConnectionNotice action={action} key={`${action.environment_id}:${index}`} />
+            ))}
+            {unsupportedActionCount ? <UnsupportedActionNotice /> : null}
+            {!unsupportedActionCount && functionActions.length ? (
                 <FunctionActionBar
-                  actions={selected.required_actions.filter(
-                    (action): action is FunctionCallAction => action.type === "function_call",
-                  )}
+                  actions={functionActions}
                   agentName={selected.agent.name || "Agent"}
+                  autoFocus={!environmentConnections.length && !unsupportedActionCount}
                   busy={busy || detailState !== "ready"}
                   onCancel={cancel}
                   onSubmit={onFunctionResult}
                 />
-              )
-            ) : (
+            ) : environmentConnections.length || unsupportedActionCount ? null : (
               <form className="composer" onSubmit={(event) => void send(event)}>
               <textarea
                 value={message}
