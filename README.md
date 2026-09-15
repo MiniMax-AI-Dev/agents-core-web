@@ -1,5 +1,7 @@
 # Agents Core Web
 
+**English** | [简体中文](README.zh-CN.md)
+
 [Agents Core Web](https://github.com/MiniMax-AI-Dev/agents-core-web) is an open-source
 web console and TypeScript client for the standalone
 [Parsar Agents API Core](https://github.com/MiniMax-AI-Dev/parsar/tree/main/services/agents-api).
