@@ -260,7 +260,7 @@ export class OpenAIAgentsClient implements AgentCore {
     const decoder = createSSEDecoder((message) => {
       if (message.data === "[DONE]") return;
       const event = JSON.parse(message.data) as SessionEvent;
-      if (!event.type && message.event) event.type = message.event;
+      if (!event.type && message.event) (event as { type?: string }).type = message.event;
       options.onEvent(event);
     });
     const text = new TextDecoder();

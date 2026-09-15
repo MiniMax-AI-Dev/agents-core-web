@@ -19,6 +19,7 @@ import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type R
 
 import type {
   AgentSession,
+  EnvironmentConnectionAction,
   FunctionCallAction,
   FunctionResultInput,
   SavedAgent,
@@ -467,6 +468,21 @@ function FunctionActionBar({
   );
 }
 
+function EnvironmentConnectionBar({ action }: { action: EnvironmentConnectionAction }) {
+  return (
+    <section className="approval-bar" aria-label="Environment connection required">
+      <div className="approval-heading">
+        <TerminalSquare size={14} strokeWidth={1.5} aria-hidden="true" />
+        <span>Environment connection required</span>
+      </div>
+      <p>
+        Environment <code>{action.environment_id}</code> must be connected by the Core operator.
+        This Web cannot complete or approve the connection.
+      </p>
+    </section>
+  );
+}
+
 export function SessionsView({
   agents,
   sessions,
@@ -574,6 +590,10 @@ export function SessionsView({
   const cancel = () => {
     void onCancel().catch(() => undefined);
   };
+
+  const environmentConnection = selected?.required_actions.find(
+    (action): action is EnvironmentConnectionAction => action.type === "environment_connection",
+  );
 
   return (
     <section className="page-section session-page">
@@ -748,13 +768,19 @@ export function SessionsView({
 
           <footer className="composer-footer">
             {selected.required_actions.length ? (
-              <FunctionActionBar
-                actions={selected.required_actions}
-                agentName={selected.agent.name || "Agent"}
-                busy={busy || detailState !== "ready"}
-                onCancel={cancel}
-                onSubmit={onFunctionResult}
-              />
+              environmentConnection ? (
+                <EnvironmentConnectionBar action={environmentConnection} />
+              ) : (
+                <FunctionActionBar
+                  actions={selected.required_actions.filter(
+                    (action): action is FunctionCallAction => action.type === "function_call",
+                  )}
+                  agentName={selected.agent.name || "Agent"}
+                  busy={busy || detailState !== "ready"}
+                  onCancel={cancel}
+                  onSubmit={onFunctionResult}
+                />
+              )
             ) : (
               <form className="composer" onSubmit={(event) => void send(event)}>
               <textarea
