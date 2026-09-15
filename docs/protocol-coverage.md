@@ -28,7 +28,7 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 | Resource / behavior | TypeScript client | Initial UI | Notes |
 | --- | --- | --- | --- |
 | Saved Agents create/list | Yes | Yes | Model, name, instructions; many saved Agents per project |
-| Saved Agents retrieve/update/delete | Yes | Later | Client methods exist; UI deferred |
+| Saved Agents retrieve/update/delete | Yes | Yes | Agent details support viewing, editing, and deleting saved Agents |
 | Sessions create/list/retrieve | Yes | Yes | UI creates idle `environment:none` Sessions; client types also cover the pinned `self_hosted` request and safe response projection |
 | Sessions update/delete | Yes | Later | Metadata/delete UI deferred |
 | Session live events | Yes | Yes | Authenticated `fetch` stream, not `EventSource` |
