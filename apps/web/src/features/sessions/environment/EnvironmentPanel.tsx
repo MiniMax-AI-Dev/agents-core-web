@@ -3,14 +3,16 @@ import { ExternalLink, Folder, HardDrive, Server, TerminalSquare } from "lucide-
 import type {
   AgentEnvironment,
   EnvironmentConnectionAction,
-  EnvironmentStatus,
+  EnvironmentResourceStatus,
+  SessionEnvironmentStatus,
 } from "@agents-core-web/agents-client";
 
 import { StatusIcon, type StatusKind } from "../../../components/StatusIcon";
 import type { EnvironmentObservation } from "./environment-state";
 
-const coreSetupUrl = "https://github.com/MiniMax-AI-Dev/parsar/blob/8cc2898ca42b272cb3771234ee6a0ad0d2e932ba/services/agents-api/README.md#native-executor-transport-prerequisite";
-const launcherSetupUrl = "https://github.com/MiniMax-AI-Dev/parsar/blob/8cc2898ca42b272cb3771234ee6a0ad0d2e932ba/packages/codex-executor/README.md#connect-an-executor";
+const parsarBaseline = "0438880ab21aa16d05cb91a4c7f91cc0abc12358";
+const coreSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/services/agents-api/README.md#native-executor-transport-prerequisite`;
+const launcherSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/packages/codex-executor/README.md#connect-an-executor`;
 
 export interface SafeRemoteUrl {
   href: string;
@@ -43,16 +45,19 @@ function directories(value: unknown): string[] | null {
     : null;
 }
 
-function statusKind(status: EnvironmentStatus | "required" | "unknown"): StatusKind {
+type EnvironmentDisplayStatus = SessionEnvironmentStatus | EnvironmentResourceStatus | "required" | "unknown" | "unavailable";
+
+function statusKind(status: EnvironmentDisplayStatus): StatusKind {
   if (status === "connected" || status === "ready") return "completed";
   if (status === "failed") return "failed";
   if (status === "pending" || status === "required") return "running";
   return "interrupted";
 }
 
-function statusLabel(status: EnvironmentStatus | "required" | "unknown"): string {
+function statusLabel(status: EnvironmentDisplayStatus): string {
   if (status === "required") return "Connection required";
   if (status === "unknown") return "Unknown";
+  if (status === "unavailable") return "Unavailable";
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
@@ -124,7 +129,9 @@ export function EnvironmentPanel({
   const remoteUrl = sanitizeRemoteUrl(raw.remote_url);
   const live = matchingObservation(observation, environmentId);
   const requiresConnection = Boolean(environmentId && connectionActions.some((action) => action.environment_id === environmentId));
-  const status: EnvironmentStatus | "required" | "unknown" = live?.status ?? (requiresConnection ? "required" : "unknown");
+  const status: EnvironmentDisplayStatus = live?.source === "unavailable"
+    ? "unavailable"
+    : live?.status ?? (requiresConnection ? "required" : "unknown");
 
   return (
     <section className="environment-panel" aria-label="Environment and Workspace status">
@@ -162,17 +169,30 @@ export function EnvironmentPanel({
       </div>
 
       <p className="environment-panel-provenance">
-        {live
-          ? "Connection is the last supported live event observed; durable Session reads confirm identity and Workspace details but do not expose connection status."
-          : requiresConnection
-            ? "Core durably requires an operator connection. No executor availability is inferred."
-            : "Connection status is unknown because the durable Session projection does not expose it."}
+        {live?.source === "live"
+          ? "Connection is the last supported live event observed after the durable Environment snapshot. It does not prove executor, runtime, model, or provider readiness."
+          : live?.source === "durable"
+            ? live.resource.files.length === 0 && live.resource.plugins.length === 0 && live.resource.skills.length === 0
+              ? "Status comes from the durable Environment resource. Core reports no API-managed files, plugins, or skills; this is not host or Workspace inventory and does not prove executor, runtime, model, or provider readiness."
+              : "Status comes from the durable Environment resource. API-managed installation metadata is present but is not rendered as host or Workspace inventory and does not prove executor, runtime, model, or provider readiness."
+            : live?.source === "unavailable"
+              ? "Durable Environment status is unavailable. The conversation remains usable, and no previous live readiness claim is retained."
+              : requiresConnection
+                ? "Core durably requires an operator connection. No executor availability is inferred."
+                : "Connection status is unknown because the durable Session projection does not expose it."}
       </p>
 
       {status === "failed" ? (
         <div className="environment-panel-error" role="alert">
           <strong>Environment failed</strong>
           <p>Core reported an Environment failure. Raw error fields are hidden because they may contain credentials, Vault IDs, paths, or private URLs.</p>
+        </div>
+      ) : null}
+
+      {status === "expired" ? (
+        <div className="environment-panel-error environment-panel-expired" role="status">
+          <strong>Environment expired</strong>
+          <p>The durable Environment resource expired. Reconnect or provision it through the Core operator; this Web does not retry or recreate it.</p>
         </div>
       ) : null}
 

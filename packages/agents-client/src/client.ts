@@ -2,6 +2,7 @@ import { createSSEDecoder } from "./sse";
 import type {
   AgentCore,
   AgentDeleted,
+  AgentEnvironmentResource,
   AgentSession,
   AgentTurn,
   CreateAgentInput,
@@ -9,12 +10,14 @@ import type {
   FunctionResultInput,
   ListPage,
   PageOptions,
+  ReadOptions,
   SavedAgent,
   SessionDeleted,
   SessionEvent,
   SessionItem,
   StreamOptions,
   UpdateAgentInput,
+  EnvironmentResourceStatus,
 } from "./types";
 
 export interface OpenAIAgentsClientOptions {
@@ -74,6 +77,42 @@ function addPageOptions(params: URLSearchParams, options?: PageOptions): void {
 function withQuery(path: string, params: URLSearchParams): string {
   const query = params.toString();
   return query ? `${path}?${query}` : path;
+}
+
+const environmentResourceFields = new Set(["id", "object", "type", "status", "files", "plugins", "skills"]);
+
+function isEnvironmentResourceStatus(value: unknown): value is EnvironmentResourceStatus {
+  return value === "pending" || value === "connected" || value === "disconnected" || value === "expired" || value === "failed";
+}
+
+function projectEnvironmentResource(value: unknown, expectedId: string): AgentEnvironmentResource {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new AgentCoreError("Agent Core returned an invalid Environment resource.", 502, "invalid_environment_resource");
+  }
+  const resource = value as Record<string, unknown>;
+  const fields = Object.keys(resource);
+  if (
+    fields.length !== environmentResourceFields.size ||
+    fields.some((field) => !environmentResourceFields.has(field)) ||
+    resource.id !== expectedId ||
+    resource.object !== "agent.environment" ||
+    resource.type !== "self_hosted" ||
+    !isEnvironmentResourceStatus(resource.status) ||
+    !Array.isArray(resource.files) ||
+    !Array.isArray(resource.plugins) ||
+    !Array.isArray(resource.skills)
+  ) {
+    throw new AgentCoreError("Agent Core returned an invalid Environment resource.", 502, "invalid_environment_resource");
+  }
+  return {
+    id: expectedId,
+    object: "agent.environment",
+    type: "self_hosted",
+    status: resource.status,
+    files: resource.files,
+    plugins: resource.plugins,
+    skills: resource.skills,
+  };
 }
 
 export class OpenAIAgentsClient implements AgentCore {
@@ -168,8 +207,16 @@ export class OpenAIAgentsClient implements AgentCore {
     });
   }
 
-  retrieveSession(sessionId: string, options?: { signal?: AbortSignal }): Promise<AgentSession> {
+  retrieveSession(sessionId: string, options?: ReadOptions): Promise<AgentSession> {
     return this.request(`/agents/sessions/${encodeURIComponent(sessionId)}`, { signal: options?.signal });
+  }
+
+  async retrieveEnvironment(environmentId: string, options?: ReadOptions): Promise<AgentEnvironmentResource> {
+    const value = await this.request<unknown>(
+      `/agents/environments/${encodeURIComponent(environmentId)}`,
+      { signal: options?.signal },
+    );
+    return projectEnvironmentResource(value, environmentId);
   }
 
   updateSession(sessionId: string, metadata: Record<string, string> | null): Promise<AgentSession> {

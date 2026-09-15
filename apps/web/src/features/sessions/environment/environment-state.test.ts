@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentSession, SessionEvent } from "@agents-core-web/agents-client";
+import type {
+  AgentEnvironmentResource,
+  AgentSession,
+  EnvironmentResourceStatus,
+  SessionEvent,
+} from "@agents-core-web/agents-client";
 
 import {
   environmentObservationFromEvent,
+  environmentObservationFromResource,
+  environmentReadIsCurrent,
+  matchingSessionSnapshot,
   reduceEnvironmentObservation,
   reconcileEnvironmentObservation,
+  unavailableEnvironmentObservation,
   visibleEnvironmentObservation,
 } from "./environment-state";
 
@@ -33,6 +42,7 @@ describe("Environment live state", () => {
     "admits pinned %s events",
     (status) => {
       expect(environmentObservationFromEvent(event(status))).toMatchObject({
+        source: "live",
         environmentId: "environment_1",
         environmentType: "self_hosted",
         status,
@@ -46,6 +56,7 @@ describe("Environment live state", () => {
     expect(environmentObservationFromEvent(event("paused"))).toBeNull();
     expect(environmentObservationFromEvent(event("connected", { status: "failed" }))).toBeNull();
     expect(environmentObservationFromEvent(event("connected", { id: "" }))).toBeNull();
+    expect(environmentObservationFromEvent(event("connected", { type: "future_remote" }))).toBeNull();
     expect(environmentObservationFromEvent({ ...event("connected"), event_id: "" } as SessionEvent)).toBeNull();
     expect(environmentObservationFromEvent({ ...event("connected"), session_id: undefined } as SessionEvent)).toBeNull();
     expect(environmentObservationFromEvent({
@@ -53,6 +64,29 @@ describe("Environment live state", () => {
       event_id: "missing",
     } as SessionEvent)).toBeNull();
   });
+
+  it.each(["pending", "connected", "disconnected", "expired", "failed"] as EnvironmentResourceStatus[])(
+    "projects durable %s independently from live event status",
+    (status) => {
+      const resource: AgentEnvironmentResource = {
+        id: "environment_1",
+        object: "agent.environment",
+        type: "self_hosted",
+        status,
+        files: [],
+        plugins: [],
+        skills: [],
+      };
+      expect(environmentObservationFromResource(resource, "environment_1")).toEqual({
+        source: "durable",
+        environmentId: "environment_1",
+        environmentType: "self_hosted",
+        status,
+        resource,
+      });
+      expect(environmentObservationFromResource(resource, "another_environment")).toBeNull();
+    },
+  );
 
   it("clears a prior connected claim on expired, future, or malformed Environment events", () => {
     const connected = environmentObservationFromEvent(event("connected"));
@@ -74,10 +108,62 @@ describe("Environment live state", () => {
       { ...event("failed"), session_id: "another_session" } as SessionEvent,
       "session_1",
     )).toBe(connected);
+    expect(reduceEnvironmentObservation(
+      connected,
+      event("failed", { id: "another_environment" }),
+      "session_1",
+      "environment_1",
+    )).toBeNull();
+    expect(reduceEnvironmentObservation(connected, event("failed"), "session_1", null)).toBeNull();
     expect(reduceEnvironmentObservation(connected, {
       type: "agent.session.turn.completed",
       event_id: "turn_done",
     } as SessionEvent)).toBe(connected);
+  });
+
+  it("admits only a matching embedded Session snapshot for the current stream scope", () => {
+    const current = session({ type: "none" });
+    expect(matchingSessionSnapshot({ ...event("connected"), session: current }, "session_1")).toBe(current);
+    expect(matchingSessionSnapshot({ ...event("connected"), session: { ...current, id: "session_2" } }, "session_1")).toBeNull();
+    expect(matchingSessionSnapshot({ ...event("connected"), session: { status: "idle" } } as unknown as SessionEvent, "session_1")).toBeNull();
+    expect(matchingSessionSnapshot({ ...event("connected"), session: null } as unknown as SessionEvent, "session_1")).toBeNull();
+  });
+
+  it("models an unavailable durable read without retaining a readiness claim", () => {
+    expect(unavailableEnvironmentObservation("environment_1")).toEqual({
+      source: "unavailable",
+      environmentId: "environment_1",
+      environmentType: "self_hosted",
+      status: null,
+    });
+  });
+
+  it("fences late durable reads by Core, Session, Environment, request, epoch, and event revisions", () => {
+    const read = {
+      coreGeneration: 1,
+      sessionId: "session_1",
+      environmentId: "environment_1",
+      sessionRequest: 2,
+      environmentRequest: 3,
+      streamEpoch: 4,
+      sessionRevision: 5,
+      environmentRevision: 6,
+    };
+    const current = { ...read, selectedSessionId: "session_1" };
+    expect(environmentReadIsCurrent(read, current)).toBe(true);
+    for (const stale of [
+      { ...current, coreGeneration: 2 },
+      { ...current, selectedSessionId: "session_2" },
+      { ...current, environmentId: "environment_2" },
+      { ...current, sessionRequest: 3 },
+      { ...current, environmentRequest: 4 },
+      { ...current, streamEpoch: 5 },
+      { ...current, sessionRevision: 6 },
+      { ...current, environmentRevision: 7 },
+    ]) expect(environmentReadIsCurrent(read, stale)).toBe(false);
+
+    // An A -> B -> A selection cannot revive the first A request.
+    expect(environmentReadIsCurrent(read, { ...current, streamEpoch: 8 })).toBe(false);
   });
 
   it("retains structured errors without treating malformed fields as trusted", () => {

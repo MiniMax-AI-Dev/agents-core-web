@@ -1,0 +1,17 @@
+{
+  "resources": [
+    { "id": "environment_pending", "object": "agent.environment", "type": "self_hosted", "status": "pending", "files": [], "plugins": [], "skills": [] },
+    { "id": "environment_connected", "object": "agent.environment", "type": "self_hosted", "status": "connected", "files": [], "plugins": [], "skills": [] },
+    { "id": "environment_disconnected", "object": "agent.environment", "type": "self_hosted", "status": "disconnected", "files": [], "plugins": [], "skills": [] },
+    { "id": "environment_expired", "object": "agent.environment", "type": "self_hosted", "status": "expired", "files": [], "plugins": [], "skills": [] },
+    { "id": "environment_failed", "object": "agent.environment", "type": "self_hosted", "status": "failed", "files": [], "plugins": [], "skills": [] }
+  ],
+  "unsupported": {
+    "ready": { "id": "environment_ready", "object": "agent.environment", "type": "self_hosted", "status": "ready", "files": [], "plugins": [], "skills": [] },
+    "unknown_type": { "id": "environment_hosted", "object": "agent.environment", "type": "openai_hosted", "status": "pending", "files": [], "plugins": [], "skills": [] }
+  },
+  "malformed": {
+    "missing_skills": { "id": "environment_missing", "object": "agent.environment", "type": "self_hosted", "status": "pending", "files": [], "plugins": [] },
+    "null_files": { "id": "environment_null", "object": "agent.environment", "type": "self_hosted", "status": "pending", "files": null, "plugins": [], "skills": [] }
+  }
+}

@@ -77,8 +77,13 @@ function initialState() {
       sendResponseLoss: 0,
       itemsScenario: 0,
       environmentScenario: 0,
+      environmentRetrieveDelayMs: 0,
+      environmentRetrieveStatus: 200,
+      environmentResourceStatus: "pending",
+      environmentResourceVariant: "valid",
       environmentEventStatus: 0,
       environmentEventCount: 0,
+      streamStatus: 200,
       streamCloseCount: 0,
       streamCloseDelayMs: 30,
     },
@@ -285,6 +290,29 @@ const server = http.createServer(async (request, response) => {
       return session ? sendJson(response, session) : sendError(response, 404, "Fixture Session not found.");
     }
 
+    const environmentMatch = url.pathname.match(/^\/v1\/agents\/environments\/([^/]+)$/);
+    if (request.method === "GET" && environmentMatch) {
+      if (state.controls.environmentRetrieveDelayMs) await wait(state.controls.environmentRetrieveDelayMs);
+      if (state.controls.environmentRetrieveStatus !== 200) {
+        return sendError(response, state.controls.environmentRetrieveStatus, "Fixture Environment retrieve failed.");
+      }
+      const id = decodeURIComponent(environmentMatch[1]);
+      if (id !== "environment_fixture") return sendError(response, 404, "Fixture Environment not found.");
+      const resource = {
+        id,
+        object: "agent.environment",
+        type: "self_hosted",
+        status: state.controls.environmentResourceStatus,
+        files: [],
+        plugins: [],
+        skills: [],
+      };
+      if (state.controls.environmentResourceVariant === "missing_skills") delete resource.skills;
+      if (state.controls.environmentResourceVariant === "wrong_id") resource.id = "another_environment";
+      if (state.controls.environmentResourceVariant === "extra_field") resource.extra = true;
+      return sendJson(response, resource);
+    }
+
     const itemsMatch = url.pathname.match(/^\/v1\/agents\/sessions\/([^/]+)\/items$/);
     if (request.method === "GET" && itemsMatch) return sendJson(response, page(state.controls.itemsScenario ? patchItems() : []));
 
@@ -304,6 +332,9 @@ const server = http.createServer(async (request, response) => {
       return;
     }
     if (request.method === "GET" && eventsMatch) {
+      if (state.controls.streamStatus !== 200) {
+        return sendError(response, state.controls.streamStatus, "Fixture stream rejected.");
+      }
       response.writeHead(200, {
         "content-type": "text/event-stream; charset=utf-8",
         "cache-control": "no-cache, no-transform",

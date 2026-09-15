@@ -1,10 +1,15 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { AgentEnvironment, EnvironmentStatus } from "@agents-core-web/agents-client";
+import type {
+  AgentEnvironment,
+  AgentEnvironmentResource,
+  EnvironmentResourceStatus,
+  SessionEnvironmentStatus,
+} from "@agents-core-web/agents-client";
 
 import { EnvironmentPanel, sanitizeRemoteUrl } from "./EnvironmentPanel";
-import type { EnvironmentObservation } from "./environment-state";
+import type { EnvironmentObservation, LiveEnvironmentObservation } from "./environment-state";
 
 const selfHosted: AgentEnvironment = {
   type: "self_hosted",
@@ -14,8 +19,9 @@ const selfHosted: AgentEnvironment = {
   capability_directories: ["/capabilities/one", `/capabilities/${"long/".repeat(80)}`],
 };
 
-function observation(status: EnvironmentStatus): EnvironmentObservation {
+function observation(status: SessionEnvironmentStatus): LiveEnvironmentObservation {
   return {
+    source: "live",
     environmentId: "environment_01",
     environmentType: "self_hosted",
     status,
@@ -25,6 +31,25 @@ function observation(status: EnvironmentStatus): EnvironmentObservation {
       message: `Failed at https://user:pass@executor.example/private?token=secret#credential <script>alert(1)</script> Authorization: Bearer auth-secret X-API-Key: header-secret {"api_key":"sk-secret"} executor_key: executor-secret caller_key: caller-secret vault_id: vault-secret ${"x".repeat(400)}`,
     } : null,
     eventId: `event_${status}`,
+  };
+}
+
+function durableObservation(status: EnvironmentResourceStatus): EnvironmentObservation {
+  const resource: AgentEnvironmentResource = {
+    id: "environment_01",
+    object: "agent.environment",
+    type: "self_hosted",
+    status,
+    files: [],
+    plugins: [],
+    skills: [],
+  };
+  return {
+    source: "durable",
+    environmentId: "environment_01",
+    environmentType: "self_hosted",
+    status,
+    resource,
   };
 }
 
@@ -64,15 +89,45 @@ describe("EnvironmentPanel", () => {
     expect(html).not.toContain("file://");
   });
 
-  it.each(["pending", "ready", "connected", "disconnected", "failed"] as EnvironmentStatus[])(
+  it.each(["pending", "ready", "connected", "disconnected", "failed"] as SessionEnvironmentStatus[])(
     "renders the pinned %s live observation without executor inference",
     (status) => {
       const html = render(selfHosted, observation(status));
       expect(html).toContain(status.charAt(0).toUpperCase() + status.slice(1));
       expect(html).toContain("last supported live event observed");
-      expect(html).toContain("do not expose connection status");
+      expect(html).toContain("does not prove executor");
     },
   );
+
+  it.each(["pending", "connected", "disconnected", "expired", "failed"] as EnvironmentResourceStatus[])(
+    "renders durable %s after reload without treating inventory as host capability",
+    (status) => {
+      const html = render(selfHosted, durableObservation(status));
+      expect(html).toContain(status.charAt(0).toUpperCase() + status.slice(1));
+      expect(html).toContain("Status comes from the durable Environment resource");
+      expect(html).toContain("no API-managed files, plugins, or skills");
+      expect(html).toContain("not host or Workspace inventory");
+      expect(html).toContain("does not prove executor");
+      if (status === "expired") {
+        expect(html).toContain("Environment expired");
+        expect(html).toContain("does not retry or recreate it");
+      }
+    },
+  );
+
+  it("renders a failed durable read as unavailable while leaving Workspace context visible", () => {
+    const html = render(selfHosted, {
+      source: "unavailable",
+      environmentId: "environment_01",
+      environmentType: "self_hosted",
+      status: null,
+    });
+    expect(html).toContain("Unavailable");
+    expect(html).toContain("conversation remains usable");
+    expect(html).toContain("/workspace/&lt;script&gt;alert(1)&lt;/script&gt;/project");
+    expect(html).not.toContain("Connected");
+    expect(html).not.toContain("Ready");
+  });
 
   it("shows directories only as escaped text and redacts unsafe error content", () => {
     const html = render(selfHosted, observation("failed"));

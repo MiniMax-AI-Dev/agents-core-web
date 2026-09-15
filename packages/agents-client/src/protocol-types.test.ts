@@ -1,17 +1,20 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import fixture from "./fixtures/parsar-8cc2898c/environment-protocol.json";
+import environmentResources from "./fixtures/parsar-0438880a/environment-resources.json";
 import type {
+  AgentEnvironmentResource,
   AgentEnvironment,
   AgentSessionEnvironmentEvent,
   EnvironmentConnectionAction,
-  EnvironmentStatus,
+  EnvironmentResourceStatus,
   FunctionCallAction,
   RequiredAction,
   SelfHostedAgentEnvironment,
   UnknownAgentEnvironment,
   UnknownSessionEvent,
   UnknownSessionItem,
+  SessionEnvironmentStatus,
 } from "./types";
 
 describe("Parsar 8cc2898c Environment protocol types", () => {
@@ -52,14 +55,14 @@ describe("Parsar 8cc2898c Environment protocol types", () => {
       "connected",
       "disconnected",
       "failed",
-    ] satisfies EnvironmentStatus[]);
+    ] satisfies SessionEnvironmentStatus[]);
     expect(events[4]?.environment.error).toEqual({
       code: "environment_failed",
       type: "environment_error",
       message: "The Environment could not become available.",
     });
     expectTypeOf<AgentSessionEnvironmentEvent["type"]>().toEqualTypeOf<
-      `agent.session.environment.${EnvironmentStatus}`
+      `agent.session.environment.${SessionEnvironmentStatus}`
     >();
   });
 
@@ -77,5 +80,33 @@ describe("Parsar 8cc2898c Environment protocol types", () => {
     expect(event.contract_marker).toBe("preserved");
     expect(expired.type).toBe("agent.session.environment.expired");
     expect(expired.contract_marker).toBe("unsupported_session_event_status");
+  });
+});
+
+describe("Parsar 0438880a Environment retrieve resource", () => {
+  it("models every durable resource status independently from live ready", () => {
+    const resources = environmentResources.resources as AgentEnvironmentResource[];
+    expect(resources.map((resource) => resource.status)).toEqual([
+      "pending",
+      "connected",
+      "disconnected",
+      "expired",
+      "failed",
+    ] satisfies EnvironmentResourceStatus[]);
+    for (const resource of resources) {
+      expect(Object.keys(resource).sort()).toEqual([
+        "files", "id", "object", "plugins", "skills", "status", "type",
+      ]);
+      expect(resource.files).toEqual([]);
+      expect(resource.plugins).toEqual([]);
+      expect(resource.skills).toEqual([]);
+    }
+    expectTypeOf<EnvironmentResourceStatus>().not.toEqualTypeOf<SessionEnvironmentStatus>();
+  });
+
+  it("retains raw malformed and unsupported fixtures as untrusted test inputs", () => {
+    expect(environmentResources.unsupported.ready.status).toBe("ready");
+    expect(environmentResources.unsupported.unknown_type.type).toBe("openai_hosted");
+    expect("skills" in environmentResources.malformed.missing_skills).toBe(false);
   });
 });
