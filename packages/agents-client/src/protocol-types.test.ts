@@ -113,6 +113,14 @@ describe("Parsar 0438880a Environment retrieve resource", () => {
     expect(environmentResources.unsupported.unknown_type.type).toBe("openai_hosted");
     expect("skills" in environmentResources.malformed.missing_skills).toBe(false);
   });
+
+  it("pins uppercase UUID lookup to the canonical response identity", () => {
+    const retrieval = environmentResources.canonical_retrieve;
+    const resource = retrieval.response as AgentEnvironmentResource;
+
+    expect(retrieval.request_id.toLowerCase()).toBe(resource.id);
+    expect(resource.object).toBe("agent.environment");
+  });
 });
 
 describe("Parsar 0438880a Turn observability resources", () => {
