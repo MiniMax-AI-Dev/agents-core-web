@@ -1,7 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
-const fixturePort = 18092;
-const webPort = 4174;
+const fixturePort = Number(process.env.AGENTS_FIXTURE_PORT ?? 18092);
+const webPort = Number(process.env.AGENTS_WEB_PORT ?? 4174);
 
 export default defineConfig({
   testDir: "./apps/web/e2e",

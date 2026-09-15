@@ -1982,6 +1982,169 @@ button.trace-step-row:hover {
   border-radius: 6px;
 }
 
+/* Parsar apply_patch extension: read-only, protocol-gated diff presentation. */
+.parsar-diff {
+  min-width: 0;
+  padding: 0 0 10px 20px;
+}
+
+.parsar-diff__summary,
+.parsar-diff__file-toggle {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.parsar-diff__summary {
+  min-height: 30px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.parsar-diff__summary strong {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.parsar-diff__additions,
+.parsar-diff__counts i {
+  color: var(--success);
+}
+
+.parsar-diff__deletions,
+.parsar-diff__counts b {
+  color: var(--danger);
+}
+
+.parsar-diff__status {
+  margin-left: auto;
+}
+
+.parsar-diff__files {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.parsar-diff__file + .parsar-diff__file {
+  border-top: 1px solid var(--line);
+}
+
+.parsar-diff__file-toggle {
+  width: 100%;
+  min-height: 34px;
+  padding: 4px 8px;
+  color: var(--fg);
+  text-align: left;
+  background: var(--surface-subtle);
+  border: 0;
+}
+
+.parsar-diff__file-toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  outline-offset: -2px;
+}
+
+.parsar-diff__file-toggle > svg {
+  flex: 0 0 auto;
+  transition: transform 150ms var(--ease-settle);
+}
+
+.parsar-diff__file-toggle > svg.open {
+  transform: rotate(90deg);
+}
+
+.parsar-diff__file-toggle code {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.parsar-diff__kind {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  color: var(--fg-muted);
+  font-size: 10px;
+  line-height: 14px;
+  text-transform: uppercase;
+  background: var(--surface-muted);
+  border-radius: 4px;
+}
+
+.parsar-diff__counts {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.parsar-diff__counts i,
+.parsar-diff__counts b {
+  font-style: normal;
+  font-weight: 400;
+}
+
+.parsar-diff__content {
+  max-height: 360px;
+  margin: 0;
+  overflow: auto;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 17px;
+  white-space: pre;
+  background: var(--surface);
+  outline: none;
+}
+
+.parsar-diff__content:focus-visible {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.parsar-diff__line {
+  display: block;
+  min-width: max-content;
+  padding: 0 8px;
+}
+
+.parsar-diff__line--add { background: color-mix(in srgb, var(--success) 12%, transparent); }
+.parsar-diff__line--delete { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.parsar-diff__line--hunk { color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.parsar-diff__line--header { color: var(--fg-muted); }
+
+.parsar-diff__raw {
+  display: flex;
+  margin-top: 8px;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.parsar-diff__raw summary {
+  width: fit-content;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.parsar-diff__raw pre {
+  max-height: 180px;
+  margin: 4px 0 0;
+  padding: 8px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 17px;
+  white-space: pre;
+  background: var(--surface-muted);
+  border-radius: 6px;
+}
+
 .conversation-empty {
   min-height: 240px;
   flex: 1;
@@ -2574,6 +2737,24 @@ button.trace-step-row:hover {
   .agent-details dl > div {
     grid-template-columns: 1fr;
     gap: 4px;
+  }
+
+  .session-page:has(.conversation-panel) .session-browser {
+    display: none;
+  }
+
+  .session-page .conversation-panel {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .session-page .thread-content {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .session-page .parsar-diff {
+    padding-left: 0;
   }
 }
 

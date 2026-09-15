@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext, type Page, type TestInfo } from "@playwright/test";
 
-const fixtureBaseUrl = "http://127.0.0.1:18092";
+const fixtureBaseUrl = `http://127.0.0.1:${process.env.AGENTS_FIXTURE_PORT ?? 18092}`;
 
 interface FixtureRequest {
   method: string;
@@ -300,6 +300,56 @@ test("starts one Session with an idempotency key and without browser authorizati
     expect(entry.beta).toBe("agents=v1");
     expect(entry.authorizationPresent).toBe(false);
   }
+});
+
+test("renders Parsar patches as accessible read-only diffs in desktop and narrow themes", async ({ page, request }, testInfo) => {
+  await resetFixture(request);
+  await controlFixture(request, { itemsScenario: 1 });
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+
+  const completedTrace = page.locator('[data-work-trace="completed"]');
+  await completedTrace.getByRole("button", { name: /Completed/ }).click();
+  const completedStep = completedTrace.locator('[data-trace-step="patch_completed"]');
+  await completedStep.getByRole("button", { name: /apply_patch/ }).click();
+  const viewer = completedStep.getByRole("region", { name: "Parsar apply patch diff" });
+  await expect(viewer).toContainText("3 files");
+  await expect(viewer).toContainText("Completed");
+  await expect(viewer.getByRole("button", { name: /modify src\/modify.ts/ })).toHaveAttribute("aria-expanded", "true");
+  await viewer.getByRole("button", { name: /modify src\/modify.ts/ }).focus();
+  await page.keyboard.press("Enter");
+  await expect(viewer.getByRole("button", { name: /modify src\/modify.ts/ })).toHaveAttribute("aria-expanded", "false");
+  await viewer.getByText("Raw arguments").click();
+  await viewer.getByText("Raw result").click();
+  await expect(viewer).toContainText('"applied": true');
+  await expect(viewer.locator("script")).toHaveCount(0);
+  const runningStep = page.locator('[data-trace-step="patch_running"]');
+  await runningStep.getByRole("button", { name: /apply_patch/ }).click();
+  await expect(runningStep.locator('[data-patch-status="in_progress"]')).toContainText("In progress");
+  const failedTrace = page.locator('[data-work-trace="failed"]');
+  await failedTrace.getByRole("button", { name: /Failed/ }).click();
+  const failedStep = failedTrace.locator('[data-trace-step="patch_failed"]');
+  await failedStep.getByRole("button", { name: /apply_patch/ }).click();
+  await expect(failedStep.locator('[data-patch-status="failed"]')).toContainText("Failed");
+  const fallback = page.locator('[data-trace-step="patch_alternate"]');
+  await fallback.getByRole("button", { name: /apply_patch/ }).click();
+  await expect(fallback).toContainText("malformed alternate shape");
+  await expect(fallback.getByRole("region", { name: "Parsar apply patch diff" })).toHaveCount(0);
+  await attachScreenshot(page, testInfo, "desktop-light-parsar-diff");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Dark theme" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  const widths = await viewer.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return { viewport: innerWidth, document: document.documentElement.scrollWidth, body: document.body.scrollWidth, viewerLeft: box.left, viewerRight: box.right };
+  });
+  expect(widths.document).toBeLessThanOrEqual(widths.viewport);
+  expect(widths.body).toBeLessThanOrEqual(widths.viewport);
+  expect(widths.viewerLeft).toBeGreaterThanOrEqual(0);
+  expect(widths.viewerRight).toBeLessThanOrEqual(widths.viewport);
+  await expect(viewer).toBeVisible();
+  await attachScreenshot(page, testInfo, "narrow-dark-parsar-diff");
 });
 
 test("manually retries uncertain sends with the original key only while the payload is unchanged", async ({ page, request }, testInfo) => {

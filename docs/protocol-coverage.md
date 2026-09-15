@@ -36,6 +36,7 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 | Active Turn cancel | Yes | Yes | Submitted as a Session event, not a Turn-create endpoint |
 | Turn retrieve/list | Yes | No | Durable diagnostics UI deferred |
 | Item list/recovery | Yes | Yes | Authoritative recovery after stream loss |
+| Parsar `apply_patch` Item presentation | Existing function Item fields | Yes, read-only | Parsar extension recognized only for the pinned `changes[].{path,kind,diff}` shape; not an OpenAI standard Item type |
 | Function result/error | Yes | Yes | Initial UI supports text result/error handoff only for `function_call` actions |
 | Initial-input creation stream | Later | No | Idle-create flow avoids the early-event race |
 | Artifacts/files | Later | No | Required Core resources are not implemented |
@@ -70,6 +71,15 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 - Known Item and Session-event discriminants remain typed. Unknown variants retain
   their raw fields for inspection, but consumers must treat them as unavailable
   rather than infer a known rendering or action.
+- Parsar maps a Codex `fileChange` observation to a `function_call` named
+  `apply_patch`. The Web enables its read-only diff presentation only when arguments
+  are an object containing a non-empty `changes` array and every change has a string
+  `path`, a string `diff`, and a `kind` object whose `type` is `add`, `update`, or
+  `delete` (with an optional string or null `move_path`). Empty, malformed, string,
+  missing-field, extra-field, and alternate same-name payloads retain the generic
+  JSON function rendering. This is a Parsar extension, not an OpenAI standard Item
+  type, and it grants no browser access to apply, edit, approve, reject, revert, or
+  read files from an executor Workspace.
 - The internal `parsar-daemon` WebSocket and the public `self_hosted` executor
   transport are different protocols. Neither is a generic Environment Provider.
 - Docker, E2B, and AWS Bedrock AgentCore Runtime each need an upstream lifecycle and
