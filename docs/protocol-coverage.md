@@ -29,17 +29,19 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 | --- | --- | --- | --- |
 | Saved Agents create/list | Yes | Yes | Model, name, instructions; many saved Agents per project |
 | Saved Agents retrieve/update/delete | Yes | Later | Client methods exist; UI deferred |
-| Sessions create/list/retrieve | Yes | Yes | UI creates idle `environment:none` Sessions |
+| Sessions create/list/retrieve | Yes | Yes | UI creates idle `environment:none` Sessions; client types also cover the pinned `self_hosted` request and safe response projection |
 | Sessions update/delete | Yes | Later | Metadata/delete UI deferred |
 | Session live events | Yes | Yes | Authenticated `fetch` stream, not `EventSource` |
 | Input message | Yes | Yes | Opens SSE before submission; each submission uses an idempotency key, but the UI does not persist it across a manual resend |
 | Active Turn cancel | Yes | Yes | Submitted as a Session event, not a Turn-create endpoint |
 | Turn retrieve/list | Yes | No | Durable diagnostics UI deferred |
 | Item list/recovery | Yes | Yes | Authoritative recovery after stream loss |
-| Function result/error | Yes | Yes | Initial UI supports text result/error handoff |
+| Function result/error | Yes | Yes | Initial UI supports text result/error handoff only for `function_call` actions |
 | Initial-input creation stream | Later | No | Idle-create flow avoids the early-event race |
 | Artifacts/files | Later | No | Required Core resources are not implemented |
-| Environment resources | Later | No | Current UI sends `environment:none` only |
+| Environment connection action | Yes | Render-only | `environment_connection` is distinct from a function call; Web shows an operator-owned, non-actionable state and sends no result |
+| Environment lifecycle events | Yes | No | Client models pending, ready, connected, disconnected, and failed snapshots; current UI does not project a Workspace lifecycle |
+| Environment resources | Blocked upstream | No | No public create/list/retrieve Environment resource is implemented at the pinned Core revision |
 | Vaults | Later | No | Credentials must never be stored in browser metadata |
 | Protocol Subagents / enabled multi-agent | Later | No | Distinct from storing multiple Agent configurations |
 | Usage/observability | Response types | No | Missing measurements remain unknown, not zero |
@@ -51,6 +53,23 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
   `self_hosted` profile for empty Session creation followed by constrained idle text
   input. The Web does not expose it, and it does not expand the missing public
   Environment/template/file resource surface.
+- The reusable client distinguishes the admitted `self_hosted` request fields
+  (`workspace_directory` and optional `capability_directories`) from the safe Session
+  response projection (`id`, `remote_url`, `workspace_directory`, and normalized
+  `capability_directories`). Unknown Environment variants remain opaque, inspectable
+  records and are not eligible creation inputs.
+- `required_actions` is a discriminated union. `function_call` carries call, Turn,
+  function-name, and argument fields; `environment_connection` carries only
+  `environment_id`. The initial Web renders the latter as an operator-owned wait and
+  does not expose a Function Result form or claim that the browser can connect it.
+- The pinned event contract defines Environment status snapshots for `pending`,
+  `ready`, `connected`, `disconnected`, and `failed`, with a nullable structured
+  error. At `8cc2898c`, retained public transport observations emit only
+  `connected` and `disconnected`; the broader vocabulary is typed for safe receipt,
+  not proof that every transition is currently emitted or rendered.
+- Known Item and Session-event discriminants remain typed. Unknown variants retain
+  their raw fields for inspection, but consumers must treat them as unavailable
+  rather than infer a known rendering or action.
 - The internal `parsar-daemon` WebSocket and the public `self_hosted` executor
   transport are different protocols. Neither is a generic Environment Provider.
 - Docker, E2B, and AWS Bedrock AgentCore Runtime each need an upstream lifecycle and
@@ -59,6 +78,10 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
   new Sessions. The browser sends a model ID, not an executor selector.
 - Core has no standard model-catalog or capability-discovery route in this surface.
   Web model presets are editable suggestions; the first real Turn is authoritative.
+
+Environment creation and management, provider selection, Files, Artifacts, Vault,
+hosted runtimes, and Workspace lifecycle controls remain upstream-blocked or out of
+scope. This type coverage does not advertise those capabilities.
 
 ## Live stream and recovery
 

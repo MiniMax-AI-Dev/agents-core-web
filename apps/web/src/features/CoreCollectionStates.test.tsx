@@ -303,4 +303,33 @@ describe("Agent Core collection states", () => {
     expect(failed).toContain("AGENTS_API_DAEMON_WS_URL");
     expect(failed).toContain("Executor setup");
   });
+
+  it("renders Environment connection actions as read-only instead of a Function result form", () => {
+    const waiting = renderToStaticMarkup(
+      <SessionsView
+        agents={[]}
+        sessions={[]}
+        selected={{
+          ...selectedSession,
+          status: "requires_action",
+          required_actions: [{ type: "environment_connection", environment_id: "environment_01" }],
+        }}
+        items={[]}
+        busy={false}
+        coreError={null}
+        coreState="ready"
+        detailError={null}
+        detailState="ready"
+        streamError={null}
+        streamState="listening"
+        {...sessionsCallbacks}
+      />,
+    );
+
+    expect(waiting).toContain('aria-label="Environment connection required"');
+    expect(waiting).toContain("environment_01");
+    expect(waiting).toContain("must be connected by the Core operator");
+    expect(waiting).not.toContain('aria-label="Function result required"');
+    expect(waiting).not.toContain('aria-label="Function result or error"');
+  });
 });
