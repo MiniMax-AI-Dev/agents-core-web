@@ -27,10 +27,12 @@ Git-ignored private file. The only development fallback is current-tab
 `sessionStorage` for a CORS-enabled compatible Core; production must use an
 authenticated reverse proxy or BFF.
 
-Private Agent prompts and issue-run state belong only in `.agents/`, which is
-Git-ignored. Never force-add them. Public, reviewable workflow contracts belong
-in `docs/` or YAML. A trusted runner must explicitly load `.agents/AGENTS.md` and
-`.agents/issue-agent.md`; their location is intentionally not an automatic
+The tracked root `AGENTS.md` is the public, automatically discovered baseline for
+repository work. Other public, reviewable workflow contracts belong in this guide,
+`docs/`, or `.github/`. Private Agent prompts and issue-run state belong only in
+`.agents/`, which is Git-ignored; never force-add them. A trusted runner must
+explicitly load the private `.agents/AGENTS.md` and `.agents/issue-agent.md` as
+local overlays because their location is intentionally not an automatic
 repository-root instruction path.
 
 Opening the Agent task form creates a candidate, not an authorized Agent run. A

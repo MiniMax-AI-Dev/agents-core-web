@@ -362,6 +362,7 @@ packages/agents-client/  Typed Agents API client and SSE decoder
 docs/                     architecture, Core connection, coverage, roadmap, iteration
 scripts/                  local issue-intake and private workspace bootstrap
 .github/                  checks and the public issue-intake gate
+AGENTS.md                 tracked public contributor and Agent policy
 .agents/                  ignored private prompts and run state; never commit
 ```
 
@@ -393,12 +394,14 @@ bounded fields and uploads a short-lived JSON task artifact without evaluating i
 text as code or shell input.
 
 Run `pnpm agent:workspace` on a trusted runner to create the ignored local prompt and
-state directory. The runner must explicitly load `.agents/AGENTS.md` and
-`.agents/issue-agent.md`; Git ignores them and they are not automatic repository-root
-instructions. A fresh clone receives placeholders that the operator fills locally;
-the committed bootstrap intentionally does not contain the private prompt. Prompts,
-credentials, plans, and run state stay operator-owned. There is no privileged bot,
-auto-merge, release, or deployment path in this foundation.
+state directory. The tracked root `AGENTS.md` is the public baseline automatically
+used for repository work. The runner must additionally and explicitly load the
+private `.agents/AGENTS.md` and `.agents/issue-agent.md` overlays; Git ignores them
+and they are not automatic repository-root instructions. A fresh clone receives
+placeholders that the operator fills locally; the committed bootstrap intentionally
+does not contain the private prompt. Prompts, credentials, plans, and run state stay
+operator-owned. There is no privileged bot, auto-merge, release, or deployment path
+in this foundation.
 See [the self-iteration contract](docs/self-iteration.md).
 
 ## Quality gate

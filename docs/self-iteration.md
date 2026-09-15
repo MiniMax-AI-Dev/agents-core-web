@@ -55,7 +55,7 @@ This prepares:
 
 ```text
 .agents/
-├── AGENTS.md          private repository implementation policy
+├── AGENTS.md          private runner-only policy overlay
 ├── issue-agent.md     private issue iteration prompt and stop conditions
 └── state/             local plans, receipts, and transient run state
 ```
@@ -67,16 +67,19 @@ On a fresh checkout the two files contain starter placeholders only. The operato
 provide the actual local policy and prompt; embedding that private content in the
 committed bootstrap would defeat the ignore boundary.
 
-`.agents/AGENTS.md` is **not** a repository-root `AGENTS.md` and is not loaded
-automatically by ordinary tooling. The operator-controlled runner must explicitly
-load both `.agents/AGENTS.md` and `.agents/issue-agent.md` before it consumes a task
-artifact. A runner that cannot prove that loading step must not start autonomous
-work.
+The tracked repository-root `AGENTS.md` is the public baseline and is discovered
+automatically by Codex. `.agents/AGENTS.md` is a separate private runner overlay and
+is not loaded automatically by ordinary tooling. The operator-controlled runner must
+explicitly load both `.agents/AGENTS.md` and `.agents/issue-agent.md` before it
+consumes a task artifact. A runner that cannot prove that loading step must not start
+autonomous work.
 
-The entire `.agents/` directory and the root names `AGENTS.md` and `ISSUE_AGENT.md`
-are ignored. Never weaken that boundary with `git add -f`, generated copies, artifact
-uploads, logs, or pull-request text. Public engineering decisions belong in `docs/`,
-while credentials belong in an external secret store—not in `.agents/`.
+The entire `.agents/` directory, `.issue-agent/`, and the legacy root
+`ISSUE_AGENT.md` name are ignored. Never weaken that boundary with `git add -f`,
+generated copies, artifact uploads, logs, or pull-request text. Public repository
+policy belongs in the tracked root `AGENTS.md`; other public engineering decisions
+belong in `CONTRIBUTING.md`, `docs/`, or `.github/`. Credentials belong in an
+external secret store—not in either policy location.
 
 ## Trusted runner contract
 
