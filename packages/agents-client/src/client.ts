@@ -238,10 +238,12 @@ export class OpenAIAgentsClient implements AgentCore {
     });
   }
 
-  listTurns(sessionId: string, options?: PageOptions): Promise<ListPage<AgentTurn>> {
+  listTurns(sessionId: string, options?: PageOptions & ReadOptions): Promise<ListPage<AgentTurn>> {
     const params = new URLSearchParams();
     addPageOptions(params, options);
-    return this.request(withQuery(`/agents/sessions/${encodeURIComponent(sessionId)}/turns`, params));
+    return this.request(withQuery(`/agents/sessions/${encodeURIComponent(sessionId)}/turns`, params), {
+      signal: options?.signal,
+    });
   }
 
   retrieveTurn(sessionId: string, turnId: string): Promise<AgentTurn> {

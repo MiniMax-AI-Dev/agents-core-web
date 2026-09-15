@@ -10,6 +10,7 @@ import { AgentCoreError } from "@agents-core-web/agents-client";
 import type {
   AgentCore,
   AgentSession,
+  AgentTurn,
   CreateAgentInput,
   FunctionResultInput,
   SavedAgent,
@@ -35,6 +36,13 @@ import {
   type SessionDetailState,
   type StreamState,
 } from "./features/sessions/SessionsView";
+import {
+  listAllTurns,
+  matchingTurnSnapshot,
+  mergeDurableAndLiveTurns,
+  turnReadIsCurrent,
+  upsertTurn,
+} from "./features/sessions/turns/turn-state";
 import {
   environmentObservationFromResource,
   environmentReadIsCurrent,
@@ -161,6 +169,13 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [items, setItems] = useState<SessionItem[]>([]);
   const [itemsSessionId, setItemsSessionId] = useState<string | null>(null);
+  const [turns, setTurns] = useState<AgentTurn[]>([]);
+  const [turnsSessionId, setTurnsSessionId] = useState<string | null>(null);
+  const [turnCollectionLoad, setTurnCollectionLoad] = useState<SelectedSessionLoad>({
+    sessionId: null,
+    state: "idle",
+    error: null,
+  });
   const [environmentObservations, setEnvironmentObservations] = useState<Map<string, ScopedEnvironmentObservation>>(
     () => new Map(),
   );
@@ -185,6 +200,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const selectedIdRef = useRef<string | null>(selectedId);
   const itemsSessionIdRef = useRef<string | null>(itemsSessionId);
+  const turnsSessionIdRef = useRef<string | null>(turnsSessionId);
   const connectionGenerationRef = useRef(0);
   const agentCollectionRequestRef = useRef(0);
   const sessionCollectionRequestRef = useRef(0);
@@ -193,6 +209,7 @@ export function App() {
   const sessionRequestRef = useRef(new Map<string, number>());
   const sessionEventRevisionRef = useRef(new Map<string, number>());
   const itemEventRevisionRef = useRef(new Map<string, number>());
+  const turnEventRevisionRef = useRef(new Map<string, number>());
   const environmentEventRevisionRef = useRef(new Map<string, number>());
   const environmentRequestRef = useRef(new Map<string, number>());
   const sessionEnvironmentIdRef = useRef(new Map<string, string | null>());
@@ -214,6 +231,12 @@ export function App() {
       ? selectedSessionLoad.state
       : "loading";
   const detailError = selectedSessionLoad.sessionId === selectedId ? selectedSessionLoad.error : null;
+  const turnState: SessionDetailState = !selectedId
+    ? "idle"
+    : turnCollectionLoad.sessionId === selectedId
+      ? turnCollectionLoad.state
+      : "loading";
+  const turnError = turnCollectionLoad.sessionId === selectedId ? turnCollectionLoad.error : null;
   const streamState: StreamState = !selectedId
     ? "idle"
     : streamConnection.sessionId !== selectedId
@@ -325,8 +348,45 @@ export function App() {
       const request = (sessionRequestRef.current.get(sessionId) ?? 0) + 1;
       const sessionRevision = sessionEventRevisionRef.current.get(sessionId) ?? 0;
       const itemRevision = itemEventRevisionRef.current.get(sessionId) ?? 0;
+      const turnRevision = turnEventRevisionRef.current.get(sessionId) ?? 0;
       const environmentRevision = environmentEventRevisionRef.current.get(sessionId) ?? 0;
       sessionRequestRef.current.set(sessionId, request);
+      const turnRead = { coreGeneration, request, sessionId };
+      void listAllTurns(core, sessionId, signal).then((sessionTurns) => {
+        const currentTurnRead = {
+          coreGeneration: connectionGenerationRef.current,
+          request: sessionRequestRef.current.get(sessionId) ?? 0,
+          sessionId,
+          selectedSessionId: selectedIdRef.current,
+        };
+        if (!turnReadIsCurrent(turnRead, currentTurnRead)) return;
+        const liveRevisionChanged = turnRevision !== (turnEventRevisionRef.current.get(sessionId) ?? 0);
+        const currentTurnsSessionId = turnsSessionIdRef.current;
+        turnsSessionIdRef.current = sessionId;
+        setTurns((current) => (
+          liveRevisionChanged
+            ? mergeDurableAndLiveTurns(
+              sessionTurns,
+              currentTurnsSessionId === sessionId ? current : [],
+            )
+            : sessionTurns
+        ));
+        setTurnsSessionId(sessionId);
+        setTurnCollectionLoad({ sessionId, state: "ready", error: null });
+      }).catch((error: unknown) => {
+        const currentTurnRead = {
+          coreGeneration: connectionGenerationRef.current,
+          request: sessionRequestRef.current.get(sessionId) ?? 0,
+          sessionId,
+          selectedSessionId: selectedIdRef.current,
+        };
+        if (!turnReadIsCurrent(turnRead, currentTurnRead) || isAbort(error)) return;
+        setTurnCollectionLoad({
+          sessionId,
+          state: "failed",
+          error: errorMessage(error),
+        });
+      });
       try {
         const [session, sessionItems] = await Promise.all([
           core.retrieveSession(sessionId, { signal }),
@@ -452,9 +512,13 @@ export function App() {
     setAgents([]);
     setSessions([]);
     setItems([]);
+    setTurns([]);
     setEnvironmentObservations(new Map());
     itemsSessionIdRef.current = null;
     setItemsSessionId(null);
+    turnsSessionIdRef.current = null;
+    setTurnsSessionId(null);
+    setTurnCollectionLoad({ sessionId: null, state: "idle", error: null });
     setSelectedId(null);
     void refreshAgents();
     void refreshSessions();
@@ -463,15 +527,23 @@ export function App() {
   useEffect(() => {
     if (!selectedId) {
       setItems([]);
+      setTurns([]);
       itemsSessionIdRef.current = null;
       setItemsSessionId(null);
+      turnsSessionIdRef.current = null;
+      setTurnsSessionId(null);
+      setTurnCollectionLoad({ sessionId: null, state: "idle", error: null });
       setSelectedSessionLoad({ sessionId: null, state: "idle", error: null });
       setStreamConnection({ sessionId: null, state: "idle", error: null });
       return;
     }
     setItems([]);
+    setTurns([]);
     itemsSessionIdRef.current = selectedId;
     setItemsSessionId(selectedId);
+    turnsSessionIdRef.current = selectedId;
+    setTurnsSessionId(selectedId);
+    setTurnCollectionLoad({ sessionId: selectedId, state: "loading", error: null });
     setSelectedSessionLoad({ sessionId: selectedId, state: "loading", error: null });
     environmentEventRevisionRef.current.set(
       selectedId,
@@ -573,6 +645,22 @@ export function App() {
         );
         sessionCollectionRevisionRef.current += 1;
         setSessions((current) => current.map((session) => (session.id === eventSession.id ? eventSession : session)));
+      }
+      const eventTurn = matchingTurnSnapshot(event, sessionId);
+      if (eventTurn) {
+        turnEventRevisionRef.current.set(
+          sessionId,
+          (turnEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+        );
+        if (selectedIdRef.current === sessionId) {
+          const currentTurnsSessionId = turnsSessionIdRef.current;
+          turnsSessionIdRef.current = sessionId;
+          setTurnsSessionId(sessionId);
+          setTurns((current) => upsertTurn(
+            currentTurnsSessionId === sessionId ? current : [],
+            eventTurn,
+          ));
+        }
       }
       if (event.item || eventType.includes(".output_text.")) {
         itemEventRevisionRef.current.set(
@@ -823,6 +911,7 @@ export function App() {
     sessionRequestRef.current.clear();
     sessionEventRevisionRef.current.clear();
     itemEventRevisionRef.current.clear();
+    turnEventRevisionRef.current.clear();
     environmentEventRevisionRef.current.clear();
     environmentRequestRef.current.clear();
     sessionEnvironmentIdRef.current.clear();
@@ -836,11 +925,15 @@ export function App() {
     setSessionCollectionError(null);
     setSelectedId(null);
     setSelectedSessionLoad({ sessionId: null, state: "idle", error: null });
+    setTurnCollectionLoad({ sessionId: null, state: "idle", error: null });
     setStreamConnection({ sessionId: null, state: "idle", error: null });
     setSessionSendFailures(new Map());
     setEnvironmentObservations(new Map());
     itemsSessionIdRef.current = null;
     setItemsSessionId(null);
+    turnsSessionIdRef.current = null;
+    setTurnsSessionId(null);
+    setTurns([]);
     setConnection(normalized);
     setConnectionOpen(false);
   };
@@ -931,11 +1024,14 @@ export function App() {
               sessions={sessions}
               selected={selected}
               items={itemsSessionId === selectedId ? items : []}
+              turns={turnsSessionId === selectedId ? turns : []}
               busy={busy}
               coreError={sessionCollectionError}
               coreState={sessionCollectionState}
               detailError={detailError}
               detailState={detailState}
+              turnError={turnError}
+              turnState={turnState}
               environmentObservation={environmentObservation}
               sendError={sendError}
               streamError={streamError}

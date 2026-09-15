@@ -406,7 +406,7 @@ export interface AgentCore {
   updateSession(sessionId: string, metadata: Record<string, string> | null): Promise<AgentSession>;
   deleteSession(sessionId: string): Promise<SessionDeleted>;
   listItems(sessionId: string, options?: PageOptions & ReadOptions): Promise<ListPage<SessionItem>>;
-  listTurns(sessionId: string, options?: PageOptions): Promise<ListPage<AgentTurn>>;
+  listTurns(sessionId: string, options?: PageOptions & ReadOptions): Promise<ListPage<AgentTurn>>;
   retrieveTurn(sessionId: string, turnId: string): Promise<AgentTurn>;
   sendMessage(sessionId: string, text: string, idempotencyKey?: string): Promise<void>;
   cancelTurn(sessionId: string, idempotencyKey?: string): Promise<void>;

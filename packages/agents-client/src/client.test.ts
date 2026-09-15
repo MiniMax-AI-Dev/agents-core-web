@@ -264,6 +264,28 @@ describe("OpenAIAgentsClient", () => {
     expect(cancelled).toBe(true);
   });
 
+  it("lists Turns with encoded Session scope, pagination, ordering, and cancellation", async () => {
+    const calls: FetchCall[] = [];
+    const controller = new AbortController();
+    const client = new OpenAIAgentsClient({
+      baseUrl: "https://core.example.test/v1/",
+      fetch: recordingFetch(jsonResponse({ data: [], has_more: false }), calls),
+    });
+
+    await client.listTurns("session/one", {
+      after: "turn/previous",
+      limit: 100,
+      order: "asc",
+      signal: controller.signal,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(String(calls[0]?.input)).toBe("https://core.example.test/v1/agents/sessions/session%2Fone/turns?after=turn%2Fprevious&limit=100&order=asc");
+    expect(calls[0]?.init?.method).toBeUndefined();
+    expect(calls[0]?.init?.signal).toBe(controller.signal);
+    expect(new Headers(calls[0]?.init?.headers).get("OpenAI-Beta")).toBe("agents=v1");
+  });
+
   it("submits typed function-result parts with an explicit idempotency key", async () => {
     const calls: FetchCall[] = [];
     const client = new OpenAIAgentsClient({ fetch: recordingFetch(new Response(null, { status: 204 }), calls) });
