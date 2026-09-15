@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Locator, type Page, type TestInfo } from "@playwright/test";
 
 const fixtureBaseUrl = `http://127.0.0.1:${process.env.AGENTS_FIXTURE_PORT ?? 18092}`;
 
@@ -38,6 +38,13 @@ async function openAgents(page: Page, request: APIRequestContext) {
 async function attachScreenshot(page: Page, testInfo: TestInfo, name: string) {
   await testInfo.attach(name, {
     body: await page.screenshot({ fullPage: true, animations: "disabled" }),
+    contentType: "image/png",
+  });
+}
+
+async function attachElementScreenshot(locator: Locator, testInfo: TestInfo, name: string) {
+  await testInfo.attach(name, {
+    body: await locator.screenshot({ animations: "disabled" }),
     contentType: "image/png",
   });
 }
@@ -300,6 +307,81 @@ test("starts one Session with an idempotency key and without browser authorizati
     expect(entry.beta).toBe("agents=v1");
     expect(entry.authorizationPresent).toBe(false);
   }
+});
+
+test("renders self-hosted Environment and Workspace state safely across reconnect and narrow themes", async ({ page, request }, testInfo) => {
+  await resetFixture(request);
+  await controlFixture(request, {
+    environmentScenario: 1,
+    environmentEventStatus: 1,
+    environmentEventCount: 1,
+    streamCloseCount: 1,
+    streamCloseDelayMs: 1_000,
+  });
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+
+  const panel = page.getByRole("region", { name: "Environment and Workspace status" });
+  await expect(panel).toContainText("Self-hosted Environment");
+  await expect(panel).toContainText("Pending");
+  await expect(panel).toContainText("environment_fixture");
+  await expect(panel).toContainText("Workspace is this Environment’s execution directory, not a top-level workspaces API");
+  await expect(panel).toContainText("https://executor.example.test/connect");
+  await expect(panel.locator('a[href="https://executor.example.test/connect"]')).toHaveCount(0);
+  await expect(panel.getByRole("link", { name: "Core setup" })).toBeVisible();
+  await expect(panel.getByRole("link", { name: "Launcher setup" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Environment connection required" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Function result required" })).toBeVisible();
+  await expect(page.getByLabel("Function result or error")).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("launcher:private");
+  await expect(page.locator("body")).not.toContainText("executor_token=secret");
+  await expect(page.locator('a[href^="file:"]')).toHaveCount(0);
+
+  await expect.poll(async () => (
+    await fixtureRequests(request)
+  ).filter((entry) => entry.method === "GET" && entry.path.endsWith("/events")).length).toBeGreaterThanOrEqual(2);
+  await expect(panel).toContainText("Connection required");
+  await expect(panel).not.toContainText("Pending");
+  await panel.evaluate((element) => element.scrollIntoView({ block: "start" }));
+  await attachElementScreenshot(panel, testInfo, "desktop-light-environment-panel");
+  await attachScreenshot(page, testInfo, "desktop-light-self-hosted-environment");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Dark theme" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  const widths = await panel.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return {
+      viewport: innerWidth,
+      document: document.documentElement.scrollWidth,
+      body: document.body.scrollWidth,
+      left: box.left,
+      right: box.right,
+    };
+  });
+  expect(widths.document).toBeLessThanOrEqual(widths.viewport);
+  expect(widths.body).toBeLessThanOrEqual(widths.viewport);
+  expect(widths.left).toBeGreaterThanOrEqual(0);
+  expect(widths.right).toBeLessThanOrEqual(390);
+  await panel.getByRole("link", { name: "Launcher setup" }).focus();
+  await expect(panel.getByRole("link", { name: "Launcher setup" })).toBeFocused();
+  await panel.evaluate((element) => element.scrollIntoView({ block: "start" }));
+  await attachElementScreenshot(panel, testInfo, "narrow-dark-environment-panel");
+  await attachScreenshot(page, testInfo, "narrow-dark-self-hosted-environment");
+
+  await controlFixture(request, { environmentScenario: 2, environmentEventStatus: 0 });
+  await page.reload();
+  const unknown = page.getByRole("region", { name: "Environment and Workspace status" });
+  await expect(unknown).toContainText("Environment unavailable");
+  await expect(unknown).toContainText("Unknown type");
+  await expect(unknown).not.toContainText("/must-not-render");
+  await expect(unknown.locator("a")).toHaveCount(0);
+
+  await controlFixture(request, { environmentScenario: 3, environmentEventStatus: 0 });
+  await page.reload();
+  const missing = page.getByRole("region", { name: "Environment and Workspace status" });
+  await expect(missing).toContainText("ID unavailable");
+  await expect(missing).toContainText("unsafe or malformed URL");
 });
 
 test("renders Parsar patches as accessible read-only diffs in desktop and narrow themes", async ({ page, request }, testInfo) => {

@@ -307,7 +307,7 @@ describe("Agent Core collection states", () => {
     expect(failed).toContain("Executor setup");
   });
 
-  it("renders Environment connection actions as read-only instead of a Function result form", () => {
+  it("renders Environment connection actions separately from simultaneous function results", () => {
     const waiting = renderToStaticMarkup(
       <SessionsView
         agents={[]}
@@ -315,7 +315,23 @@ describe("Agent Core collection states", () => {
         selected={{
           ...selectedSession,
           status: "requires_action",
-          required_actions: [{ type: "environment_connection", environment_id: "environment_01" }],
+          environment: {
+            type: "self_hosted",
+            id: "environment_01",
+            remote_url: "https://executor.example.test",
+            workspace_directory: "/workspace/project",
+            capability_directories: [],
+          },
+          required_actions: [
+            { type: "environment_connection", environment_id: "environment_01" },
+            {
+              type: "function_call",
+              call_id: "call_01",
+              turn_id: "turn_01",
+              name: "lookup",
+              arguments: { query: "fixture" },
+            },
+          ],
         }}
         items={[]}
         busy={false}
@@ -332,7 +348,48 @@ describe("Agent Core collection states", () => {
     expect(waiting).toContain('aria-label="Environment connection required"');
     expect(waiting).toContain("environment_01");
     expect(waiting).toContain("must be connected by the Core operator");
-    expect(waiting).not.toContain('aria-label="Function result required"');
-    expect(waiting).not.toContain('aria-label="Function result or error"');
+    expect(waiting).toContain('aria-label="Function result required"');
+    expect(waiting).toContain('aria-label="Function result or error"');
+    expect(waiting.match(/aria-label="Function result or error"/g)).toHaveLength(1);
+    expect(waiting).toContain("This Web cannot connect, complete, or approve it.");
+  });
+
+  it("blocks the composer for unknown, malformed, or missing required actions", () => {
+    for (const requiredActions of [
+      [{ type: "future_approval", credential: "must-not-render" }],
+      [{ type: "function_call", name: "missing identity" }],
+      [
+        { type: "future_approval" },
+        { type: "function_call", call_id: "call", turn_id: "turn", name: "valid_but_blocked", arguments: {} },
+      ],
+      [],
+      null,
+    ]) {
+      const html = renderToStaticMarkup(
+        <SessionsView
+          agents={[]}
+          sessions={[]}
+          selected={{
+            ...selectedSession,
+            status: "requires_action",
+            required_actions: requiredActions as AgentSession["required_actions"],
+          }}
+          items={[]}
+          busy={false}
+          coreError={null}
+          coreState="ready"
+          detailError={null}
+          detailState="ready"
+          streamError={null}
+          streamState="listening"
+          {...sessionsCallbacks}
+        />,
+      );
+      expect(html).toContain('aria-label="Unsupported required action"');
+      expect(html).toContain("will not infer a form or continue the Session");
+      expect(html).not.toContain('aria-label="Message the Agent"');
+      expect(html).not.toContain('aria-label="Function result or error"');
+      expect(html).not.toContain("must-not-render");
+    }
   });
 });

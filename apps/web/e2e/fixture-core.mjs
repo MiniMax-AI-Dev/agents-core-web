@@ -76,9 +76,46 @@ function initialState() {
       sendStatus: 204,
       sendResponseLoss: 0,
       itemsScenario: 0,
+      environmentScenario: 0,
+      environmentEventStatus: 0,
+      environmentEventCount: 0,
+      streamCloseCount: 0,
+      streamCloseDelayMs: 30,
     },
     sequence: 0,
   };
+}
+
+function applyEnvironmentScenario(value) {
+  const session = state.sessions[0];
+  if (!session) return;
+  const hostileRemote = "https://launcher:private@executor.example.test/connect?executor_token=secret#credential";
+  if (value === 1 || value === 4) {
+    session.environment = {
+      type: "self_hosted",
+      id: "environment_fixture",
+      remote_url: hostileRemote,
+      workspace_directory: `/workspace/<script>safe</script>/${"long/".repeat(45)}project`,
+      capability_directories: ["/capabilities/read-only", `/capabilities/${"wide/".repeat(55)}`],
+    };
+    session.status = value === 1 ? "requires_action" : "idle";
+    session.required_actions = value === 1 ? [
+      { type: "environment_connection", environment_id: "environment_fixture" },
+      { type: "function_call", call_id: "call_fixture", turn_id: "turn_fixture", name: "confirm", arguments: { safe: true } },
+    ] : [];
+    return;
+  }
+  if (value === 2) {
+    session.environment = { type: "future_remote", remote_url: "javascript:alert(1)", workspace_directory: "/must-not-render" };
+    session.status = "idle";
+    session.required_actions = [];
+    return;
+  }
+  if (value === 3) {
+    session.environment = { type: "self_hosted" };
+    session.status = "idle";
+    session.required_actions = [];
+  }
 }
 
 let state = initialState();
@@ -157,6 +194,7 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === "POST" && url.pathname === "/__fixture/control") {
       state.controls = { ...state.controls, ...await readJson(request) };
+      applyEnvironmentScenario(state.controls.environmentScenario);
       return sendJson(response, state.controls);
     }
     if (request.method === "GET" && url.pathname === "/__fixture/requests") {
@@ -272,6 +310,32 @@ const server = http.createServer(async (request, response) => {
         connection: "keep-alive",
       });
       response.write(": fixture stream open\n\n");
+      const statuses = [null, "pending", "ready", "connected", "disconnected", "failed", "expired"];
+      const environmentStatus = statuses[state.controls.environmentEventStatus] ?? null;
+      if (environmentStatus && state.controls.environmentEventCount > 0) {
+        state.controls.environmentEventCount -= 1;
+        state.sequence += 1;
+        const environment = {
+          id: "environment_fixture",
+          type: "self_hosted",
+          status: environmentStatus,
+          error: environmentStatus === "failed" ? {
+            code: "environment_failed",
+            type: "environment_error",
+            message: "Safe failure; Authorization: Bearer fixture-secret X-API-Key: fixture-key",
+          } : null,
+        };
+        response.write(`id: environment_${state.sequence}\ndata: ${JSON.stringify({
+          type: `agent.session.environment.${environmentStatus}`,
+          event_id: `environment_${state.sequence}`,
+          session_id: "session_snapshot",
+          environment,
+        })}\n\n`);
+      }
+      if (state.controls.streamCloseCount > 0) {
+        state.controls.streamCloseCount -= 1;
+        setTimeout(() => response.end(), state.controls.streamCloseDelayMs);
+      }
       const heartbeat = setInterval(() => response.write(": fixture heartbeat\n\n"), 10_000);
       request.on("close", () => clearInterval(heartbeat));
       return;
