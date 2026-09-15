@@ -1,5 +1,5 @@
 import { Bot, MessageSquare, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { CreateAgentInput, SavedAgent, UpdateAgentInput } from "@agents-core-web/agents-client";
 
@@ -121,6 +121,8 @@ export function AgentsView({
   const [actionError, setActionError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const requestGate = useRef(createRequestGate());
+  const detailActionRef = useRef<HTMLButtonElement>(null);
+  const restoreDetailFocus = useRef(false);
   const knownModels = agents.map((agent) => agent.model);
   const normalizedQuery = query.trim().toLowerCase();
   const filteredAgents = normalizedQuery
@@ -130,13 +132,33 @@ export function AgentsView({
 
   const closeDialog = () => {
     requestGate.current.invalidate();
+    restoreDetailFocus.current = false;
     setMode("closed");
     setActionError(null);
     setDetailLoading(false);
   };
 
+  const returnToDetail = () => {
+    if (busy) return;
+    requestGate.current.invalidate();
+    restoreDetailFocus.current = true;
+    setActionError(null);
+    setMode("detail");
+  };
+
+  useEffect(() => {
+    if (mode !== "detail" || busy || detailLoading || !restoreDetailFocus.current) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      detailActionRef.current?.focus();
+      restoreDetailFocus.current = false;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [busy, detailLoading, mode, selectedAgent]);
+
   const retrieve = async (agent: SavedAgent) => {
     const request = requestGate.current.begin();
+    restoreDetailFocus.current = false;
     setSelectedAgent(agent);
     setMode("detail");
     setActionError(null);
@@ -154,38 +176,43 @@ export function AgentsView({
   };
 
   const submitCreate = async (input: CreateAgentInput) => {
+    const request = requestGate.current.begin();
     setActionError(null);
     try {
       await onCreate(input);
-      closeDialog();
+      if (requestGate.current.isCurrent(request)) closeDialog();
     } catch (error) {
-      setActionError(errorMessage(error));
+      if (requestGate.current.isCurrent(request)) setActionError(errorMessage(error));
     }
   };
 
   const submitUpdate = async (input: CreateAgentInput) => {
     if (!selectedAgent) return;
+    const request = requestGate.current.begin();
     setActionError(null);
     try {
       if (!onUpdate) throw new Error("Agent updates are unavailable for this Agent Core connection.");
       const updated = await onUpdate(selectedAgent.id, input);
       if (!updated) throw new Error("The Agent update was interrupted by a connection change.");
+      if (!requestGate.current.isCurrent(request)) return;
       setSelectedAgent(updated);
+      restoreDetailFocus.current = true;
       setMode("detail");
     } catch (error) {
-      setActionError(errorMessage(error));
+      if (requestGate.current.isCurrent(request)) setActionError(errorMessage(error));
     }
   };
 
   const confirmDelete = async () => {
     if (!selectedAgent) return;
+    const request = requestGate.current.begin();
     setActionError(null);
     try {
       if (!onDelete) throw new Error("Delete is unavailable for this Agent Core connection.");
       await onDelete(selectedAgent.id);
-      closeDialog();
+      if (requestGate.current.isCurrent(request)) closeDialog();
     } catch (error) {
-      setActionError(errorMessage(error));
+      if (requestGate.current.isCurrent(request)) setActionError(errorMessage(error));
     }
   };
 
@@ -221,7 +248,7 @@ export function AgentsView({
           <button className="icon-button outline" type="button" onClick={onRefresh} disabled={coreState === "connecting"} aria-label="Refresh Agents">
             <RefreshCw className={coreState === "connecting" ? "refresh-spinning" : undefined} size={14} strokeWidth={1.5} />
           </button>
-          <button className="button primary" type="button" onClick={() => { setActionError(null); setMode("create"); }} disabled={coreState !== "ready"}>
+          <button className="button primary" type="button" onClick={() => { requestGate.current.invalidate(); setActionError(null); setMode("create"); }} disabled={busy || coreState !== "ready"}>
             <Plus size={14} strokeWidth={1.5} /> New Agent
           </button>
         </div>
@@ -257,7 +284,7 @@ export function AgentsView({
               <div className="ledger-row" role="row" key={agent.id}>
                 <div className="agent-identity" role="cell">
                   <span className="initial-tile">{initial(agent.name)}</span>
-                  <button className="agent-detail-trigger" type="button" onClick={() => void retrieve(agent)} aria-label={`Open details for ${agent.name || "this Agent"}`}>
+                  <button className="agent-detail-trigger" type="button" onClick={() => void retrieve(agent)} aria-label={`Open details for ${agent.name || "this Agent"}`} disabled={busy}>
                     <strong>{agent.name || "Untitled Agent"}</strong>
                     <small>{agent.instructions || agent.id}</small>
                   </button>
@@ -292,7 +319,7 @@ export function AgentsView({
           {agents.length ? (
             <button className="button outline" type="button" onClick={() => setQuery("")}>Clear search</button>
           ) : (
-            <button className="button primary" type="button" onClick={() => setMode("create")}>Create Agent</button>
+            <button className="button primary" type="button" onClick={() => { requestGate.current.invalidate(); setMode("create"); }} disabled={busy}>Create Agent</button>
           )}
         </div>
       ) : null}
@@ -303,23 +330,23 @@ export function AgentsView({
         title={dialogTitle}
         footer={mode === "create" || mode === "edit" ? (
           <>
-            <button key="cancel-form" className="button outline" type="button" onClick={mode === "edit" ? () => { setActionError(null); setMode("detail"); } : closeDialog}>Cancel</button>
+            <button key="cancel-form" className="button outline" type="button" onClick={mode === "edit" ? returnToDetail : closeDialog} disabled={mode === "edit" && busy}>Cancel</button>
             <button key="submit-form" className="button primary" type="submit" form={formId} disabled={busy}>
               {busy ? (mode === "create" ? "Creating…" : "Saving…") : (mode === "create" ? "Create Agent" : "Save changes")}
             </button>
           </>
         ) : mode === "detail" ? (
           <>
-            <button key="open-delete" className="button danger" type="button" onClick={() => { setActionError(null); setMode("delete"); }} disabled={busy || detailLoading}>
+            <button key="open-delete" className="button danger" type="button" onClick={() => { requestGate.current.invalidate(); restoreDetailFocus.current = false; setActionError(null); setMode("delete"); }} disabled={busy || detailLoading}>
               <Trash2 size={14} strokeWidth={1.5} /> Delete
             </button>
-            <button key="open-edit" className="button primary" type="button" onClick={() => { setActionError(null); setMode("edit"); }} disabled={busy || detailLoading || Boolean(actionError)}>
+            <button ref={detailActionRef} key="open-edit" className="button primary" type="button" onClick={() => { requestGate.current.invalidate(); restoreDetailFocus.current = false; setActionError(null); setMode("edit"); }} disabled={busy || detailLoading || Boolean(actionError)}>
               <Pencil size={14} strokeWidth={1.5} /> Edit
             </button>
           </>
         ) : mode === "delete" ? (
           <>
-            <button key="cancel-delete" className="button outline" type="button" onClick={() => { setActionError(null); setMode("detail"); }}>Cancel</button>
+            <button key="cancel-delete" className="button outline" type="button" onClick={returnToDetail} disabled={busy}>Cancel</button>
             <button key="confirm-delete" className="button danger" type="button" onClick={() => void confirmDelete()} disabled={busy} autoFocus>
               {busy ? "Deleting…" : "Delete Agent"}
             </button>

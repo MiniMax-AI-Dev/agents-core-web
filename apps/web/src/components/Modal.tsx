@@ -11,6 +11,8 @@ interface ModalProps extends PropsWithChildren {
 export function Modal({ open, title, footer, onClose, children }: ModalProps) {
   const dialogRef = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const wasOpenRef = useRef(false);
   const titleId = useId();
   const [mounted, setMounted] = useState(open);
   const [closing, setClosing] = useState(false);
@@ -18,10 +20,15 @@ export function Modal({ open, title, footer, onClose, children }: ModalProps) {
 
   useEffect(() => {
     if (open) {
+      if (!wasOpenRef.current) {
+        previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      }
+      wasOpenRef.current = true;
       setMounted(true);
       setClosing(false);
       return;
     }
+    wasOpenRef.current = false;
     if (!mounted) return;
 
     setClosing(true);
@@ -33,9 +40,8 @@ export function Modal({ open, title, footer, onClose, children }: ModalProps) {
   }, [mounted, open]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !mounted) return;
 
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const dialog = dialogRef.current;
     const focusableSelector = [
       "button:not([disabled])",
@@ -67,7 +73,10 @@ export function Modal({ open, title, footer, onClose, children }: ModalProps) {
       }
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
+      if (!dialog.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first)?.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
         last?.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
@@ -80,9 +89,9 @@ export function Modal({ open, title, footer, onClose, children }: ModalProps) {
     return () => {
       window.cancelAnimationFrame(frame);
       document.removeEventListener("keydown", handleKeyDown);
-      previousFocus?.focus();
+      previousFocusRef.current?.focus();
     };
-  }, [open]);
+  }, [mounted, open]);
 
   if (!mounted) return null;
 

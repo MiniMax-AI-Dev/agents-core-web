@@ -2197,6 +2197,7 @@ button.trace-step-row:hover {
 
 .modal-card {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   width: min(448px, 100%);
   max-height: min(760px, calc(100vh - 40px));
   overflow: hidden;
@@ -2469,9 +2470,58 @@ button.trace-step-row:hover {
 }
 
 @media (max-width: 640px) {
+  body {
+    min-width: 0;
+  }
+
+  .app-sidebar {
+    width: 52px;
+    min-width: 52px;
+    flex-basis: 52px;
+    padding: 8px 6px;
+  }
+
+  .brand-lockup,
+  .main-nav button {
+    justify-content: center;
+    padding-right: 0;
+    padding-left: 0;
+  }
+
+  .brand-name,
+  .nav-label,
+  .main-nav button span,
+  .main-nav button em,
+  .core-switcher > span:nth-child(2),
+  .core-switcher > svg:last-child {
+    display: none;
+  }
+
+  .main-nav {
+    margin-top: 8px;
+  }
+
+  .sidebar-footer {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    padding-left: 0;
+    gap: 6px;
+  }
+
+  .core-switcher {
+    display: flex;
+    justify-content: center;
+  }
+
+  .theme-menu {
+    flex-direction: column;
+  }
+
   .agents-page .page-header {
     min-height: auto;
+    flex: 0 0 auto;
     flex-wrap: wrap;
+    padding: 10px 12px;
   }
 
   .agents-page .page-actions {
@@ -2482,6 +2532,33 @@ button.trace-step-row:hover {
     width: auto;
     max-width: none;
     flex: 1;
+  }
+
+  .agent-ledger .ledger-header,
+  .agent-ledger .ledger-row {
+    grid-template-columns: minmax(0, 1fr) 36px;
+    min-width: 0;
+    padding-right: 8px;
+    padding-left: 12px;
+  }
+
+  .agent-ledger .ledger-header > :nth-child(2),
+  .agent-ledger .ledger-header > :nth-child(3),
+  .agent-ledger .ledger-header > :nth-child(4),
+  .agent-ledger .ledger-row > :nth-child(2),
+  .agent-ledger .ledger-row > :nth-child(3),
+  .agent-ledger .ledger-row > :nth-child(4) {
+    display: none;
+  }
+
+  .agent-ledger .ledger-actions {
+    position: static;
+    opacity: 1;
+    transform: none;
+  }
+
+  .agents-loading {
+    min-width: 0;
   }
 
   .agent-dialog .modal-backdrop {

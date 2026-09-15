@@ -21,12 +21,14 @@
     "typecheck": "pnpm -r --filter \"@agents-core-web/*\" --if-present typecheck",
     "test:root": "node --test scripts/agent-issue-intake.test.mjs",
     "test": "pnpm test:root && pnpm -r --filter \"@agents-core-web/*\" --if-present test",
+    "test:acceptance": "playwright test",
     "check:root": "node --check scripts/init-agent-workspace.mjs && node --check scripts/agent-issue-intake.mjs && node --check scripts/agent-issue-intake.test.mjs",
     "check": "pnpm check:root && pnpm typecheck && pnpm test && pnpm build",
     "agent:workspace": "node scripts/init-agent-workspace.mjs",
     "agent:issue:intake": "node scripts/agent-issue-intake.mjs"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^26.1.0",
     "typescript": "^5.8.3",
     "vitest": "^4.1.9"
