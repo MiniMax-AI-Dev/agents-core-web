@@ -80,9 +80,17 @@ function withQuery(path: string, params: URLSearchParams): string {
 }
 
 const environmentResourceFields = new Set(["id", "object", "type", "status", "files", "plugins", "skills"]);
+const canonicalUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function isEnvironmentResourceStatus(value: unknown): value is EnvironmentResourceStatus {
   return value === "pending" || value === "connected" || value === "disconnected" || value === "expired" || value === "failed";
+}
+
+function isExpectedEnvironmentId(value: unknown, expectedId: string): value is string {
+  if (typeof value !== "string") return false;
+  const canonicalExpectedId = expectedId.toLowerCase();
+  if (canonicalUuidPattern.test(canonicalExpectedId)) return value === canonicalExpectedId;
+  return value === expectedId;
 }
 
 function projectEnvironmentResource(value: unknown, expectedId: string): AgentEnvironmentResource {
@@ -94,7 +102,7 @@ function projectEnvironmentResource(value: unknown, expectedId: string): AgentEn
   if (
     fields.length !== environmentResourceFields.size ||
     fields.some((field) => !environmentResourceFields.has(field)) ||
-    resource.id !== expectedId ||
+    !isExpectedEnvironmentId(resource.id, expectedId) ||
     resource.object !== "agent.environment" ||
     resource.type !== "self_hosted" ||
     !isEnvironmentResourceStatus(resource.status) ||
@@ -105,7 +113,7 @@ function projectEnvironmentResource(value: unknown, expectedId: string): AgentEn
     throw new AgentCoreError("Agent Core returned an invalid Environment resource.", 502, "invalid_environment_resource");
   }
   return {
-    id: expectedId,
+    id: resource.id,
     object: "agent.environment",
     type: "self_hosted",
     status: resource.status,
@@ -151,13 +159,15 @@ export class OpenAIAgentsClient implements AgentCore {
     );
   }
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  private async request<T>(path: string, init: RequestInit = {}, expectedStatus?: number): Promise<T> {
     const headers = this.headers(init.headers);
     if (init.body !== undefined && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers });
-    if (!response.ok) throw await this.toError(response);
+    if (!response.ok || (expectedStatus !== undefined && response.status !== expectedStatus)) {
+      throw await this.toError(response);
+    }
     if (response.status === 204) return undefined as T;
     return (await response.json()) as T;
   }
@@ -215,6 +225,7 @@ export class OpenAIAgentsClient implements AgentCore {
     const value = await this.request<unknown>(
       `/agents/environments/${encodeURIComponent(environmentId)}`,
       { signal: options?.signal },
+      200,
     );
     return projectEnvironmentResource(value, environmentId);
   }
