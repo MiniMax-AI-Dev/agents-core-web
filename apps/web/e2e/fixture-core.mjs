@@ -1,8 +1,27 @@
 import http from "node:http";
 
 const host = "127.0.0.1";
-const port = 18092;
+const port = Number(process.env.AGENTS_FIXTURE_PORT ?? 18092);
 const baseline = 1_789_438_800;
+
+function patchItems() {
+  const longLine = `+export const longValue = "${"x".repeat(2_000)}";`;
+  return [
+    { id: "patch_intro", turn_id: "turn_patch_intro", type: "message", status: "completed", role: "user", content: [{ type: "input_text", text: "Review the fixture patch" }] },
+    {
+      id: "patch_completed", turn_id: "turn_patch_completed", type: "function_call", status: "completed", name: "apply_patch", call_id: "call_completed",
+      arguments: { changes: [
+        { path: "src/<safe>.ts", kind: { type: "add", move_path: null }, diff: `--- /dev/null\n+++ b/src/<safe>.ts\n@@ -0,0 +1,2 @@\n+<script>alert("safe")</script>\n${longLine}` },
+        { path: "src/modify.ts", kind: { type: "update", move_path: null }, diff: "@@ -1 +1 @@\n-old value\n+new value" },
+        { path: "src/delete.ts", kind: { type: "delete", move_path: null }, diff: "@@ -1 +0,0 @@\n-removed" },
+      ] },
+    },
+    { id: "patch_output", turn_id: "turn_patch_completed", type: "function_call_output", status: "completed", call_id: "call_completed", output: { applied: true }, duration_ms: 41 },
+    { id: "patch_running", turn_id: "turn_patch_running", type: "function_call", status: "in_progress", name: "apply_patch", call_id: "call_running", arguments: { changes: [{ path: "src/running.ts", kind: { type: "update" }, diff: "@@ -1 +1 @@\n-wait\n+working" }] } },
+    { id: "patch_failed", turn_id: "turn_patch_failed", type: "function_call", status: "failed", name: "apply_patch", call_id: "call_failed", arguments: { changes: [{ path: "src/failed.ts", kind: { type: "delete" }, diff: "@@ -1 +0,0 @@\n-failed" }] }, error: { message: "fixture failure" } },
+    { id: "patch_alternate", turn_id: "turn_patch_alternate", type: "function_call", status: "in_progress", name: "apply_patch", call_id: "call_alternate", arguments: { patch: "*** Begin Patch\nmalformed alternate shape" } },
+  ];
+}
 
 function savedAgent(id, name, model, updatedAt) {
   return {
@@ -56,6 +75,7 @@ function initialState() {
       deleteStatus: 200,
       sendStatus: 204,
       sendResponseLoss: 0,
+      itemsScenario: 0,
     },
     sequence: 0,
   };
@@ -228,7 +248,7 @@ const server = http.createServer(async (request, response) => {
     }
 
     const itemsMatch = url.pathname.match(/^\/v1\/agents\/sessions\/([^/]+)\/items$/);
-    if (request.method === "GET" && itemsMatch) return sendJson(response, page([]));
+    if (request.method === "GET" && itemsMatch) return sendJson(response, page(state.controls.itemsScenario ? patchItems() : []));
 
     const eventsMatch = url.pathname.match(/^\/v1\/agents\/sessions\/([^/]+)\/events$/);
     if (request.method === "POST" && eventsMatch) {
