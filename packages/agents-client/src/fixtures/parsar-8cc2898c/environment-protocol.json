@@ -1,0 +1,114 @@
+{
+  "environments": {
+    "none": {
+      "type": "none"
+    },
+    "self_hosted": {
+      "type": "self_hosted",
+      "id": "environment_01",
+      "remote_url": "https://executor.example.test",
+      "workspace_directory": "/workspace/project",
+      "capability_directories": []
+    },
+    "unknown": {
+      "type": "future_remote",
+      "region": "test-region",
+      "contract_marker": "preserved"
+    }
+  },
+  "required_actions": [
+    {
+      "type": "function_call",
+      "call_id": "call_01",
+      "turn_id": "turn_01",
+      "name": "lookup",
+      "arguments": {
+        "query": "fixture"
+      }
+    },
+    {
+      "type": "environment_connection",
+      "environment_id": "environment_01"
+    }
+  ],
+  "environment_events": [
+    {
+      "type": "agent.session.environment.pending",
+      "event_id": "event_pending",
+      "session_id": "session_01",
+      "environment": {
+        "id": "environment_01",
+        "type": "self_hosted",
+        "status": "pending",
+        "error": null
+      }
+    },
+    {
+      "type": "agent.session.environment.ready",
+      "event_id": "event_ready",
+      "session_id": "session_01",
+      "environment": {
+        "id": "environment_01",
+        "type": "self_hosted",
+        "status": "ready",
+        "error": null
+      }
+    },
+    {
+      "type": "agent.session.environment.connected",
+      "event_id": "event_connected",
+      "session_id": "session_01",
+      "environment": {
+        "id": "environment_01",
+        "type": "self_hosted",
+        "status": "connected",
+        "error": null
+      }
+    },
+    {
+      "type": "agent.session.environment.disconnected",
+      "event_id": "event_disconnected",
+      "session_id": "session_01",
+      "environment": {
+        "id": "environment_01",
+        "type": "self_hosted",
+        "status": "disconnected",
+        "error": null
+      }
+    },
+    {
+      "type": "agent.session.environment.failed",
+      "event_id": "event_failed",
+      "session_id": "session_01",
+      "environment": {
+        "id": "environment_01",
+        "type": "self_hosted",
+        "status": "failed",
+        "error": {
+          "code": "environment_failed",
+          "type": "environment_error",
+          "message": "The Environment could not become available."
+        }
+      }
+    }
+  ],
+  "unknown_item": {
+    "id": "item_future",
+    "turn_id": "turn_01",
+    "type": "computer_use_call",
+    "status": "in_progress",
+    "contract_marker": "preserved"
+  },
+  "unknown_event": {
+    "type": "agent.session.environment.paused",
+    "event_id": "event_future",
+    "session_id": "session_01",
+    "contract_marker": "preserved",
+    "environment": {
+      "id": "environment_01",
+      "type": "future_remote",
+      "status": "paused",
+      "error": null
+    }
+  }
+}

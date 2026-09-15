@@ -107,12 +107,38 @@ export interface InlineAgentInput {
 
 export type AgentSnapshot = Omit<SavedAgent, "object" | "metadata" | "created_at" | "updated_at">;
 
-export type EnvironmentType = "none" | "openai_hosted" | (string & {});
+declare const unknownEnvironmentType: unique symbol;
+declare const unknownItemType: unique symbol;
+declare const unknownSessionEventType: unique symbol;
 
-export interface AgentEnvironment {
-  type: EnvironmentType;
+export interface NoneAgentEnvironment {
+  type: "none";
+}
+
+export interface SelfHostedAgentEnvironmentInput {
+  type: "self_hosted";
+  workspace_directory: string;
+  capability_directories?: string[] | null;
+}
+
+export type AgentEnvironmentInput = NoneAgentEnvironment | SelfHostedAgentEnvironmentInput;
+
+export interface SelfHostedAgentEnvironment {
+  type: "self_hosted";
+  id: string;
+  remote_url: string;
+  workspace_directory: string;
+  capability_directories: string[];
+}
+
+export type UnknownEnvironmentType = string & { readonly [unknownEnvironmentType]: true };
+
+export interface UnknownAgentEnvironment {
+  type: UnknownEnvironmentType;
   [key: string]: unknown;
 }
+
+export type AgentEnvironment = NoneAgentEnvironment | SelfHostedAgentEnvironment | UnknownAgentEnvironment;
 
 export type SessionStatus = "idle" | "in_progress" | "requires_action" | "failed";
 
@@ -123,6 +149,13 @@ export interface FunctionCallAction {
   name: string;
   arguments: unknown;
 }
+
+export interface EnvironmentConnectionAction {
+  type: "environment_connection";
+  environment_id: string;
+}
+
+export type RequiredAction = FunctionCallAction | EnvironmentConnectionAction;
 
 export interface TokenUsage {
   input_tokens: number;
@@ -144,7 +177,7 @@ export interface AgentSession {
   status: SessionStatus;
   error: string | null;
   metadata: Record<string, string>;
-  required_actions: FunctionCallAction[];
+  required_actions: RequiredAction[];
   vault_ids: string[];
   usage: TokenUsage | null;
   created_at: number;
@@ -154,7 +187,7 @@ export interface AgentSession {
 export interface CreateSessionInput {
   agent_id?: string;
   agent?: InlineAgentInput;
-  environment: AgentEnvironment;
+  environment: AgentEnvironmentInput;
   input?: string | InputMessage[] | null;
   metadata?: Record<string, string> | null;
   /** This JSON-returning method does not support the endpoint's streaming create variant. */
@@ -181,10 +214,19 @@ export interface ItemContent {
   image_url?: string;
 }
 
-export interface SessionItem {
+export type KnownSessionItemType =
+  | "message"
+  | "command_execution"
+  | "mcp_call"
+  | "function_call"
+  | "function_call_output"
+  | "web_search_call";
+
+export type UnknownSessionItemType = string & { readonly [unknownItemType]: true };
+
+export interface SessionItemBase {
   id: string;
   turn_id: string;
-  type: "message" | "command_execution" | "mcp_call" | "function_call" | "function_call_output" | "web_search_call";
   status: ItemStatus;
   role?: "user" | "assistant";
   phase?: "commentary" | "final_answer";
@@ -201,6 +243,17 @@ export interface SessionItem {
   error?: unknown;
   action?: WebSearchAction;
 }
+
+export interface KnownSessionItem extends SessionItemBase {
+  type: KnownSessionItemType;
+}
+
+export interface UnknownSessionItem extends SessionItemBase {
+  type: UnknownSessionItemType;
+  [key: string]: unknown;
+}
+
+export type SessionItem = KnownSessionItem | UnknownSessionItem;
 
 export interface WebSearchAction {
   type: "search" | "open_page" | "find_in_page" | "other";
@@ -225,8 +278,22 @@ export interface AgentTurn {
   usage: TokenUsage | null;
 }
 
-export interface SessionEvent {
+export interface StreamError {
+  code: string;
   type: string;
+  message: string;
+}
+
+export type EnvironmentStatus = "pending" | "ready" | "connected" | "disconnected" | "failed";
+
+export interface SessionEnvironmentState {
+  id: string;
+  type: string;
+  status: EnvironmentStatus;
+  error: StreamError | null;
+}
+
+export interface SessionEventBase {
   event_id: string;
   session_id?: string;
   turn_id?: string;
@@ -239,12 +306,45 @@ export interface SessionEvent {
   part?: ItemContent;
   delta?: string;
   text?: string;
-  error?: {
-    code: string;
-    type: string;
-    message: string;
-  };
+  error?: StreamError;
 }
+
+export type AgentSessionEnvironmentEvent = {
+  [Status in EnvironmentStatus]: SessionEventBase & {
+    type: `agent.session.environment.${Status}`;
+    environment: SessionEnvironmentState & { status: Status };
+  };
+}[EnvironmentStatus];
+
+export type KnownSessionEventType =
+  | "agent.session.created"
+  | "agent.session.in_progress"
+  | "agent.session.requires_action"
+  | "agent.session.idle"
+  | "agent.session.failed"
+  | "agent.session.turn.created"
+  | "agent.session.turn.in_progress"
+  | "agent.session.turn.waiting"
+  | "agent.session.turn.completed"
+  | "agent.session.turn.failed"
+  | "agent.session.turn.cancelled"
+  | "agent.session.turn.item.added"
+  | "agent.session.turn.item.done"
+  | "agent.session.turn.output_text.delta"
+  | "agent.session.turn.output_text.done";
+
+export interface KnownSessionEvent extends SessionEventBase {
+  type: KnownSessionEventType;
+}
+
+export type UnknownSessionEventType = string & { readonly [unknownSessionEventType]: true };
+
+export interface UnknownSessionEvent extends SessionEventBase {
+  type: UnknownSessionEventType;
+  [key: string]: unknown;
+}
+
+export type SessionEvent = AgentSessionEnvironmentEvent | KnownSessionEvent | UnknownSessionEvent;
 
 export interface AgentDeleted {
   id: string;
