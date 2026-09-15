@@ -73,10 +73,13 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
   an unchecked cast. Unknown or malformed values clear any older live claim.
 - Once a current Session read supplies a valid `self_hosted` Environment ID, the
   client issues one authenticated, abortable
-  `GET /agents/environments/{encoded_environment_id}`. It strictly accepts exactly
-  `id`, `object`, `type`, `status`, `files`, `plugins`, and `skills`, with the matching
-  ID, `agent.environment` object, `self_hosted` type, a supported durable status, and
-  array-valued installation metadata. It never writes or retries this read.
+  `GET /agents/environments/{encoded_environment_id}`. It accepts only HTTP 200 and
+  strictly projects exactly `id`, `object`, `type`, `status`, `files`, `plugins`, and
+  `skills`, with the matching ID, `agent.environment` object, `self_hosted` type, a
+  supported durable status, and array-valued installation metadata. UUID comparison
+  permits an uppercase request to match Core's lowercase canonical response, and the
+  projected resource retains that canonical response ID. It never writes or retries
+  this read.
 - Empty `files`, `plugins`, and `skills` arrays mean only that Core reports no
   API-managed installations. They are not the host filesystem, Workspace contents,
   launcher capabilities, or executor inventory, and the Web does not expose them as

@@ -12,7 +12,7 @@ interface ConnectionModalProps {
   onSave: (connection: CoreConnection) => void;
 }
 
-const parsarBaseline = "8cc2898ca42b272cb3771234ee6a0ad0d2e932ba";
+const parsarBaseline = "0438880ab21aa16d05cb91a4c7f91cc0abc12358";
 const coreSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/services/agents-api/README.md#standalone-http-service`;
 const executorSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/services/agents-api/README.md#internal-execution-device-connection`;
 

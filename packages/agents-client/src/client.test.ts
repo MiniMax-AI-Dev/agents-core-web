@@ -195,6 +195,54 @@ describe("OpenAIAgentsClient", () => {
     },
   );
 
+  it("accepts a canonical Environment UUID response for an uppercase request ID", async () => {
+    const calls: FetchCall[] = [];
+    const responseId = "0f745b0d-b545-49cd-8d7e-4c31c80dc564";
+    const requestId = responseId.toUpperCase();
+    const resource = {
+      id: responseId,
+      object: "agent.environment",
+      type: "self_hosted",
+      status: "pending",
+      files: [],
+      plugins: [],
+      skills: [],
+    } as const;
+    const client = new OpenAIAgentsClient({
+      baseUrl: "https://core.example/v1",
+      fetch: recordingFetch(jsonResponse(resource), calls),
+    });
+
+    await expect(client.retrieveEnvironment(requestId)).resolves.toEqual(resource);
+    expect(String(calls[0]?.input)).toBe(`https://core.example/v1/agents/environments/${requestId}`);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rejects a non-canonical uppercase Environment UUID response without retrying", async () => {
+    const calls: FetchCall[] = [];
+    const requestId = "0f745b0d-b545-49cd-8d7e-4c31c80dc564";
+    const client = new OpenAIAgentsClient({
+      fetch: recordingFetch(
+        jsonResponse({
+          id: requestId.toUpperCase(),
+          object: "agent.environment",
+          type: "self_hosted",
+          status: "pending",
+          files: [],
+          plugins: [],
+          skills: [],
+        }),
+        calls,
+      ),
+    });
+
+    await expect(client.retrieveEnvironment(requestId)).rejects.toMatchObject({
+      status: 502,
+      code: "invalid_environment_resource",
+    });
+    expect(calls).toHaveLength(1);
+  });
+
   it.each([
     null,
     {},
@@ -225,6 +273,27 @@ describe("OpenAIAgentsClient", () => {
       status,
       code: "fixture_error",
       message: "Safe failure.",
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each([201, 202, 204, 206])("rejects Environment retrieve HTTP %s without retrying", async (status) => {
+    const calls: FetchCall[] = [];
+    const resource = {
+      id: "environment",
+      object: "agent.environment",
+      type: "self_hosted",
+      status: "pending",
+      files: [],
+      plugins: [],
+      skills: [],
+    };
+    const response = status === 204 ? new Response(null, { status }) : jsonResponse(resource, status);
+    const client = new OpenAIAgentsClient({ fetch: recordingFetch(response, calls) });
+
+    await expect(client.retrieveEnvironment("environment")).rejects.toMatchObject({
+      status,
+      message: `Agent core request failed (${status}).`,
     });
     expect(calls).toHaveLength(1);
   });

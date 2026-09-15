@@ -9,6 +9,26 @@ const callbacks = {
 };
 
 describe("Agent Core connection guidance", () => {
+  it("links setup guidance to the immutable Parsar compatibility baseline", () => {
+    const markup = renderToStaticMarkup(
+      <ConnectionModal
+        connection={{ baseUrl: "/v1", token: "" }}
+        open
+        proxyAuthEnabled={false}
+        {...callbacks}
+      />,
+    );
+    const baseline = "0438880ab21aa16d05cb91a4c7f91cc0abc12358";
+
+    expect(markup).toContain(
+      `href="https://github.com/MiniMax-AI-Dev/parsar/blob/${baseline}/services/agents-api/README.md#standalone-http-service"`,
+    );
+    expect(markup).toContain(
+      `href="https://github.com/MiniMax-AI-Dev/parsar/blob/${baseline}/services/agents-api/README.md#internal-execution-device-connection"`,
+    );
+    expect(markup).not.toContain("8cc2898ca42b272cb3771234ee6a0ad0d2e932ba");
+  });
+
   it("explains key generation and the server-side file path contract", () => {
     const markup = renderToStaticMarkup(
       <ConnectionModal
