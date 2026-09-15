@@ -54,6 +54,8 @@ function initialState() {
       updateStatus: 200,
       deleteDelayMs: 0,
       deleteStatus: 200,
+      sendStatus: 204,
+      sendResponseLoss: 0,
     },
     sequence: 0,
   };
@@ -105,6 +107,7 @@ function recordRequest(request, url, body) {
     beta: request.headers["openai-beta"] ?? null,
     authorizationPresent: Boolean(request.headers.authorization),
     idempotencyKeyPresent: Boolean(request.headers["idempotency-key"]),
+    idempotencyKey: request.headers["idempotency-key"] ?? null,
     body,
   });
 }
@@ -228,6 +231,20 @@ const server = http.createServer(async (request, response) => {
     if (request.method === "GET" && itemsMatch) return sendJson(response, page([]));
 
     const eventsMatch = url.pathname.match(/^\/v1\/agents\/sessions\/([^/]+)\/events$/);
+    if (request.method === "POST" && eventsMatch) {
+      const status = state.controls.sendStatus;
+      const responseLoss = state.controls.sendResponseLoss;
+      state.controls.sendStatus = 204;
+      state.controls.sendResponseLoss = 0;
+      if (responseLoss) {
+        response.destroy();
+        return;
+      }
+      if (status !== 204) return sendError(response, status, "Fixture send failed.");
+      response.writeHead(204);
+      response.end();
+      return;
+    }
     if (request.method === "GET" && eventsMatch) {
       response.writeHead(200, {
         "content-type": "text/event-stream; charset=utf-8",

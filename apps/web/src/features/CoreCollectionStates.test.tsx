@@ -287,9 +287,12 @@ describe("Agent Core collection states", () => {
         detailError={null}
         detailState="ready"
         sendError={{
+          sessionId: "session_1",
           code: "execution_unavailable",
           message: "Execution is not enabled on this service.",
-          draft: "hello again",
+          payload: "hello again",
+          idempotencyKey: "safe-test-key",
+          uncertain: false,
         }}
         streamError={null}
         streamState="listening"

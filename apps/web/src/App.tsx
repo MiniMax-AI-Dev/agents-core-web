@@ -44,7 +44,21 @@ import {
   type CoreConnectionState,
 } from "./lib/connection";
 import { settleCollection } from "./lib/collection-load";
-import { mergeDurableAndLiveItems, updateLiveSessionItems } from "./lib/session-items";
+import {
+  beginPendingSend,
+  failPendingSend,
+  type FailedPendingSend,
+} from "./lib/pending-send";
+import {
+  mergeDurableAndLiveItems,
+  updateLiveSessionItems,
+  upsertSessionItem,
+} from "./lib/session-items";
+import {
+  createDurableRefreshCoordinator,
+  createStreamRecoveryBuffer,
+  type DurableRefreshCoordinator,
+} from "./lib/session-recovery";
 import {
   beginStreamReconciliation,
   requestCurrentStreamRetry,
@@ -68,13 +82,6 @@ interface SelectedSessionLoad {
   error: string | null;
 }
 
-interface SessionSendFailure {
-  sessionId: string;
-  code?: string;
-  message: string;
-  draft: string;
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "The Agent core request failed.";
 }
@@ -83,12 +90,16 @@ function isAbort(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
-async function listAllItems(core: AgentCore, sessionId: string): Promise<SessionItem[]> {
+async function listAllItems(
+  core: AgentCore,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<SessionItem[]> {
   const items: SessionItem[] = [];
   let after: string | undefined;
 
   while (true) {
-    const page = await core.listItems(sessionId, { after, limit: 100, order: "asc" });
+    const page = await core.listItems(sessionId, { after, limit: 100, order: "asc", signal });
     items.push(...page.data);
     if (!page.has_more) return items;
 
@@ -101,7 +112,8 @@ async function listAllItems(core: AgentCore, sessionId: string): Promise<Session
 }
 
 function projectTextEvent(current: SessionItem[], event: SessionEvent): SessionItem[] {
-  if (!event.type.includes(".output_text.")) return current;
+  const eventType = typeof event.type === "string" ? event.type : "";
+  if (!eventType.includes(".output_text.")) return current;
 
   const partText = event.part?.type === "output_text" ? event.part.text : undefined;
   const replacement = event.text ?? partText ?? undefined;
@@ -119,14 +131,13 @@ function projectTextEvent(current: SessionItem[], event: SessionEvent): SessionI
     id: existing?.id ?? event.item_id ?? streamId,
     turn_id: event.turn_id ?? existing?.turn_id ?? "",
     type: "message",
-    status: event.type.endsWith(".done") || event.type.endsWith(".completed") ? "completed" : "in_progress",
+    status: eventType.endsWith(".done") || eventType.endsWith(".completed") ? "completed" : "in_progress",
     role: "assistant",
     phase: "final_answer",
     content: [{ type: "output_text", text }],
   };
 
-  if (existingIndex < 0) return [...current, projected];
-  return current.map((item, index) => (index === existingIndex ? projected : item));
+  return upsertSessionItem(current, projected);
 }
 
 export function App() {
@@ -154,7 +165,7 @@ export function App() {
     error: null,
   });
   const [streamRetryRevision, setStreamRetryRevision] = useState(0);
-  const [sessionSendFailures, setSessionSendFailures] = useState<Map<string, SessionSendFailure>>(
+  const [sessionSendFailures, setSessionSendFailures] = useState<Map<string, FailedPendingSend>>(
     () => new Map(),
   );
   const [busy, setBusy] = useState(false);
@@ -255,21 +266,21 @@ export function App() {
   }, [core, coreGeneration, notify]);
 
   const refreshSession = useCallback(
-    async (sessionId: string) => {
-      if (coreGeneration !== connectionGenerationRef.current) return;
+    async (sessionId: string, signal?: AbortSignal): Promise<boolean> => {
+      if (coreGeneration !== connectionGenerationRef.current) return false;
       const request = (sessionRequestRef.current.get(sessionId) ?? 0) + 1;
       const sessionRevision = sessionEventRevisionRef.current.get(sessionId) ?? 0;
       const itemRevision = itemEventRevisionRef.current.get(sessionId) ?? 0;
       sessionRequestRef.current.set(sessionId, request);
       try {
         const [session, sessionItems] = await Promise.all([
-          core.retrieveSession(sessionId),
-          listAllItems(core, sessionId),
+          core.retrieveSession(sessionId, { signal }),
+          listAllItems(core, sessionId, signal),
         ]);
         if (
           coreGeneration !== connectionGenerationRef.current ||
           request !== sessionRequestRef.current.get(sessionId)
-        ) return;
+        ) return false;
         if (sessionRevision === (sessionEventRevisionRef.current.get(sessionId) ?? 0)) {
           sessionCollectionRevisionRef.current += 1;
           setSessions((current) => {
@@ -296,16 +307,19 @@ export function App() {
         if (selectedIdRef.current === sessionId) {
           setSelectedSessionLoad({ sessionId, state: "ready", error: null });
         }
+        return true;
       } catch (error) {
         if (
           coreGeneration === connectionGenerationRef.current &&
           request === sessionRequestRef.current.get(sessionId) &&
           selectedIdRef.current === sessionId
         ) {
+          if (isAbort(error)) return false;
           const message = errorMessage(error);
           setSelectedSessionLoad({ sessionId, state: "failed", error: message });
           notify(message, "error");
         }
+        return false;
       }
     },
     [core, coreGeneration, notify],
@@ -346,7 +360,9 @@ export function App() {
     itemsSessionIdRef.current = selectedId;
     setItemsSessionId(selectedId);
     setSelectedSessionLoad({ sessionId: selectedId, state: "loading", error: null });
-    void refreshSession(selectedId);
+    const controller = new AbortController();
+    void refreshSession(selectedId, controller.signal);
+    return () => controller.abort();
   }, [refreshSession, selectedId]);
 
   useEffect(() => {
@@ -358,6 +374,9 @@ export function App() {
     streamEpochRef.current = streamEpoch;
     setStreamConnection({ sessionId, state: "connecting", error: null });
     let reconnectAttempt = 0;
+    const recovery = createStreamRecoveryBuffer();
+    let refreshCoordinator: DurableRefreshCoordinator | null = null;
+    let recoveryPromise: Promise<unknown> | null = null;
 
     const isCurrentStream = () => (
       !controller.signal.aborted &&
@@ -375,6 +394,7 @@ export function App() {
 
     const applyEvent = (event: SessionEvent) => {
       if (!isCurrentStream()) return;
+      const eventType = typeof event.type === "string" ? event.type : "";
       if (event.session) {
         sessionEventRevisionRef.current.set(
           sessionId,
@@ -383,7 +403,7 @@ export function App() {
         sessionCollectionRevisionRef.current += 1;
         setSessions((current) => current.map((session) => (session.id === event.session?.id ? event.session : session)));
       }
-      if (event.item || event.type.includes(".output_text.")) {
+      if (event.item || eventType.includes(".output_text.")) {
         itemEventRevisionRef.current.set(
           sessionId,
           (itemEventRevisionRef.current.get(sessionId) ?? 0) + 1,
@@ -403,12 +423,10 @@ export function App() {
           const withoutTemporary = sessionItems.filter((item) => (
             event.item?.type !== "message" || event.item.role !== "assistant" || !item.id.startsWith(`stream:${event.item.turn_id}:`)
           ));
-          const existing = withoutTemporary.findIndex((item) => item.id === event.item?.id);
-          if (existing === -1) return [...withoutTemporary, event.item as SessionItem];
-          return withoutTemporary.map((item, index) => (index === existing ? (event.item as SessionItem) : item));
+          return upsertSessionItem(withoutTemporary, event.item as SessionItem);
         });
       }
-      if (event.type.includes(".output_text.") && selectedIdRef.current === sessionId) {
+      if (eventType.includes(".output_text.") && selectedIdRef.current === sessionId) {
         const currentItemsSessionId = itemsSessionIdRef.current;
         itemsSessionIdRef.current = sessionId;
         setItemsSessionId(sessionId);
@@ -419,16 +437,12 @@ export function App() {
           (sessionItems) => projectTextEvent(sessionItems, event),
         ));
       }
-      if (
-        event.type.endsWith(".completed") ||
-        event.type.endsWith(".failed") ||
-        event.type.endsWith(".cancelled") ||
-        event.type === "agent.session.idle" ||
-        event.type === "agent.session.requires_action"
-      ) {
-        void refreshSession(sessionId);
-      }
+      refreshCoordinator?.accept(event);
     };
+
+    refreshCoordinator = createDurableRefreshCoordinator(
+      () => refreshSession(sessionId, controller.signal),
+    );
 
     const listen = async () => {
       while (isCurrentStream()) {
@@ -441,13 +455,17 @@ export function App() {
               openedAt = beginStreamReconciliation(
                 isCurrentStream,
                 () => setCurrentStreamState("listening"),
-                () => { void refreshSession(sessionId); },
+                () => {
+                  const token = recovery.begin();
+                  recoveryPromise = refreshSession(sessionId, controller.signal)
+                    .finally(() => recovery.finish(token, isCurrentStream, applyEvent));
+                },
               );
             },
             onEvent: (event) => {
               if (!isCurrentStream()) return;
               receivedEvent = true;
-              applyEvent(event);
+              recovery.accept(event, applyEvent);
             },
           });
         } catch (error) {
@@ -464,10 +482,11 @@ export function App() {
         }
 
         if (!isCurrentStream()) return;
+        await recoveryPromise;
+        recoveryPromise = null;
+        if (!isCurrentStream()) return;
         if (streamConnectionWasStable(openedAt, receivedEvent)) reconnectAttempt = 0;
         setCurrentStreamState("recovering");
-        await refreshSession(sessionId);
-        if (!isCurrentStream()) return;
 
         const delay = streamReconnectDelay(reconnectAttempt);
         reconnectAttempt += 1;
@@ -477,7 +496,11 @@ export function App() {
 
     void listen();
 
-    return () => controller.abort();
+    return () => {
+      refreshCoordinator?.dispose();
+      recovery.invalidate();
+      controller.abort();
+    };
   }, [core, coreGeneration, notify, refreshSession, selectedId, streamRetryRevision]);
 
   const retryCurrentStream = useCallback(() => {
@@ -558,6 +581,8 @@ export function App() {
       notify(message, "error");
       throw new Error(message);
     }
+    const previousFailure = sessionSendFailures.get(sessionId);
+    const pending = beginPendingSend(sessionId, text, previousFailure);
     setSessionSendFailures((current) => {
       if (!current.has(sessionId)) return current;
       const next = new Map(current);
@@ -565,17 +590,12 @@ export function App() {
       return next;
     });
     try {
-      await run(() => core.sendMessage(sessionId, text));
+      await run(() => core.sendMessage(sessionId, text, pending.idempotencyKey));
     } catch (error) {
       if (coreGeneration === connectionGenerationRef.current) {
         setSessionSendFailures((current) => {
           const next = new Map(current);
-          next.set(sessionId, {
-            sessionId,
-            code: error instanceof AgentCoreError ? error.code : undefined,
-            message: errorMessage(error),
-            draft: text,
-          });
+          next.set(sessionId, failPendingSend(pending, error, errorMessage(error)));
           return next;
         });
       }

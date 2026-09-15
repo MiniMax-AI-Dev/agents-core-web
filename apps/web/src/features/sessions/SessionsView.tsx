@@ -26,6 +26,8 @@ import type {
   SessionItem,
 } from "@agents-core-web/agents-client";
 
+import type { FailedPendingSend } from "../../lib/pending-send";
+
 import { ErrorState } from "../../components/ErrorState";
 import { Modal } from "../../components/Modal";
 import { MessageMarkdown } from "../../components/MessageMarkdown";
@@ -47,7 +49,7 @@ interface SessionsViewProps {
   coreState: CoreConnectionState;
   detailError: string | null;
   detailState: SessionDetailState;
-  sendError?: { code?: string; message: string; draft?: string } | null;
+  sendError?: FailedPendingSend | null;
   streamError: string | null;
   streamState: StreamState;
   onCancel: () => Promise<void>;
@@ -531,13 +533,13 @@ export function SessionsView({
 
   useEffect(() => {
     const sessionId = selected?.id;
-    if (!sessionId || !sendError?.draft) return;
+    if (!sessionId || !sendError?.payload) return;
     const restored = restoreDraftAfterFailedSend(
       draftsBySessionRef.current.get(sessionId) ?? "",
-      sendError.draft,
+      sendError.payload,
     );
     draftsBySessionRef.current.set(sessionId, restored);
-    setMessage((current) => restoreDraftAfterFailedSend(current, sendError.draft ?? ""));
+    setMessage((current) => restoreDraftAfterFailedSend(current, sendError.payload));
   }, [selected?.id, sendError]);
 
   const send = async (event?: FormEvent) => {
@@ -722,11 +724,15 @@ export function SessionsView({
                     title={sendError.code === "execution_unavailable" ? "Execution daemon is unavailable" : "Message wasn’t sent"}
                     description={sendError.code === "execution_unavailable"
                       ? "Agent Core is online, but this service does not currently have an execution worker. Your draft was restored and was not retried."
-                      : "Agent Core rejected the message. Your draft was restored and was not retried."}
+                      : sendError.uncertain
+                        ? "Core may have accepted this message before the response was lost. Your draft was restored and was not retried."
+                        : "Agent Core rejected the message. Your draft was restored and was not retried."}
                     detail={sendError.message}
                     hint={sendError.code === "execution_unavailable"
-                      ? "Start Core with AGENTS_API_DAEMON_WS_URL, connect a same-tenant parsar-daemon, then send the restored draft again."
-                      : "Review the error, then send the restored draft again when the Core is ready."}
+                      ? "Start Core with AGENTS_API_DAEMON_WS_URL, connect a same-tenant parsar-daemon, then explicitly send the unchanged draft again."
+                      : sendError.uncertain
+                        ? "Review durable state first. Explicitly send the unchanged draft to reuse its key; editing it creates a new operation."
+                        : "Review the error, then send the restored draft as a new operation when the Core is ready."}
                     action={sendError.code === "execution_unavailable" ? (
                       <a className="button outline" href={executorSetupUrl} target="_blank" rel="noreferrer">
                         Executor setup

@@ -8,6 +8,7 @@ interface FixtureRequest {
   beta: string | null;
   authorizationPresent: boolean;
   idempotencyKeyPresent: boolean;
+  idempotencyKey: string | null;
   body?: Record<string, unknown>;
 }
 
@@ -299,4 +300,52 @@ test("starts one Session with an idempotency key and without browser authorizati
     expect(entry.beta).toBe("agents=v1");
     expect(entry.authorizationPresent).toBe(false);
   }
+});
+
+test("manually retries uncertain sends with the original key only while the payload is unchanged", async ({ page, request }, testInfo) => {
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  const composer = page.getByLabel("Message the Agent");
+
+  await controlFixture(request, { sendResponseLoss: 1 });
+  await composer.fill("uncertain payload");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(page.locator(".session-send-error")).toContainText("may have accepted this message");
+  await expect(composer).toHaveValue("uncertain payload");
+  await attachScreenshot(page, testInfo, "desktop-uncertain-send");
+  await page.getByRole("button", { name: "Send message" }).click();
+
+  let sends = (await fixtureRequests(request)).filter(
+    (entry) => entry.method === "POST" && entry.path.endsWith("/events"),
+  );
+  expect(sends).toHaveLength(2);
+  expect(sends[0]?.idempotencyKey).toBeTruthy();
+  expect(sends[1]?.idempotencyKey).toBe(sends[0]?.idempotencyKey);
+
+  await controlFixture(request, { sendResponseLoss: 1 });
+  await composer.fill("original before edit");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(composer).toHaveValue("original before edit");
+  await composer.fill("edited payload");
+  await page.getByRole("button", { name: "Send message" }).click();
+
+  sends = (await fixtureRequests(request)).filter(
+    (entry) => entry.method === "POST" && entry.path.endsWith("/events"),
+  );
+  expect(sends).toHaveLength(4);
+  expect(sends[3]?.idempotencyKey).not.toBe(sends[2]?.idempotencyKey);
+
+  await controlFixture(request, { sendStatus: 422 });
+  await composer.fill("permanently rejected");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(page.locator(".session-send-error")).toContainText("Agent Core rejected the message");
+  await page.getByRole("button", { name: "Send message" }).click();
+
+  sends = (await fixtureRequests(request)).filter(
+    (entry) => entry.method === "POST" && entry.path.endsWith("/events"),
+  );
+  expect(sends).toHaveLength(6);
+  expect(sends[5]?.idempotencyKey).not.toBe(sends[4]?.idempotencyKey);
+  await attachScreenshot(page, testInfo, "desktop-send-recovery");
 });

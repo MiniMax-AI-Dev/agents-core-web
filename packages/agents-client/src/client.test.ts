@@ -131,6 +131,24 @@ describe("OpenAIAgentsClient", () => {
     });
   });
 
+  it("passes AbortSignal to durable Session and Item reads", async () => {
+    const calls: FetchCall[] = [];
+    const controller = new AbortController();
+    const client = new OpenAIAgentsClient({
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ input, init });
+        return jsonResponse({ data: [], has_more: false });
+      }) as typeof fetch,
+    });
+
+    await client.retrieveSession("session", { signal: controller.signal });
+    await client.listItems("session", { signal: controller.signal, limit: 100 });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.init?.signal).toBe(controller.signal);
+    expect(calls[1]?.init?.signal).toBe(controller.signal);
+  });
+
   it("cancels the response body when a stream callback fails", async () => {
     let cancelled = false;
     const body = new ReadableStream<Uint8Array>({
