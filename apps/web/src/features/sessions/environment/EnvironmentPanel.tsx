@@ -8,7 +8,7 @@ import type {
 } from "@agents-core-web/agents-client";
 
 import { StatusIcon, type StatusKind } from "../../../components/StatusIcon";
-import type { EnvironmentObservation } from "./environment-state";
+import { environmentIdsMatch, type EnvironmentObservation } from "./environment-state";
 
 const parsarBaseline = "0438880ab21aa16d05cb91a4c7f91cc0abc12358";
 const coreSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/services/agents-api/README.md#native-executor-transport-prerequisite`;
@@ -65,7 +65,7 @@ function matchingObservation(
   observation: EnvironmentObservation | null,
   environmentId: string | null,
 ): EnvironmentObservation | null {
-  return observation?.environmentType === "self_hosted" && observation.environmentId === environmentId
+  return observation?.environmentType === "self_hosted" && environmentIdsMatch(observation.environmentId, environmentId)
     ? observation
     : null;
 }
@@ -128,7 +128,9 @@ export function EnvironmentPanel({
   const capabilityDirectories = directories(raw.capability_directories);
   const remoteUrl = sanitizeRemoteUrl(raw.remote_url);
   const live = matchingObservation(observation, environmentId);
-  const requiresConnection = Boolean(environmentId && connectionActions.some((action) => action.environment_id === environmentId));
+  const requiresConnection = Boolean(environmentId && connectionActions.some(
+    (action) => environmentIdsMatch(action.environment_id, environmentId),
+  ));
   const status: EnvironmentDisplayStatus = live?.source === "unavailable"
     ? "unavailable"
     : live?.status ?? (requiresConnection ? "required" : "unknown");

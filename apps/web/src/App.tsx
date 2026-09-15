@@ -37,6 +37,7 @@ import {
 } from "./features/sessions/SessionsView";
 import {
   environmentObservationFromResource,
+  environmentIdsMatch,
   environmentReadIsCurrent,
   matchingSessionSnapshot,
   reduceEnvironmentObservation,
@@ -277,7 +278,7 @@ export function App() {
         );
         const changedEnvironmentSessions = new Set<string>();
         for (const [sessionId, environmentId] of nextEnvironmentIds) {
-          if (sessionEnvironmentIdRef.current.get(sessionId) !== environmentId) {
+          if (!environmentIdsMatch(sessionEnvironmentIdRef.current.get(sessionId), environmentId)) {
             changedEnvironmentSessions.add(sessionId);
           }
         }
@@ -527,7 +528,7 @@ export function App() {
       if (eventSession) {
         const nextEnvironmentId = selfHostedEnvironmentId(eventSession.environment);
         const previousEnvironmentId = sessionEnvironmentIdRef.current.get(sessionId);
-        if (previousEnvironmentId !== nextEnvironmentId) {
+        if (!environmentIdsMatch(previousEnvironmentId, nextEnvironmentId)) {
           sessionEnvironmentIdRef.current.set(sessionId, nextEnvironmentId);
           environmentRequestRef.current.set(
             sessionId,

@@ -459,6 +459,32 @@ test("hydrates durable Environment state even when the live stream is rejected",
   ))).toBe(true);
 });
 
+test("keeps canonical Environment UUID identity across Session and resource projections", async ({ page, request }) => {
+  await resetFixture(request);
+  const canonicalEnvironmentUuid = "0f745b0d-b545-49cd-8d7e-4c31c80dc564";
+  await controlFixture(request, {
+    environmentScenario: 5,
+    environmentResourceStatus: "connected",
+    environmentEventStatus: 0,
+  });
+  await page.goto("/");
+
+  const panel = page.getByRole("region", { name: "Environment and Workspace status" });
+  await expect(panel).toContainText("Connected");
+  await expect(panel).toContainText("Status comes from the durable Environment resource");
+  await expect(panel).not.toContainText("Durable Environment status is unavailable");
+  await expect(panel).toContainText(canonicalEnvironmentUuid.toUpperCase());
+
+  const environmentRequests = (await fixtureRequests(request)).filter(
+    (entry) => entry.method === "GET" && entry.path.startsWith("/v1/agents/environments/"),
+  );
+  expect(environmentRequests.length).toBeGreaterThanOrEqual(1);
+  expect(environmentRequests.every(
+    (entry) => entry.path === `/v1/agents/environments/${canonicalEnvironmentUuid.toUpperCase()}` &&
+      entry.body === undefined,
+  )).toBe(true);
+});
+
 test("applies a buffered live Environment event after an earlier durable snapshot", async ({ page, request }) => {
   await resetFixture(request);
   await controlFixture(request, {
