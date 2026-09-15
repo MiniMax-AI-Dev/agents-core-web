@@ -477,7 +477,12 @@ export async function probeCore({ target, token, timeoutMs, fetchImpl, report })
       } catch {
         payload = undefined;
       }
-      if (payload?.object === "list" && Array.isArray(payload.data)) {
+      if (
+        payload &&
+        typeof payload === "object" &&
+        Array.isArray(payload.data) &&
+        typeof payload.has_more === "boolean"
+      ) {
         report.add("PASS", "Core API", "Core API authenticated; basic Agents read succeeded.");
       } else {
         report.add("FAIL", "Core API", "authenticated response did not match the expected list contract.");

@@ -404,6 +404,7 @@ test("never includes credential, response, URL suffix, provider, or private-path
     apiBody: JSON.stringify({
       object: "list",
       data: [{ id: "agent_fixture", name: "session-private-marker" }],
+      has_more: false,
     }),
   });
   const result = await runScenario({
