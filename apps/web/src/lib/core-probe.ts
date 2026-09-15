@@ -1,3 +1,5 @@
+import { isLocalProxyBaseUrl } from "./connection";
+
 export type CoreProbeKind =
   | "authenticated"
   | "unauthorized"
@@ -71,7 +73,7 @@ export async function probeCore(options: CoreProbeOptions): Promise<CoreProbeRes
     Accept: "application/json",
     "OpenAI-Beta": "agents=v1",
   });
-  const token = options.token?.trim();
+  const token = isLocalProxyBaseUrl(options.baseUrl) ? undefined : options.token?.trim();
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
   try {
@@ -82,7 +84,7 @@ export async function probeCore(options: CoreProbeOptions): Promise<CoreProbeRes
       cache: "no-store",
     });
 
-    if (response.ok) {
+    if (response.status === 200) {
       let payload: unknown;
       try {
         payload = await response.json();
@@ -96,6 +98,14 @@ export async function probeCore(options: CoreProbeOptions): Promise<CoreProbeRes
 
       return {
         kind: isAgentListPage(payload) ? "authenticated" : "protocol_mismatch",
+        executionReadiness: "unknown",
+        httpStatus: response.status,
+      };
+    }
+
+    if (response.ok) {
+      return {
+        kind: "protocol_mismatch",
         executionReadiness: "unknown",
         httpStatus: response.status,
       };

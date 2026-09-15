@@ -28,6 +28,41 @@ async function openConnection(page: Page) {
   return { dialog, trigger };
 }
 
+test("migrates a stale local token without sending browser authorization when proxy auth is disabled", async ({
+  page,
+  request,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("agents-core-web.core-base-url", "/v1");
+    sessionStorage.setItem("agents-core-web.core-token", "historical-local-token");
+  });
+  let browserAuthorizationSeen = false;
+  page.on("request", (browserRequest) => {
+    const url = new URL(browserRequest.url());
+    if (url.pathname.startsWith("/v1/") && browserRequest.headers().authorization) {
+      browserAuthorizationSeen = true;
+    }
+  });
+  await page.route(probeRequestPattern, (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ object: "list", data: [], has_more: false, first_id: null, last_id: null }),
+  }));
+
+  await boot(page, request);
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("agents-core-web.core-token"))).toBeNull();
+  const { dialog } = await openConnection(page);
+  await expect(dialog).toContainText("Server-managed key not detected");
+  await expect(dialog.getByRole("radio", { name: /Local Parsar Core/ })).toBeChecked();
+  await expect(dialog.getByLabel("Bearer token")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Test connection" }).click();
+  await expect(dialog.getByRole("status")).toContainText("Core API authenticated");
+  expect(browserAuthorizationSeen).toBe(false);
+
+  await dialog.getByRole("radio", { name: /Other compatible Core/ }).click();
+  await expect(dialog.getByLabel("Bearer token")).toHaveValue("");
+});
+
 test("switches real connection modes and fences stale probes when the draft changes or reopens", async ({
   page,
   request,
@@ -137,6 +172,7 @@ test("announces loading, authenticated access, and each safe failure state from 
 }) => {
   const replies = [
     { status: 200, body: { object: "list", data: [], has_more: false, first_id: null, last_id: null } },
+    { status: 202, body: { object: "list", data: [], has_more: false, first_id: null, last_id: null } },
     { status: 401, body: { error: { code: "invalid_api_key", message: "safe fixture failure" } } },
     { status: 400, body: { error: { code: "invalid_beta_header", message: "safe fixture failure" } } },
     { status: 503, body: { error: { code: "unavailable", message: "safe fixture failure" } } },
@@ -162,6 +198,7 @@ test("announces loading, authenticated access, and each safe failure state from 
   const action = dialog.getByRole("button", { name: "Test connection" });
   const cases: Array<{ role: "status" | "alert"; text: string }> = [
     { role: "status", text: "Core API authenticated" },
+    { role: "alert", text: "Agents API protocol mismatch" },
     { role: "alert", text: "Authentication failed" },
     { role: "alert", text: "Agents API protocol mismatch" },
     { role: "alert", text: "Core returned HTTP 503" },
@@ -178,7 +215,7 @@ test("announces loading, authenticated access, and each safe failure state from 
     await expect(terminal).toContainText("Execution readiness: Unknown / not verified");
   }
 
-  expect(methods).toEqual(["GET", "GET", "GET", "GET", "GET"]);
+  expect(methods).toEqual(["GET", "GET", "GET", "GET", "GET", "GET"]);
   expect(replies).toHaveLength(0);
 });
 

@@ -36,9 +36,10 @@ function initialMode(connection: CoreConnection): ConnectionMode {
 }
 
 function initialAdvancedDraft(connection: CoreConnection): CoreConnection {
+  const direct = !isLocalProxyBaseUrl(connection.baseUrl);
   return {
-    baseUrl: isLocalProxyBaseUrl(connection.baseUrl) ? "" : connection.baseUrl,
-    token: connection.token,
+    baseUrl: direct ? connection.baseUrl : "",
+    token: direct ? connection.token : "",
   };
 }
 

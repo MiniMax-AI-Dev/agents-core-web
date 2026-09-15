@@ -58,10 +58,23 @@ describe("Core connection probe", () => {
     expect(JSON.stringify(result)).not.toContain(token);
   });
 
+  it("ignores a historical browser bearer on the local proxy path", async () => {
+    const calls: FetchCall[] = [];
+
+    const result = await probeCore({
+      baseUrl: "/v1",
+      token: "stale-browser-secret",
+      fetch: recordingFetch(jsonResponse({ data: [], has_more: false }), calls),
+    });
+
+    expect(result.kind).toBe("authenticated");
+    expect(new Headers(calls[0]?.init?.headers).has("Authorization")).toBe(false);
+  });
+
   it("classifies 401 without reflecting an upstream secret-bearing message", async () => {
     const token = "do-not-reflect";
     const result = await probeCore({
-      baseUrl: "/v1",
+      baseUrl: "https://core.example/v1",
       token,
       fetch: recordingFetch(
         jsonResponse({ error: { code: "invalid_api_key", message: `bad ${token}` } }, 401),
@@ -77,6 +90,8 @@ describe("Core connection probe", () => {
     [jsonResponse({ error: { code: "invalid_beta_header" } }, 400), 400],
     [jsonResponse({ error: { code: "not_found" } }, 404), 404],
     [jsonResponse({ error: { code: "method_not_allowed" } }, 405), 405],
+    [jsonResponse({ data: [], has_more: false }, 201), 201],
+    [jsonResponse({ data: [], has_more: false }, 202), 202],
     [jsonResponse({ ok: true }), 200],
     [new Response("not json", { status: 200 }), 200],
   ])("classifies beta, route, and response-shape mismatches", async (response, status) => {

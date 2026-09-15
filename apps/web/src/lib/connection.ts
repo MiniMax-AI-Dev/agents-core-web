@@ -15,32 +15,33 @@ export function isLocalProxyBaseUrl(baseUrl: string): boolean {
   return (baseUrl.trim() || "/v1").replace(/\/+$/, "") === "/v1";
 }
 
-function usesServerManagedAuth(baseUrl: string, proxyAuthEnabled: boolean): boolean {
-  return proxyAuthEnabled && isLocalProxyBaseUrl(baseUrl);
+function usesCurrentTabToken(baseUrl: string): boolean {
+  return !isLocalProxyBaseUrl(baseUrl);
 }
 
-export function loadConnection(proxyAuthEnabled = devProxyAuthEnabled): CoreConnection {
+export function loadConnection(_proxyAuthEnabled = devProxyAuthEnabled): CoreConnection {
   const baseUrl = localStorage.getItem(BASE_URL_KEY) ?? "/v1";
-  const serverManaged = usesServerManagedAuth(baseUrl, proxyAuthEnabled);
-  if (serverManaged) sessionStorage.removeItem(TOKEN_KEY);
+  const currentTabToken = usesCurrentTabToken(baseUrl);
+  if (!currentTabToken) sessionStorage.removeItem(TOKEN_KEY);
   return {
     baseUrl,
-    token: serverManaged ? "" : sessionStorage.getItem(TOKEN_KEY) ?? "",
+    token: currentTabToken ? sessionStorage.getItem(TOKEN_KEY) ?? "" : "",
   };
 }
 
-export function saveConnection(connection: CoreConnection, proxyAuthEnabled = devProxyAuthEnabled): void {
+export function saveConnection(connection: CoreConnection, _proxyAuthEnabled = devProxyAuthEnabled): void {
   localStorage.setItem(BASE_URL_KEY, connection.baseUrl || "/v1");
-  if (connection.token && !usesServerManagedAuth(connection.baseUrl, proxyAuthEnabled)) {
+  if (connection.token && usesCurrentTabToken(connection.baseUrl)) {
     sessionStorage.setItem(TOKEN_KEY, connection.token);
   } else sessionStorage.removeItem(TOKEN_KEY);
 }
 
-export function createCore(connection: CoreConnection, proxyAuthEnabled = devProxyAuthEnabled): AgentCore {
+export function createCore(connection: CoreConnection, _proxyAuthEnabled = devProxyAuthEnabled): AgentCore {
+  const baseUrl = connection.baseUrl || "/v1";
+  const currentTabToken = usesCurrentTabToken(baseUrl);
+  if (!currentTabToken) sessionStorage.removeItem(TOKEN_KEY);
   return new OpenAIAgentsClient({
-    baseUrl: connection.baseUrl || "/v1",
-    token: usesServerManagedAuth(connection.baseUrl, proxyAuthEnabled)
-      ? undefined
-      : () => sessionStorage.getItem(TOKEN_KEY) ?? connection.token,
+    baseUrl,
+    token: currentTabToken ? () => sessionStorage.getItem(TOKEN_KEY) ?? connection.token : undefined,
   });
 }

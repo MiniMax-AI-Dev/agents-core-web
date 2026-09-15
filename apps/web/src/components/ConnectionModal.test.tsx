@@ -47,11 +47,12 @@ describe("Agent Core connection modes", () => {
   });
 
   it("keeps local mode token-free when server-managed auth is not detected", () => {
-    const markup = renderModal("/v1", false);
+    const markup = renderModal("/v1", false, "stale-browser-token");
 
     expect(markup).toContain("Server-managed key not detected");
     expect(markup).toContain("Configure the local proxy token file and restart Web");
     expect(markup).toContain("Local mode will not request a browser token");
+    expect(markup).not.toContain("stale-browser-token");
     expect(markup).not.toContain('type="password"');
   });
 
