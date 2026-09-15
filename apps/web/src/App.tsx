@@ -512,6 +512,16 @@ export function App() {
     [core, coreGeneration, notify],
   );
 
+  const refreshSelectedSession = useCallback((sessionId: string): Promise<boolean> => {
+    if (selectedIdRef.current !== sessionId) return Promise.resolve(false);
+    selectedSessionReadAbortRef.current?.abort();
+    const controller = new AbortController();
+    // Turn pagination can outlive refreshSession's Session/Item result, so retain this
+    // controller until the next selected read, selection change, deletion, or Core change.
+    selectedSessionReadAbortRef.current = controller;
+    return refreshSession(sessionId, controller.signal);
+  }, [refreshSession]);
+
   const recoverSessionWorkspace = useCallback(() => {
     void (async () => {
       const generation = coreGeneration;
@@ -519,9 +529,9 @@ export function App() {
       const refreshed = await refreshSessions();
       if (!refreshed || generation !== connectionGenerationRef.current) return;
       const sessionId = selectedIdRef.current;
-      if (sessionId) await refreshSession(sessionId);
+      if (sessionId) await refreshSelectedSession(sessionId);
     })();
-  }, [coreGeneration, refreshAgents, refreshSession, refreshSessions]);
+  }, [coreGeneration, refreshAgents, refreshSelectedSession, refreshSessions]);
 
   useEffect(() => {
     setAgents([]);
@@ -576,14 +586,12 @@ export function App() {
       next.delete(selectedId);
       return next;
     });
-    const controller = new AbortController();
-    selectedSessionReadAbortRef.current = controller;
-    void refreshSession(selectedId, controller.signal);
+    void refreshSelectedSession(selectedId);
     return () => {
-      controller.abort();
-      if (selectedSessionReadAbortRef.current === controller) selectedSessionReadAbortRef.current = null;
+      selectedSessionReadAbortRef.current?.abort();
+      selectedSessionReadAbortRef.current = null;
     };
-  }, [refreshSession, selectedId]);
+  }, [refreshSelectedSession, selectedId]);
 
   useEffect(() => {
     selectedStreamAbortRef.current?.abort();
@@ -1048,7 +1056,7 @@ export function App() {
       next.delete(sessionId);
       return next;
     });
-    await refreshSession(sessionId);
+    await refreshSelectedSession(sessionId);
   };
 
   const cancel = async () => {
@@ -1056,7 +1064,7 @@ export function App() {
     if (!sessionId) return;
     await run(() => core.cancelTurn(sessionId), "Cancellation requested.");
     if (coreGeneration !== connectionGenerationRef.current || selectedIdRef.current !== sessionId) return;
-    await refreshSession(sessionId);
+    await refreshSelectedSession(sessionId);
   };
 
   const submitFunctionResult = async (input: FunctionResultInput) => {
@@ -1064,7 +1072,7 @@ export function App() {
     if (!sessionId) return;
     await run(() => core.submitFunctionResult(sessionId, input), "Function result submitted.");
     if (coreGeneration !== connectionGenerationRef.current || selectedIdRef.current !== sessionId) return;
-    await refreshSession(sessionId);
+    await refreshSelectedSession(sessionId);
   };
 
   const applyConnection = (next: CoreConnection) => {
@@ -1213,7 +1221,7 @@ export function App() {
               onFunctionResult={submitFunctionResult}
               onRefresh={recoverSessionWorkspace}
               onRetrySession={() => {
-                if (selectedId) void refreshSession(selectedId);
+                if (selectedId) void refreshSelectedSession(selectedId);
               }}
               onRetryStream={retryCurrentStream}
               onRetrieveSession={retrieveSessionForAction}

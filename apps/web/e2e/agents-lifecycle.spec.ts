@@ -60,6 +60,42 @@ async function fixtureRequests(request: APIRequestContext): Promise<FixtureReque
   return response.json() as Promise<FixtureRequest[]>;
 }
 
+async function expectSelectedDeleteAbortsSessionRead(
+  page: Page,
+  request: APIRequestContext,
+  startRead: () => Promise<unknown>,
+) {
+  const path = "/v1/agents/sessions/session_snapshot";
+  const failedReads = new Map<string, string>();
+  page.on("requestfailed", (failedRequest) => {
+    const failedPath = new URL(failedRequest.url()).pathname;
+    if (failedRequest.method() === "GET") {
+      failedReads.set(failedPath, failedRequest.failure()?.errorText ?? "unknown failure");
+    }
+  });
+  const before = await fixtureState(request);
+  const previousReads = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "GET" && entry.path === path
+  )).length;
+
+  await startRead();
+  await expect.poll(async () => (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "GET" && entry.path === path
+  )).length).toBeGreaterThan(previousReads);
+
+  await page.locator(".conversation-session-action").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await dialog.getByRole("button", { name: "Delete Session" }).click();
+  await expect(dialog).toHaveCount(0);
+
+  await expect.poll(() => failedReads.get(path)).toContain("ERR_ABORTED");
+  await expect.poll(async () => (await fixtureState(request)).aborts.sessionReads)
+    .toBeGreaterThan(before.aborts.sessionReads);
+  expect((await fixtureState(request)).sessions.some((session) => session.id === "session_snapshot")).toBe(false);
+}
+
 async function openAgents(page: Page, request: APIRequestContext) {
   await resetFixture(request);
   await page.goto("/");
@@ -646,6 +682,32 @@ for (const pendingRead of [
     expect(after.openStreams).not.toContain("session_snapshot");
   });
 }
+
+test("aborts a pending manual recovery read after deleting the selected Session", async ({ page, request }) => {
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await controlFixture(request, { sessionRetrieveDelayMs: 5_000 });
+
+  await expectSelectedDeleteAbortsSessionRead(page, request, () => (
+    page.getByRole("button", { name: "Recover durable state" }).click()
+  ));
+});
+
+test("aborts a pending detail retry read after deleting the selected Session", async ({ page, request }) => {
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await controlFixture(request, { sessionRetrieveStatus: 503 });
+  await page.getByRole("button", { name: "Recover durable state" }).click();
+  const detailError = page.locator(".session-detail-error");
+  await expect(detailError).toBeVisible();
+  await controlFixture(request, { sessionRetrieveDelayMs: 5_000 });
+
+  await expectSelectedDeleteAbortsSessionRead(page, request, () => (
+    detailError.getByRole("button", { name: "Retry" }).click()
+  ));
+});
 
 test("deletes the selected Session while its SSE is still connecting", async ({ page, request }) => {
   await resetFixture(request);
