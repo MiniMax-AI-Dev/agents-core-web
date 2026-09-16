@@ -303,11 +303,13 @@ describe("Agent Core collection states", () => {
       />,
     );
 
-    expect(failed).toContain("Execution daemon is unavailable");
+    expect(failed).toContain("Core execution is unavailable");
     expect(failed).toContain("Execution is not enabled on this service.");
     expect(failed).toContain("Your draft was restored and was not retried.");
-    expect(failed).toContain("AGENTS_API_DAEMON_WS_URL");
-    expect(failed).toContain("Executor setup");
+    expect(failed).toContain("operator runtime configuration");
+    expect(failed).toContain("Core runtime setup");
+    expect(failed).toContain("d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee");
+    expect(failed).not.toContain("AGENTS_API_DAEMON_WS_URL");
   });
 
   it("renders Environment connection actions separately from simultaneous function results", () => {
@@ -392,6 +394,7 @@ describe("Agent Core collection states", () => {
       expect(html).toContain("will not infer a form or continue the Session");
       expect(html).not.toContain('aria-label="Message the Agent"');
       expect(html).not.toContain('aria-label="Function result or error"');
+      expect(html).toContain('aria-label="Cancel active Turn"');
       expect(html).not.toContain("must-not-render");
     }
   });

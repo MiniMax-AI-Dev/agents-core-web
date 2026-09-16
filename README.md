@@ -71,9 +71,12 @@ Restart `pnpm dev` after changing them. Keep credentials server-side. A direct
 Core URL in the connection dialog is only for a compatible Core that explicitly
 allows the Web origin, methods, and headers through CORS.
 
-Do not have a Core running yet? Follow [Connecting Agent Core](docs/core-connection.md).
-That guide contains the complete PostgreSQL, caller key, device, daemon, native
-harness, `CODEX_HOME`, security, verification, and shutdown procedures.
+Do not have a Core running yet? Use the immutable
+[current Parsar setup guide](https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/services/agents-api/README.md#standalone-http-service).
+The repository's [legacy Web connection runbook](docs/core-connection.md) is pinned
+to the older revision stated at its top; revalidate its PostgreSQL, caller-key,
+device, daemon, native-harness, `CODEX_HOME`, verification, and shutdown steps before
+applying them to a newer Core.
 
 ## First use
 
@@ -110,16 +113,18 @@ See [Architecture](docs/architecture.md) for the full component and trust bounda
 | --- | --- |
 | Web cannot reach Core | Confirm the Core address and `AGENTS_API_PROXY_TARGET`, then restart Vite |
 | `401 invalid_api_key` | The plaintext caller bearer must match the current Core key binding |
-| `503 execution_unavailable` / `Execution is not enabled` | Core is reachable but has no enabled execution path; connect its configured executor/daemon |
+| `503 execution_unavailable` / `Execution is not enabled` | Core rejected execution; inspect its safe error plus runtime and ownership state. A worker, executor, or daemon may be unconfigured or disconnected, or an execution lease may have been lost |
 | Agent saves but its model fails | Use a model ID and provider credential supported by the connected runtime |
 
-`/healthz` proves HTTP liveness only, not chat readiness. See the
-[full troubleshooting guide](docs/core-connection.md#troubleshooting) before retrying
-an uncertain request.
+`/healthz` proves HTTP liveness only, not chat readiness. Check durable Core state and
+the current pinned Parsar guide before retrying an uncertain request; the
+[legacy 043 troubleshooting snapshot](docs/core-connection.md#troubleshooting) is
+historical context only.
 
 ## Documentation
 
-- [Connect Agent Core](docs/core-connection.md) — full local and deployment setup
+- [Current Parsar Core setup](https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/services/agents-api/README.md#standalone-http-service) — immutable current upstream guide
+- [Legacy Web connection runbook](docs/core-connection.md) — historical `0438880` snapshot; revalidate before use
 - [Protocol coverage](docs/protocol-coverage.md) — exact supported API surface
 - [Architecture](docs/architecture.md) — ownership, runtime, and trust boundaries
 - [Roadmap](docs/roadmap.md) — planned Web and Core integrations

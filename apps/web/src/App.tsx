@@ -1,9 +1,4 @@
-import {
-  Bot,
-  Layers3,
-  MessageSquare,
-  Settings2,
-} from "lucide-react";
+import { Layers3, Settings2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AgentCoreError } from "@agents-core-web/agents-client";
@@ -20,10 +15,13 @@ import type {
 } from "@agents-core-web/agents-client";
 
 import { ConnectionModal } from "./components/ConnectionModal";
+import { CreateMenu } from "./components/CreateMenu";
+import { ProductNavigation, type ProductView } from "./components/ProductNavigation";
 import { StatusIcon } from "./components/StatusIcon";
 import { ThemeMenu } from "./components/ThemeMenu";
 import { useToast } from "./components/Toast";
 import { AgentsView } from "./features/agents/AgentsView";
+import { knownSessionAdmissionBlocker } from "./features/agents/session-admission";
 import {
   removeSavedAgent,
   replaceSavedAgent,
@@ -99,7 +97,7 @@ import {
   waitForStreamReconnect,
 } from "./lib/stream-reconnect";
 
-type View = "sessions" | "agents" | "system";
+type View = ProductView | "system";
 
 interface StreamConnection {
   sessionId: string | null;
@@ -210,6 +208,10 @@ export function App() {
     () => new Map(),
   );
   const [busy, setBusy] = useState(false);
+  const [agentCreateRequest, setAgentCreateRequest] = useState<number | null>(null);
+  const [sessionCreateRequest, setSessionCreateRequest] = useState<number | null>(null);
+  const agentCreateSequenceRef = useRef(0);
+  const sessionCreateSequenceRef = useRef(0);
   const selectedIdRef = useRef<string | null>(selectedId);
   const sessionsRef = useRef<AgentSession[]>(sessions);
   const itemsSessionIdRef = useRef<string | null>(itemsSessionId);
@@ -841,9 +843,10 @@ export function App() {
 
   const createAgent = async (input: CreateAgentInput) => {
     const agent = await run(() => core.createAgent(input), "Agent created.");
-    if (!agent || coreGeneration !== connectionGenerationRef.current) return;
+    if (!agent || coreGeneration !== connectionGenerationRef.current) return undefined;
     agentCollectionRevisionRef.current += 1;
     setAgents((current) => [agent, ...current]);
+    return agent;
   };
 
   const retrieveAgent = async (agentId: string) => {
@@ -866,6 +869,13 @@ export function App() {
   };
 
   const createSession = async (agentId: string) => {
+    const savedAgent = agents.find((agent) => agent.id === agentId);
+    const admissionBlocker = savedAgent ? knownSessionAdmissionBlocker(savedAgent) : "The selected saved Agent is not loaded.";
+    if (admissionBlocker) {
+      const error = new Error(`Session was not created. ${admissionBlocker}`);
+      notify(error.message, "error");
+      throw error;
+    }
     const session = await run(
       () => core.createSession({ agent_id: agentId, environment: { type: "none" }, stream: false }),
       "Idle Session created. Opening live events…",
@@ -1117,11 +1127,25 @@ export function App() {
     setConnectionOpen(false);
   };
 
-  const navItems: Array<{ id: View; label: string; icon: typeof MessageSquare }> = [
-    { id: "sessions", label: "Sessions", icon: MessageSquare },
-    { id: "agents", label: "Agents", icon: Bot },
-    { id: "system", label: "Architecture", icon: Layers3 },
-  ];
+  const openAgentSetup = () => {
+    setView("agents");
+    agentCreateSequenceRef.current += 1;
+    setAgentCreateRequest(agentCreateSequenceRef.current);
+  };
+
+  const openSessionSetup = () => {
+    setView("sessions");
+    sessionCreateSequenceRef.current += 1;
+    setSessionCreateRequest(sessionCreateSequenceRef.current);
+  };
+
+  const consumeAgentCreateRequest = useCallback((request: number) => {
+    setAgentCreateRequest((current) => current === request ? null : current);
+  }, []);
+
+  const consumeSessionCreateRequest = useCallback((request: number) => {
+    setSessionCreateRequest((current) => current === request ? null : current);
+  }, []);
 
   return (
     <div className="app-shell">
@@ -1135,43 +1159,23 @@ export function App() {
           <span className="brand-name">Agents Core Web</span>
         </div>
 
-        <nav className="main-nav" aria-label="Primary navigation">
-          <p className="nav-label">Agent</p>
-          {navItems.slice(0, 2).map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                type="button"
-                className={view === item.id ? "active" : ""}
-                key={item.id}
-                onClick={() => setView(item.id)}
-                aria-label={item.label}
-                aria-current={view === item.id ? "page" : undefined}
-              >
-                <Icon size={15} strokeWidth={1.5} />
-                <span>{item.label}</span>
-                {item.id === "sessions" && sessions.length ? <em>{sessions.length}</em> : null}
-              </button>
-            );
-          })}
+        <ProductNavigation
+          active={view === "system" ? null : view}
+          onSelect={(nextView) => setView(nextView)}
+        />
 
+        <nav className="main-nav" aria-label="System navigation">
           <p className="nav-label">System</p>
-          {navItems.slice(2).map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                type="button"
-                className={view === item.id ? "active" : ""}
-                key={item.id}
-                onClick={() => setView(item.id)}
-                aria-label={item.label}
-                aria-current={view === item.id ? "page" : undefined}
-              >
-                <Icon size={15} strokeWidth={1.5} />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
+          <button
+            type="button"
+            className={view === "system" ? "active" : ""}
+            onClick={() => setView("system")}
+            aria-label="Architecture"
+            aria-current={view === "system" ? "page" : undefined}
+          >
+            <Layers3 size={15} strokeWidth={1.5} />
+            <span>Architecture</span>
+          </button>
         </nav>
 
         <div className="sidebar-footer">
@@ -1196,6 +1200,14 @@ export function App() {
       </aside>
 
       <main className="app-main" id="main-content" tabIndex={-1}>
+        <header className="product-header">
+          <CreateMenu
+            canCreateAgent={agentCollectionState === "ready" && !busy}
+            canStartSession={sessionCollectionState === "ready" && agents.some((agent) => !knownSessionAdmissionBlocker(agent)) && !busy}
+            onCreateAgent={openAgentSetup}
+            onStartSession={openSessionSetup}
+          />
+        </header>
         <div className="page-transition" key={view}>
           {view === "sessions" ? (
             <SessionsView
@@ -1208,6 +1220,8 @@ export function App() {
               busy={busy}
               coreError={sessionCollectionError}
               coreState={sessionCollectionState}
+              createRequest={sessionCreateRequest ?? 0}
+              onCreateRequestConsumed={consumeSessionCreateRequest}
               detailError={detailError}
               detailState={detailState}
               turnError={turnError}
@@ -1233,10 +1247,14 @@ export function App() {
           ) : null}
           {view === "agents" ? (
             <AgentsView
+              key={`agents:${coreGeneration}`}
               agents={agents}
               busy={busy}
+              coreBaseUrl={connection.baseUrl}
               coreError={agentCollectionError}
               coreState={agentCollectionState}
+              createRequest={agentCreateRequest ?? 0}
+              onCreateRequestConsumed={consumeAgentCreateRequest}
               onCreate={createAgent}
               onDelete={deleteAgent}
               onRefresh={() => void refreshAgents()}

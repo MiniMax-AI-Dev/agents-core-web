@@ -8,14 +8,19 @@ import { Skeleton } from "../../components/Skeleton";
 import type { CoreConnectionState } from "../../lib/connection";
 import { AgentDialog } from "./AgentDialog";
 import { AgentForm } from "./AgentForm";
+import { AgentSetupView } from "./AgentSetupView";
 import { createRequestGate } from "./agent-form";
+import { knownSessionAdmissionBlocker } from "./session-admission";
 
 interface AgentsViewProps {
   agents: SavedAgent[];
   busy: boolean;
+  coreBaseUrl?: string;
   coreError: string | null;
   coreState: CoreConnectionState;
-  onCreate: (input: CreateAgentInput) => Promise<void>;
+  createRequest?: number;
+  onCreateRequestConsumed?: (request: number) => void;
+  onCreate: (input: CreateAgentInput) => Promise<SavedAgent | undefined>;
   onDelete?: (agentId: string) => Promise<void>;
   onRefresh: () => void;
   onRetrieve?: (agentId: string) => Promise<SavedAgent | undefined>;
@@ -63,7 +68,41 @@ function StructuredValue({ value }: { value: unknown }) {
   return <pre className="agent-structured-value">{JSON.stringify(value, null, 2)}</pre>;
 }
 
+function AgentSessionStartAction({
+  agent,
+  busy,
+  onStart,
+}: {
+  agent: SavedAgent;
+  busy: boolean;
+  onStart: (agentId: string) => void;
+}) {
+  const blocker = knownSessionAdmissionBlocker(agent);
+  const descriptionId = `start-session-${agent.id}`;
+  return (
+    <span className="action-tooltip">
+      <button
+        className="icon-button ghost agent-session-start"
+        type="button"
+        onClick={() => {
+          if (!blocker) onStart(agent.id);
+        }}
+        disabled={busy}
+        aria-disabled={blocker ? true : undefined}
+        aria-label={`Start a Session with ${agent.name || "this Agent"}`}
+        aria-describedby={descriptionId}
+      >
+        <MessageSquare size={14} strokeWidth={1.5} />
+      </button>
+      <span className="action-tooltip-content" role="tooltip" id={descriptionId}>
+        {blocker ? `Session unavailable: ${blocker}` : "Start Session"}
+      </span>
+    </span>
+  );
+}
+
 export function AgentDetails({ agent }: { agent: SavedAgent }) {
+  const blocker = knownSessionAdmissionBlocker(agent);
   return (
     <div className="agent-details">
       <div className="agent-detail-summary">
@@ -78,7 +117,9 @@ export function AgentDetails({ agent }: { agent: SavedAgent }) {
         </dl>
       </div>
       <div className="agent-capability-warning" role="note">
-        Saved advanced configuration is capability information only. It does not prove the current executor supports or can run tools, multi-agent, MCP, web search, plugins, reasoning, text, or service-tier settings.
+        {blocker
+          ? `This Agent can be saved, but the known Core Session profile cannot start it: ${blocker}`
+          : "Saved advanced configuration is not runtime proof. Model, provider, host, tools, and conditional verbosity still require executor validation."}
       </div>
       <section className="agent-capabilities" aria-labelledby="agent-capabilities-title">
         <h3 id="agent-capabilities-title">Advanced configuration · read only</h3>
@@ -106,8 +147,11 @@ export function AgentDeleteConfirmation({ agent }: { agent: SavedAgent }) {
 export function AgentsView({
   agents,
   busy,
+  coreBaseUrl = "/v1",
   coreError,
   coreState,
+  createRequest = 0,
+  onCreateRequestConsumed,
   onCreate,
   onDelete,
   onRefresh,
@@ -120,9 +164,12 @@ export function AgentsView({
   const [detailLoading, setDetailLoading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [createSetupRevision, setCreateSetupRevision] = useState(0);
   const requestGate = useRef(createRequestGate());
   const detailActionRef = useRef<HTMLButtonElement>(null);
+  const createReturnFocusRef = useRef<HTMLElement | null>(null);
   const restoreDetailFocus = useRef(false);
+  const lastCreateRequestRef = useRef(0);
   const knownModels = agents.map((agent) => agent.model);
   const normalizedQuery = query.trim().toLowerCase();
   const filteredAgents = normalizedQuery
@@ -136,6 +183,27 @@ export function AgentsView({
     setMode("closed");
     setActionError(null);
     setDetailLoading(false);
+  };
+
+  const closeCreateSetup = () => {
+    const returnFocus = createReturnFocusRef.current;
+    createReturnFocusRef.current = null;
+    closeDialog();
+    window.requestAnimationFrame(() => {
+      if (returnFocus?.isConnected) {
+        returnFocus.focus();
+        return;
+      }
+      document.querySelector<HTMLButtonElement>('button[data-create-agent-entry="true"]')?.focus();
+    });
+  };
+
+  const openCreateSetup = (returnFocus: HTMLElement | null) => {
+    requestGate.current.invalidate();
+    createReturnFocusRef.current = returnFocus;
+    setActionError(null);
+    setCreateSetupRevision((current) => current + 1);
+    setMode("create");
   };
 
   const returnToDetail = () => {
@@ -155,6 +223,17 @@ export function AgentsView({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [busy, detailLoading, mode, selectedAgent]);
+
+  useEffect(() => {
+    if (!createRequest || createRequest === lastCreateRequestRef.current) return;
+    lastCreateRequestRef.current = createRequest;
+    requestGate.current.invalidate();
+    createReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setActionError(null);
+    setCreateSetupRevision((current) => current + 1);
+    setMode("create");
+    onCreateRequestConsumed?.(createRequest);
+  }, [createRequest, onCreateRequestConsumed]);
 
   const retrieve = async (agent: SavedAgent) => {
     const request = requestGate.current.begin();
@@ -179,10 +258,11 @@ export function AgentsView({
     const request = requestGate.current.begin();
     setActionError(null);
     try {
-      await onCreate(input);
-      if (requestGate.current.isCurrent(request)) closeDialog();
+      const created = await onCreate(input);
+      return requestGate.current.isCurrent(request) ? created : undefined;
     } catch (error) {
       if (requestGate.current.isCurrent(request)) setActionError(errorMessage(error));
+      return undefined;
     }
   };
 
@@ -227,7 +307,22 @@ export function AgentsView({
       : mode === "delete"
         ? "Delete Agent?"
         : selectedAgent?.name || "Agent details";
-  const formId = mode === "create" ? "create-agent" : "edit-agent";
+
+  if (mode === "create") {
+    return (
+      <AgentSetupView
+        key={createSetupRevision}
+        actionError={actionError}
+        baseUrl={coreBaseUrl}
+        busy={busy}
+        knownModels={knownModels}
+        onBack={closeCreateSetup}
+        onCreate={submitCreate}
+        onStartSession={startSession}
+      />
+    );
+  }
+  const formId = "edit-agent";
 
   return (
     <section className="page-section agents-page">
@@ -248,7 +343,7 @@ export function AgentsView({
           <button className="icon-button outline" type="button" onClick={onRefresh} disabled={coreState === "connecting"} aria-label="Refresh Agents">
             <RefreshCw className={coreState === "connecting" ? "refresh-spinning" : undefined} size={14} strokeWidth={1.5} />
           </button>
-          <button className="button primary" type="button" onClick={() => { requestGate.current.invalidate(); setActionError(null); setMode("create"); }} disabled={busy || coreState !== "ready"}>
+          <button data-create-agent-entry="true" className="button primary" type="button" onClick={(event) => openCreateSetup(event.currentTarget)} disabled={busy || coreState !== "ready"}>
             <Plus size={14} strokeWidth={1.5} /> New Agent
           </button>
         </div>
@@ -293,19 +388,7 @@ export function AgentsView({
                 <span className="ledger-number" role="cell">{agent.tools.length}</span>
                 <span className="ledger-age" role="cell">{formatShortDate(agent.updated_at)}</span>
                 <span className="ledger-actions" role="cell">
-                  <span className="action-tooltip">
-                    <button
-                      className="icon-button ghost"
-                      type="button"
-                      onClick={() => startSession(agent.id)}
-                      disabled={busy}
-                      aria-label={`Start a Session with ${agent.name || "this Agent"}`}
-                      aria-describedby={`start-session-${agent.id}`}
-                    >
-                      <MessageSquare size={14} strokeWidth={1.5} />
-                    </button>
-                    <span className="action-tooltip-content" role="tooltip" id={`start-session-${agent.id}`}>Start Session</span>
-                  </span>
+                  <AgentSessionStartAction agent={agent} busy={busy} onStart={startSession} />
                 </span>
               </div>
             ))}
@@ -319,7 +402,7 @@ export function AgentsView({
           {agents.length ? (
             <button className="button outline" type="button" onClick={() => setQuery("")}>Clear search</button>
           ) : (
-            <button className="button primary" type="button" onClick={() => { requestGate.current.invalidate(); setMode("create"); }} disabled={busy}>Create Agent</button>
+            <button data-create-agent-entry="true" className="button primary" type="button" onClick={(event) => openCreateSetup(event.currentTarget)} disabled={busy}>Create Agent</button>
           )}
         </div>
       ) : null}
@@ -328,11 +411,11 @@ export function AgentsView({
         open={mode !== "closed"}
         onClose={closeDialog}
         title={dialogTitle}
-        footer={mode === "create" || mode === "edit" ? (
+        footer={mode === "edit" ? (
           <>
-            <button key="cancel-form" className="button outline" type="button" onClick={mode === "edit" ? returnToDetail : closeDialog} disabled={mode === "edit" && busy}>Cancel</button>
+            <button key="cancel-form" className="button outline" type="button" onClick={returnToDetail} disabled={busy}>Cancel</button>
             <button key="submit-form" className="button primary" type="submit" form={formId} disabled={busy}>
-              {busy ? (mode === "create" ? "Creating…" : "Saving…") : (mode === "create" ? "Create Agent" : "Save changes")}
+              {busy ? "Saving…" : "Save changes"}
             </button>
           </>
         ) : mode === "detail" ? (
@@ -360,9 +443,7 @@ export function AgentsView({
             {mode === "detail" && selectedAgent ? <button className="button outline" type="button" onClick={() => void retrieve(selectedAgent)}>Retry latest Agent</button> : null}
           </div>
         ) : null}
-        {mode === "create" ? (
-          <AgentForm formId={formId} knownModels={knownModels} onSubmit={submitCreate} />
-        ) : mode === "edit" && selectedAgent ? (
+        {mode === "edit" && selectedAgent ? (
           <AgentForm key={`${selectedAgent.id}:${selectedAgent.updated_at}`} agent={selectedAgent} formId={formId} knownModels={knownModels} onSubmit={submitUpdate} />
         ) : mode === "delete" && selectedAgent ? (
           <AgentDeleteConfirmation agent={selectedAgent} />

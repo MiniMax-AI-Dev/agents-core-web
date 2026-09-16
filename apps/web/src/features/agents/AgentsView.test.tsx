@@ -35,7 +35,7 @@ describe("Agents view", () => {
     expect(html).toContain("Text");
     expect(html).toContain("Service tier");
     expect(html).toContain("Multi-agent");
-    expect(html).toContain("does not prove the current executor");
+    expect(html).toContain("known Core Session profile cannot start it");
     expect(html).not.toMatch(/<(input|textarea|select)/);
   });
 
@@ -51,7 +51,7 @@ describe("Agents view", () => {
     expect(html).toContain("provider/model");
   });
 
-  it("uses native keyboard-operable buttons for Agent details and Session start", () => {
+  it("fails closed for a saved-only Agent configuration", () => {
     const html = renderToStaticMarkup(
       <AgentsView
         agents={[agent]}
@@ -65,7 +65,33 @@ describe("Agents view", () => {
     );
 
     expect(html).toContain('type="button" aria-label="Open details for this Agent"');
+    expect(html).toContain('aria-disabled="true" aria-label="Start a Session with this Agent"');
+    expect(html).toContain("Session unavailable: Current Core Session admission requires");
+  });
+
+  it("keeps Session start available for the known admission profile", () => {
+    const compatible = {
+      ...agent,
+      multi_agent: { enabled: false, max_concurrent_subagents: null },
+      reasoning: {},
+      service_tier: "auto" as const,
+      text: { format: { type: "text" as const }, verbosity: "medium" as const },
+      tools: [],
+    };
+    const html = renderToStaticMarkup(
+      <AgentsView
+        agents={[compatible]}
+        busy={false}
+        coreError={null}
+        coreState="ready"
+        onCreate={async () => undefined}
+        onRefresh={() => undefined}
+        onStartSession={async () => undefined}
+      />,
+    );
+
     expect(html).toContain('type="button" aria-label="Start a Session with this Agent"');
+    expect(html).not.toContain("Session unavailable:");
   });
 
   it("states the durable delete boundary before confirmation", () => {

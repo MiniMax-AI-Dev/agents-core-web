@@ -436,6 +436,38 @@ describe("OpenAIAgentsClient", () => {
     });
   });
 
+  it.each([
+    ["message", (client: OpenAIAgentsClient) => client.sendMessage("session", "hello", "event-key")],
+    ["cancel", (client: OpenAIAgentsClient) => client.cancelTurn("session", "event-key")],
+    ["tool result", (client: OpenAIAgentsClient) => client.submitFunctionResult("session", {
+      callId: "call_1",
+      turnId: "turn_1",
+      success: false,
+      error: "safe failure",
+    }, "event-key")],
+  ])("requires HTTP 204 for %s event submission without retrying", async (_label, submit) => {
+    const successCalls: FetchCall[] = [];
+    const successClient = new OpenAIAgentsClient({
+      fetch: recordingFetch(new Response(null, { status: 204 }), successCalls),
+    });
+
+    await expect(submit(successClient)).resolves.toBeUndefined();
+    expect(successCalls).toHaveLength(1);
+
+    for (const status of [200, 202]) {
+      const calls: FetchCall[] = [];
+      const client = new OpenAIAgentsClient({
+        fetch: recordingFetch(jsonResponse({ accepted: true }, status), calls),
+      });
+
+      await expect(submit(client)).rejects.toMatchObject({
+        status,
+        message: `Agent core request failed (${status}).`,
+      });
+      expect(calls).toHaveLength(1);
+    }
+  });
+
   it("rejects stream=true before the JSON create method performs a request", async () => {
     const calls: FetchCall[] = [];
     const client = new OpenAIAgentsClient({

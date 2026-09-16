@@ -31,6 +31,7 @@ import { Skeleton } from "../../components/Skeleton";
 import { StatusIcon, type StatusKind } from "../../components/StatusIcon";
 import type { CoreConnectionState } from "../../lib/connection";
 import { useThreadScroll } from "../../lib/use-thread-scroll";
+import { knownSessionAdmissionBlocker } from "../agents/session-admission";
 import {
   EnvironmentConnectionNotice,
   EnvironmentPanel,
@@ -52,6 +53,8 @@ interface SessionsViewProps {
   busy: boolean;
   coreError: string | null;
   coreState: CoreConnectionState;
+  createRequest?: number;
+  onCreateRequestConsumed?: (request: number) => void;
   detailError: string | null;
   detailState: SessionDetailState;
   turnError?: string | null;
@@ -77,7 +80,7 @@ interface SessionsViewProps {
   ) => Promise<AgentSession | undefined>;
 }
 
-const executorSetupUrl = "https://github.com/MiniMax-AI-Dev/parsar/blob/main/services/agents-api/README.md#internal-execution-device-connection";
+const coreRuntimeSetupUrl = "https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/services/agents-api/README.md#public-text-execution";
 
 function SessionsListSkeleton() {
   return (
@@ -189,6 +192,30 @@ function UnsupportedActionNotice() {
   );
 }
 
+function CancelActiveTurnButton({ busy, onCancel }: { busy: boolean; onCancel: () => void }) {
+  return (
+    <button
+      className="composer-action"
+      type="button"
+      onClick={onCancel}
+      disabled={busy}
+      aria-label="Cancel active Turn"
+      title="Cancel active Turn"
+    >
+      <Square size={13} fill="currentColor" strokeWidth={1.5} />
+    </button>
+  );
+}
+
+function CancelOnlyBar({ busy, onCancel }: { busy: boolean; onCancel: () => void }) {
+  return (
+    <section className="active-turn-cancel-bar" aria-label="Active Turn controls">
+      <p>Turn continuation is unavailable, but cancellation remains available.</p>
+      <CancelActiveTurnButton busy={busy} onCancel={onCancel} />
+    </section>
+  );
+}
+
 function FunctionActionBar({
   actions,
   agentName,
@@ -258,9 +285,7 @@ function FunctionActionBar({
         >
           Submit result
         </button>
-        <button className="composer-action" type="button" onClick={onCancel} disabled={busy} aria-label="Cancel active Turn" title="Cancel active Turn">
-          <Square size={13} fill="currentColor" strokeWidth={1.5} />
-        </button>
+        <CancelActiveTurnButton busy={busy} onCancel={onCancel} />
       </div>
     </section>
   );
@@ -275,6 +300,8 @@ export function SessionsView({
   busy,
   coreError,
   coreState,
+  createRequest = 0,
+  onCreateRequestConsumed,
   detailError,
   detailState,
   turnError = null,
@@ -295,15 +322,22 @@ export function SessionsView({
   onSend,
   onUpdateSession,
 }: SessionsViewProps) {
+  const firstStartableAgent = agents.find((agent) => !knownSessionAdmissionBlocker(agent));
+  const newSessionUnavailableReason = coreState === "ready" && !firstStartableAgent
+    ? agents.length
+      ? "No loaded Agent matches the known Core Session-admission profile."
+      : "Create or load a saved Agent before starting a Session."
+    : null;
   const [message, setMessage] = useState("");
   const [newSessionOpen, setNewSessionOpen] = useState(false);
-  const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
+  const [agentId, setAgentId] = useState(firstStartableAgent?.id ?? "");
   const [actionSession, setActionSession] = useState<AgentSession | null>(null);
   const [viewport, setViewport] = useState<HTMLDivElement | null>(null);
   const [threadContent, setThreadContent] = useState<HTMLDivElement | null>(null);
   const sendingRef = useRef(false);
   const pageRef = useRef<HTMLElement>(null);
   const newSessionActionRef = useRef<HTMLButtonElement>(null);
+  const lastCreateRequestRef = useRef(0);
   const conversationActionRef = useRef<HTMLButtonElement>(null);
   const restoreFocusAfterDeleteRef = useRef(false);
   const draftsBySessionRef = useRef(new Map<string, string>());
@@ -315,9 +349,21 @@ export function SessionsView({
     threadContent,
   );
 
+  const selectedAgent = agents.find((agent) => agent.id === agentId);
+  const selectedAgentBlocker = selectedAgent ? knownSessionAdmissionBlocker(selectedAgent) : null;
+
   useEffect(() => {
-    if (!agentId && agents[0]) setAgentId(agents[0].id);
-  }, [agentId, agents]);
+    if (selectedAgent && !selectedAgentBlocker) return;
+    const next = agents.find((agent) => !knownSessionAdmissionBlocker(agent));
+    if ((next?.id ?? "") !== agentId) setAgentId(next?.id ?? "");
+  }, [agentId, agents, selectedAgent, selectedAgentBlocker]);
+
+  useEffect(() => {
+    if (!createRequest || createRequest === lastCreateRequestRef.current) return;
+    lastCreateRequestRef.current = createRequest;
+    setNewSessionOpen(true);
+    onCreateRequestConsumed?.(createRequest);
+  }, [createRequest, onCreateRequestConsumed]);
 
   useEffect(() => {
     if (actionSession && !sessions.some((session) => session.id === actionSession.id)) {
@@ -389,7 +435,7 @@ export function SessionsView({
   };
 
   const createSession = async () => {
-    if (coreState !== "ready" || !agentId) return;
+    if (coreState !== "ready" || !agentId || selectedAgentBlocker) return;
     try {
       await onCreateSession(agentId);
     } catch {
@@ -410,6 +456,10 @@ export function SessionsView({
   const unsupportedActionCount = requiredActions.length - environmentConnections.length - functionActions.length + (
     !requiredActionsAreValid || selected?.status === "requires_action" && !requiredActions.length ? 1 : 0
   );
+  const showCancelOnly = Boolean(
+    (selected?.status === "in_progress" || selected?.status === "requires_action") &&
+    (unsupportedActionCount > 0 || environmentConnections.length > 0 && functionActions.length === 0),
+  );
 
   return (
     <section ref={pageRef} className="page-section session-page" tabIndex={-1}>
@@ -420,9 +470,27 @@ export function SessionsView({
             <button className="icon-button ghost" type="button" onClick={onRefresh} disabled={coreState === "connecting"} aria-label="Recover durable state">
               <RefreshCw className={coreState === "connecting" ? "refresh-spinning" : undefined} size={14} strokeWidth={1.5} />
             </button>
-            <button ref={newSessionActionRef} className="icon-button primary" type="button" onClick={() => setNewSessionOpen(true)} disabled={coreState !== "ready" || !agents.length} aria-label="New Session">
-              <Plus size={14} strokeWidth={1.5} />
-            </button>
+            <span className="action-tooltip">
+              <button
+                ref={newSessionActionRef}
+                className="icon-button primary session-create-trigger"
+                type="button"
+                onClick={() => {
+                  if (!newSessionUnavailableReason) setNewSessionOpen(true);
+                }}
+                disabled={coreState !== "ready"}
+                aria-disabled={newSessionUnavailableReason ? true : undefined}
+                aria-describedby={newSessionUnavailableReason ? "new-session-unavailable-reason" : undefined}
+                aria-label="New Session"
+              >
+                <Plus size={14} strokeWidth={1.5} />
+              </button>
+              {newSessionUnavailableReason ? (
+                <span className="action-tooltip-content" role="tooltip" id="new-session-unavailable-reason">
+                  {newSessionUnavailableReason}
+                </span>
+              ) : null}
+            </span>
           </div>
         </header>
 
@@ -575,21 +643,21 @@ export function SessionsView({
                 {sendError ? (
                   <ErrorState
                     className="session-send-error"
-                    title={sendError.code === "execution_unavailable" ? "Execution daemon is unavailable" : "Message wasn’t sent"}
+                    title={sendError.code === "execution_unavailable" ? "Core execution is unavailable" : "Message wasn’t sent"}
                     description={sendError.code === "execution_unavailable"
-                      ? "Agent Core is online, but this service does not currently have an execution worker. Your draft was restored and was not retried."
+                      ? "Agent Core rejected this execution request. Your draft was restored and was not retried."
                       : sendError.uncertain
                         ? "Core may have accepted this message before the response was lost. Your draft was restored and was not retried."
                         : "Agent Core rejected the message. Your draft was restored and was not retried."}
                     detail={sendError.message}
                     hint={sendError.code === "execution_unavailable"
-                      ? "Start Core with AGENTS_API_DAEMON_WS_URL, connect a same-tenant parsar-daemon, then explicitly send the unchanged draft again."
+                      ? "Review the Core error and operator runtime configuration, then explicitly send the unchanged draft again when Core is ready."
                       : sendError.uncertain
                         ? "Review durable state first. Explicitly send the unchanged draft to reuse its key; editing it creates a new operation."
                         : "Review the error, then send the restored draft as a new operation when the Core is ready."}
                     action={sendError.code === "execution_unavailable" ? (
-                      <a className="button outline" href={executorSetupUrl} target="_blank" rel="noreferrer">
-                        Executor setup
+                      <a className="button outline" href={coreRuntimeSetupUrl} target="_blank" rel="noreferrer">
+                        Core runtime setup
                         <ExternalLink size={13} strokeWidth={1.5} aria-hidden="true" />
                       </a>
                     ) : undefined}
@@ -631,6 +699,9 @@ export function SessionsView({
               <EnvironmentConnectionNotice action={action} key={`${action.environment_id}:${index}`} />
             ))}
             {unsupportedActionCount ? <UnsupportedActionNotice /> : null}
+            {showCancelOnly ? (
+              <CancelOnlyBar busy={busy} onCancel={cancel} />
+            ) : null}
             {!unsupportedActionCount && functionActions.length ? (
                 <FunctionActionBar
                   actions={functionActions}
@@ -664,9 +735,7 @@ export function SessionsView({
                   <span>{selected.agent.name || "Untitled Agent"}</span>
                 </span>
                 {selected.status === "in_progress" || selected.status === "requires_action" ? (
-                  <button className="composer-action" type="button" onClick={cancel} disabled={busy} aria-label="Cancel active Turn" title="Cancel active Turn">
-                    <Square size={13} fill="currentColor" strokeWidth={1.5} />
-                  </button>
+                  <CancelActiveTurnButton busy={busy} onCancel={cancel} />
                 ) : (
                   <button
                     className="composer-action send"
@@ -698,7 +767,7 @@ export function SessionsView({
         footer={
           <>
             <button className="button outline" type="button" onClick={() => setNewSessionOpen(false)}>Cancel</button>
-            <button className="button primary" type="button" onClick={() => void createSession()} disabled={busy || coreState !== "ready" || !agentId}>
+            <button className="button primary" type="button" onClick={() => void createSession()} disabled={busy || coreState !== "ready" || !agentId || Boolean(selectedAgentBlocker)}>
               {busy ? "Creating…" : "Create Session"}
             </button>
           </>
@@ -707,12 +776,23 @@ export function SessionsView({
         <label className="field">
           <span>Saved Agent</span>
           <select value={agentId} onChange={(event) => setAgentId(event.target.value)}>
-            {agents.map((agent) => (
-              <option value={agent.id} key={agent.id}>{agent.name || agent.id} · {agent.model}</option>
-            ))}
+            {!firstStartableAgent ? <option value="">No Session-compatible saved Agent</option> : null}
+            {agents.map((agent) => {
+              const blocker = knownSessionAdmissionBlocker(agent);
+              return (
+                <option value={agent.id} key={agent.id} disabled={Boolean(blocker)}>
+                  {agent.name || agent.id} · {agent.model}{blocker ? " · Session unavailable" : ""}
+                </option>
+              );
+            })}
           </select>
-          <small>The initial slice uses environment: none; runtime placement remains core-owned.</small>
+          <small>The initial slice uses environment: none. Saved-only reasoning, non-auto tiers, JSON schema, multi-agent settings, unsupported tool shapes, and attached MCP credentials cannot start this Web Session flow.</small>
         </label>
+        {!firstStartableAgent ? (
+          <div className="notice warning" role="note">
+            No loaded Agent matches the known Core Session-admission profile. Create an Agent with the Web defaults or update the saved configuration first.
+          </div>
+        ) : null}
         <div className="notice success">
           <StatusIcon status="completed" /> The Session starts idle so the UI can subscribe before the first Turn.
         </div>

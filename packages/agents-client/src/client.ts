@@ -264,11 +264,15 @@ export class OpenAIAgentsClient implements AgentCore {
   }
 
   private submitEvents(sessionId: string, events: unknown[], idempotencyKey = randomKey()): Promise<void> {
-    return this.request(`/agents/sessions/${encodeURIComponent(sessionId)}/events`, {
-      method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey },
-      body: JSON.stringify({ events }),
-    });
+    return this.request<void>(
+      `/agents/sessions/${encodeURIComponent(sessionId)}/events`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify({ events }),
+      },
+      204,
+    );
   }
 
   sendMessage(sessionId: string, text: string, idempotencyKey?: string): Promise<void> {

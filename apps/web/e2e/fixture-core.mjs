@@ -63,6 +63,97 @@ function savedAgent(id, name, model, updatedAt) {
   };
 }
 
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value, allowed) {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function isEmptyObject(value) {
+  return value == null || isRecord(value) && Object.keys(value).length === 0;
+}
+
+function isSafeMcpUrl(value) {
+  if (
+    typeof value !== "string"
+    || /^\p{White_Space}|\p{White_Space}$/u.test(value)
+    || /[\u0000-\u0020\u007f\\]/u.test(value)
+    || value.includes("?")
+    || value.includes("#")
+    || /%(?![0-9A-Fa-f]{2})/u.test(value)
+  ) return false;
+  const schemeSeparator = value.indexOf("://");
+  const authority = schemeSeparator >= 0 ? value.slice(schemeSeparator + 3).split("/", 1)[0] : "";
+  if (!authority || authority.includes("@") || authority.includes("%") || /[{}\x60]/u.test(authority)) return false;
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && Boolean(url.hostname) && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+function isCanonicalExecutionFunction(tool) {
+  return hasOnlyKeys(tool, ["type", "name", "description", "parameters", "defer_loading"])
+    && typeof tool.name === "string"
+    && typeof tool.description === "string"
+    && isRecord(tool.parameters)
+    && (tool.defer_loading === undefined || typeof tool.defer_loading === "boolean");
+}
+
+function isCanonicalExecutionMcp(tool) {
+  const transport = tool.transport;
+  const allowedTools = tool.allowed_tools;
+  return hasOnlyKeys(tool, [
+    "type", "server_label", "transport", "allowed_tools", "connection_origin",
+    "credential_id", "request_metadata", "required",
+  ])
+    && typeof tool.server_label === "string"
+    && !/^\p{White_Space}*$/u.test(tool.server_label)
+    && isRecord(transport)
+    && hasOnlyKeys(transport, ["type", "server_url", "headers"])
+    && transport.type === "http"
+    && isSafeMcpUrl(transport.server_url)
+    && isEmptyObject(transport.headers)
+    && tool.connection_origin === "service"
+    && (tool.credential_id == null || typeof tool.credential_id === "string")
+    && isEmptyObject(tool.request_metadata)
+    && (tool.required === undefined || typeof tool.required === "boolean")
+    && (allowedTools == null || Array.isArray(allowedTools) && allowedTools.every((name) => typeof name === "string" && name.length > 0));
+}
+
+function sessionAdmissionError(agent) {
+  if (/^\p{White_Space}*$/u.test(agent.model)) return "Execution currently requires a nonempty model.";
+  if (agent.multi_agent.enabled || agent.multi_agent.max_concurrent_subagents !== null) return "Enabled multi_agent execution is not supported by this service yet.";
+  if (agent.reasoning.effort != null || agent.reasoning.summary != null) return "Explicit reasoning execution options are not supported by this service yet.";
+  if (agent.service_tier !== "auto") return "Execution currently supports service_tier=auto only.";
+  if (agent.text.format.type !== "text") return "Execution currently supports text.format.type=text only.";
+
+  const functionNames = new Set();
+  const mcpLabels = new Set();
+  let functionCount = 0;
+  for (const tool of agent.tools) {
+    if (tool.type === "function") {
+      functionCount += 1;
+      if (!isCanonicalExecutionFunction(tool) || /^\p{White_Space}*$/u.test(tool.name) || Buffer.byteLength(tool.name, "utf8") > 512 || functionNames.has(tool.name) || tool.defer_loading === true) {
+        return "Invalid execution function fields.";
+      }
+      functionNames.add(tool.name);
+    } else if (tool.type === "mcp") {
+      if (!isCanonicalExecutionMcp(tool) || mcpLabels.has(tool.server_label) || tool.credential_id != null) {
+        return "Invalid execution MCP fields.";
+      }
+      mcpLabels.add(tool.server_label);
+    } else {
+      return "Execution currently supports non-deferred functions and the service-origin HTTP MCP profile only.";
+    }
+  }
+  if (functionCount > 64) return "This service supports at most 64 function tools.";
+  return null;
+}
+
 function sessionSnapshot(agent) {
   const { object: _object, metadata: _metadata, created_at: _created, updated_at: _updated, ...snapshot } = agent;
   return snapshot;
@@ -71,8 +162,10 @@ function sessionSnapshot(agent) {
 function initialState() {
   const first = savedAgent("agent_a", "Lifecycle Agent", "fixture/model-a", baseline - 60);
   const second = savedAgent("agent_b", "Second Agent", "fixture/model-b", baseline - 30);
+  const savedOnlyTool = savedAgent("agent_tool_only", "Saved-only Tool Agent", "fixture/model-tool", baseline - 20);
+  savedOnlyTool.tools = [{ type: "tool_search" }];
   return {
-    agents: [first, second],
+    agents: [first, second, savedOnlyTool],
     sessions: [{
       id: "session_snapshot",
       object: "agent.session",
@@ -90,6 +183,7 @@ function initialState() {
     turns: [],
     requests: [],
     controls: {
+      createAgentResponseVariant: "valid",
       retrieveDelayMs: 0,
       retrieveStatus: 200,
       updateDelayMs: 0,
@@ -159,7 +253,7 @@ function applyEnvironmentScenario(value) {
   const session = state.sessions[0];
   if (!session) return;
   const hostileRemote = "https://launcher:private@executor.example.test/connect?executor_token=secret#credential";
-  if (value === 1 || value === 4 || value === 5) {
+  if (value === 1 || value === 4 || value === 5 || value === 6) {
     session.environment = {
       type: "self_hosted",
       id: value === 5 ? canonicalEnvironmentUuid.toUpperCase() : "environment_fixture",
@@ -167,11 +261,15 @@ function applyEnvironmentScenario(value) {
       workspace_directory: `/workspace/<script>safe</script>/${"long/".repeat(45)}project`,
       capability_directories: ["/capabilities/read-only", `/capabilities/${"wide/".repeat(55)}`],
     };
-    session.status = value === 1 ? "requires_action" : "idle";
-    session.required_actions = value === 1 ? [
-      { type: "environment_connection", environment_id: "environment_fixture" },
-      { type: "function_call", call_id: "call_fixture", turn_id: "turn_fixture", name: "confirm", arguments: { safe: true } },
-    ] : [];
+    session.status = value === 1 || value === 6 ? "requires_action" : "idle";
+    session.required_actions = value === 1
+      ? [
+          { type: "environment_connection", environment_id: "environment_fixture" },
+          { type: "function_call", call_id: "call_fixture", turn_id: "turn_fixture", name: "confirm", arguments: { safe: true } },
+        ]
+      : value === 6
+        ? [{ type: "environment_connection", environment_id: "environment_fixture" }]
+        : [];
     return;
   }
   if (value === 2) {
@@ -347,11 +445,24 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "POST" && url.pathname === "/v1/agents") {
       state.sequence += 1;
+      const defaults = savedAgent(`agent_created_${state.sequence}`, body.name ?? null, body.model, baseline + state.sequence);
       const created = {
-        ...savedAgent(`agent_created_${state.sequence}`, body.name, body.model, baseline + state.sequence),
-        instructions: body.instructions,
-        metadata: body.metadata,
+        ...defaults,
+        instructions: body.instructions ?? null,
+        metadata: body.metadata ?? {},
+        multi_agent: body.multi_agent ?? { enabled: false, max_concurrent_subagents: null },
+        reasoning: body.reasoning ?? {},
+        service_tier: body.service_tier ?? "auto",
+        text: {
+          format: body.text?.format ?? { type: "text" },
+          verbosity: body.text?.verbosity ?? "medium",
+        },
+        tools: body.tools ?? [],
       };
+      if (state.controls.createAgentResponseVariant === "reasoning") {
+        created.reasoning = { effort: "high" };
+        state.controls.createAgentResponseVariant = "valid";
+      }
       state.agents.unshift(created);
       return sendJson(response, created, 201);
     }
@@ -363,6 +474,8 @@ const server = http.createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/v1/agents/sessions") {
       const agent = state.agents.find((candidate) => candidate.id === body.agent_id);
       if (!agent) return sendError(response, 404, "Fixture Agent not found for Session.");
+      const admissionError = sessionAdmissionError(agent);
+      if (admissionError) return sendError(response, 400, admissionError);
       state.sequence += 1;
       const created = {
         id: `session_created_${state.sequence}`,
