@@ -15,12 +15,15 @@ const agentsCallbacks = {
 const sessionsCallbacks = {
   onCancel: async () => undefined,
   onCreateSession: async () => undefined,
+  onDeleteSession: async () => true,
   onFunctionResult: async () => undefined,
   onRefresh: () => undefined,
   onRetrySession: () => undefined,
   onRetryStream: () => undefined,
+  onRetrieveSession: async () => undefined,
   onSelect: () => undefined,
   onSend: async () => undefined,
+  onUpdateSession: async () => undefined,
 };
 
 const selectedSession: AgentSession = {

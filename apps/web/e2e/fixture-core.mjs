@@ -3,6 +3,8 @@ import http from "node:http";
 const host = "127.0.0.1";
 const port = Number(process.env.AGENTS_FIXTURE_PORT ?? 18092);
 const baseline = 1_789_438_800;
+const canonicalEnvironmentUuid = "0f745b0d-b545-49cd-8d7e-4c31c80dc564";
+const canonicalUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function patchItems() {
   const longLine = `+export const longValue = "${"x".repeat(2_000)}";`;
@@ -20,6 +22,26 @@ function patchItems() {
     { id: "patch_running", turn_id: "turn_patch_running", type: "function_call", status: "in_progress", name: "apply_patch", call_id: "call_running", arguments: { changes: [{ path: "src/running.ts", kind: { type: "update" }, diff: "@@ -1 +1 @@\n-wait\n+working" }] } },
     { id: "patch_failed", turn_id: "turn_patch_failed", type: "function_call", status: "failed", name: "apply_patch", call_id: "call_failed", arguments: { changes: [{ path: "src/failed.ts", kind: { type: "delete" }, diff: "@@ -1 +0,0 @@\n-failed" }] }, error: { message: "fixture failure" } },
     { id: "patch_alternate", turn_id: "turn_patch_alternate", type: "function_call", status: "in_progress", name: "apply_patch", call_id: "call_alternate", arguments: { patch: "*** Begin Patch\nmalformed alternate shape" } },
+  ];
+}
+
+function observableTurns() {
+  return [
+    { id: "turn_queued", agent_id: "agent_a", session_id: "session_snapshot", object: "agent.session.turn", status: "queued", created_at: baseline - 18, started_at: null, completed_at: null, error: null, usage: null },
+    { id: "turn_in_progress", agent_id: "agent_a", session_id: "session_snapshot", object: "agent.session.turn", status: "in_progress", created_at: baseline - 17, started_at: baseline - 16, completed_at: null, error: null, usage: null },
+    { id: "turn_waiting", agent_id: "agent_a", session_id: "session_snapshot", object: "agent.session.turn", status: "waiting", created_at: baseline - 15, started_at: baseline - 14, completed_at: null, error: null, usage: null },
+    { id: "turn_completed", agent_id: "agent_a", session_id: "session_snapshot", object: "agent.session.turn", status: "completed", created_at: baseline - 13, started_at: baseline - 12, completed_at: baseline - 5, error: null, usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13, input_tokens_details: { cached_tokens: 4 }, output_tokens_details: { reasoning_tokens: 2 } } },
+    { id: "turn_failed", agent_id: "agent_a", session_id: "session_snapshot", object: "agent.session.turn", status: "failed", created_at: baseline - 4, started_at: baseline - 3, completed_at: baseline - 2, error: { code: "internal_error", message: "The execution could not complete." }, usage: null },
+    { id: "turn_cancelled", agent_id: "agent_a", session_id: "session_snapshot", object: "agent.session.turn", status: "cancelled", created_at: baseline - 1, started_at: baseline, completed_at: baseline + 1, error: null, usage: null },
+    { id: "turn_terminal_refresh", agent_id: "agent_a", session_id: "session_snapshot", object: "agent.session.turn", status: "in_progress", created_at: baseline + 2, started_at: baseline + 3, completed_at: null, error: null, usage: null },
+  ];
+}
+
+function observableTurnItems() {
+  return [
+    { id: "turn_message", turn_id: "turn_completed", type: "message", status: "completed", role: "assistant", content: [{ type: "output_text", text: "Completed Turn output remains in the conversation." }] },
+    { id: "failed_input", turn_id: "turn_failed", type: "message", status: "completed", role: "user", content: [{ type: "input_text", text: "Persisted input before the Turn failed." }] },
+    { id: "unassociated", turn_id: "turn_not_loaded", type: "message", status: "completed", role: "assistant", content: [{ type: "output_text", text: "This Item is waiting for its Turn page." }] },
   ];
 }
 
@@ -65,6 +87,7 @@ function initialState() {
       created_at: baseline - 20,
       last_active_at: baseline - 10,
     }],
+    turns: [],
     requests: [],
     controls: {
       retrieveDelayMs: 0,
@@ -76,24 +99,70 @@ function initialState() {
       sendStatus: 204,
       sendResponseLoss: 0,
       itemsScenario: 0,
+      turnsScenario: 0,
+      turnsRetrieveDelayMs: 0,
+      turnsRetrieveStatus: 200,
+      turnsPageSize: 2,
       environmentScenario: 0,
+      environmentRetrieveDelayMs: 0,
+      environmentRetrieveStatus: 200,
+      environmentResourceStatus: "pending",
+      environmentResourceVariant: "valid",
       environmentEventStatus: 0,
       environmentEventCount: 0,
+      streamStatus: 200,
+      streamOpenDelayMs: 0,
       streamCloseCount: 0,
       streamCloseDelayMs: 30,
+      sessionRetrieveDelayMs: 0,
+      sessionRetrieveStatus: 200,
+      sessionRetrieveVariant: "valid",
+      sessionUpdateDelayMs: 0,
+      sessionUpdateStatus: 200,
+      sessionUpdateResponseLoss: 0,
+      sessionDeleteDelayMs: 0,
+      sessionDeleteStatus: 200,
+      sessionDeleteResponseLoss: 0,
+      sessionDeleteStreamCloseDelayMs: 0,
+      itemsRetrieveDelayMs: 0,
+      itemsRetrieveStatus: 200,
+    },
+    aborts: {
+      sessionReads: 0,
+      itemReads: 0,
+      turnReads: 0,
+      streams: 0,
     },
     sequence: 0,
   };
+}
+
+function applyTurnsScenario(value) {
+  const session = state.sessions[0];
+  if (!session) return;
+  if (value === 1) {
+    state.turns = observableTurns();
+    session.usage = {
+      input_tokens: 20,
+      output_tokens: 6,
+      total_tokens: 26,
+      input_tokens_details: { cached_tokens: 8 },
+      output_tokens_details: { reasoning_tokens: 4 },
+    };
+    return;
+  }
+  state.turns = [];
+  session.usage = null;
 }
 
 function applyEnvironmentScenario(value) {
   const session = state.sessions[0];
   if (!session) return;
   const hostileRemote = "https://launcher:private@executor.example.test/connect?executor_token=secret#credential";
-  if (value === 1 || value === 4) {
+  if (value === 1 || value === 4 || value === 5) {
     session.environment = {
       type: "self_hosted",
-      id: "environment_fixture",
+      id: value === 5 ? canonicalEnvironmentUuid.toUpperCase() : "environment_fixture",
       remote_url: hostileRemote,
       workspace_directory: `/workspace/<script>safe</script>/${"long/".repeat(45)}project`,
       capability_directories: ["/capabilities/read-only", `/capabilities/${"wide/".repeat(55)}`],
@@ -119,6 +188,31 @@ function applyEnvironmentScenario(value) {
 }
 
 let state = initialState();
+const streamResponses = new Map();
+
+function emitTurnLifecycle(status) {
+  const index = state.turns.findIndex((turn) => turn.id === "turn_terminal_refresh");
+  const existing = state.turns[index];
+  if (!existing || !["completed", "failed", "cancelled"].includes(status)) return false;
+  const terminal = {
+    ...existing,
+    status,
+    completed_at: baseline + 10,
+    error: status === "failed" ? { code: "internal_error", message: "The execution could not complete." } : null,
+    usage: status === "completed" ? { input_tokens: 5, output_tokens: 2, total_tokens: 7, input_tokens_details: { cached_tokens: 1 }, output_tokens_details: { reasoning_tokens: 1 } } : null,
+  };
+  state.turns[index] = terminal;
+  state.sequence += 1;
+  const event = `id: turn_${state.sequence}\ndata: ${JSON.stringify({
+    type: `agent.session.turn.${status}`,
+    event_id: `turn_${state.sequence}`,
+    session_id: "session_snapshot",
+    turn_id: terminal.id,
+    turn: terminal,
+  })}\n\n`;
+  for (const stream of streamResponses.keys()) stream.write(event);
+  return true;
+}
 
 function sendJson(response, value, status = 200) {
   const body = JSON.stringify(value);
@@ -161,6 +255,7 @@ function recordRequest(request, url, body) {
   state.requests.push({
     method: request.method,
     path: url.pathname,
+    query: url.search,
     beta: request.headers["openai-beta"] ?? null,
     authorizationPresent: Boolean(request.headers.authorization),
     idempotencyKeyPresent: Boolean(request.headers["idempotency-key"]),
@@ -181,6 +276,16 @@ function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function trackAbort(response, key) {
+  let finished = false;
+  response.once("finish", () => {
+    finished = true;
+  });
+  response.once("close", () => {
+    if (!finished) state.aborts[key] += 1;
+  });
+}
+
 const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? "/", `http://${host}:${port}`);
@@ -189,16 +294,45 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, { ready: true });
     }
     if (request.method === "POST" && url.pathname === "/__fixture/reset") {
+      for (const stream of streamResponses.keys()) stream.end();
+      streamResponses.clear();
       state = initialState();
       return sendJson(response, { reset: true });
     }
     if (request.method === "POST" && url.pathname === "/__fixture/control") {
       state.controls = { ...state.controls, ...await readJson(request) };
       applyEnvironmentScenario(state.controls.environmentScenario);
+      applyTurnsScenario(state.controls.turnsScenario);
       return sendJson(response, state.controls);
+    }
+    if (request.method === "POST" && url.pathname === "/__fixture/emit-turn") {
+      const input = await readJson(request);
+      return emitTurnLifecycle(input.status)
+        ? sendJson(response, { emitted: true })
+        : sendError(response, 400, "Fixture terminal Turn is unavailable.");
     }
     if (request.method === "GET" && url.pathname === "/__fixture/requests") {
       return sendJson(response, state.requests);
+    }
+    if (request.method === "GET" && url.pathname === "/__fixture/state") {
+      return sendJson(response, {
+        sessions: state.sessions,
+        aborts: state.aborts,
+        openStreams: [...streamResponses.values()],
+      });
+    }
+    if (request.method === "POST" && url.pathname === "/__fixture/session-metadata") {
+      const input = await readJson(request);
+      const target = state.sessions.find((session) => session.id === input.id);
+      if (!target) return sendError(response, 404, "Fixture Session not found.");
+      target.metadata = input.metadata;
+      return sendJson(response, target);
+    }
+    if (request.method === "POST" && url.pathname === "/__fixture/remove-session") {
+      const input = await readJson(request);
+      const before = state.sessions.length;
+      state.sessions = state.sessions.filter((session) => session.id !== input.id);
+      return sendJson(response, { removed: state.sessions.length !== before });
     }
 
     const body = request.method === "GET" || request.method === "DELETE" ? undefined : await readJson(request);
@@ -280,13 +414,171 @@ const server = http.createServer(async (request, response) => {
     }
 
     const sessionMatch = url.pathname.match(/^\/v1\/agents\/sessions\/([^/]+)$/);
-    if (request.method === "GET" && sessionMatch) {
-      const session = state.sessions.find((candidate) => candidate.id === decodeURIComponent(sessionMatch[1]));
-      return session ? sendJson(response, session) : sendError(response, 404, "Fixture Session not found.");
+    if (sessionMatch) {
+      const id = decodeURIComponent(sessionMatch[1]);
+      const session = state.sessions.find((candidate) => candidate.id === id);
+      if (!session) return sendError(response, 404, "Fixture Session not found.");
+
+      if (request.method === "GET") {
+        trackAbort(response, "sessionReads");
+        const delayMs = state.controls.sessionRetrieveDelayMs;
+        const status = state.controls.sessionRetrieveStatus;
+        const variant = state.controls.sessionRetrieveVariant;
+        state.controls.sessionRetrieveDelayMs = 0;
+        state.controls.sessionRetrieveStatus = 200;
+        state.controls.sessionRetrieveVariant = "valid";
+        const retrievedSession = variant === "wrong_id"
+          ? { ...session, id: "another_session" }
+          : variant === "malformed"
+            ? { id, object: "agent.session", metadata: session.metadata }
+            : variant === "deep_malformed"
+              ? { ...session, agent: { model: session.agent.model } }
+              : session;
+        if (delayMs && status === 200) {
+          const payload = JSON.stringify(retrievedSession);
+          response.writeHead(200, {
+            "content-type": "application/json; charset=utf-8",
+            "content-length": Buffer.byteLength(payload) + 1,
+            "cache-control": "no-store",
+          });
+          response.write(" ");
+          await wait(delayMs);
+          if (response.destroyed) return;
+          response.end(payload);
+          return;
+        }
+        if (delayMs) await wait(delayMs);
+        if (response.destroyed) return;
+        if (status !== 200) return sendError(response, status, "Fixture Session retrieve failed.");
+        return sendJson(response, retrievedSession);
+      }
+
+      if (request.method === "POST") {
+        const delayMs = state.controls.sessionUpdateDelayMs;
+        const status = state.controls.sessionUpdateStatus;
+        const responseLoss = state.controls.sessionUpdateResponseLoss;
+        state.controls.sessionUpdateDelayMs = 0;
+        state.controls.sessionUpdateStatus = 200;
+        state.controls.sessionUpdateResponseLoss = 0;
+        if (delayMs) await wait(delayMs);
+        if (status !== 200) return sendError(response, status, "Fixture Session update failed.");
+        session.metadata = body.metadata ?? session.metadata;
+        if (responseLoss) {
+          response.destroy();
+          return;
+        }
+        return sendJson(response, session);
+      }
+
+      if (request.method === "DELETE") {
+        const delayMs = state.controls.sessionDeleteDelayMs;
+        const status = state.controls.sessionDeleteStatus;
+        const responseLoss = state.controls.sessionDeleteResponseLoss;
+        state.controls.sessionDeleteDelayMs = 0;
+        state.controls.sessionDeleteStatus = 200;
+        state.controls.sessionDeleteResponseLoss = 0;
+        if (delayMs) await wait(delayMs);
+        if (status !== 200) return sendError(response, status, "Fixture Session delete failed.");
+        if (responseLoss === 2) {
+          response.destroy();
+          return;
+        }
+        state.sessions = state.sessions.filter((candidate) => candidate.id !== id);
+        state.turns = state.turns.filter((turn) => turn.session_id !== id);
+        const targetStreams = [...streamResponses]
+          .filter(([, streamSessionId]) => streamSessionId === id)
+          .map(([stream]) => stream);
+        const closeStreams = () => {
+          for (const stream of targetStreams) {
+            if (!stream.destroyed) stream.end();
+          }
+        };
+        if (state.controls.sessionDeleteStreamCloseDelayMs) {
+          setTimeout(closeStreams, state.controls.sessionDeleteStreamCloseDelayMs);
+        } else {
+          closeStreams();
+        }
+        if (responseLoss) {
+          response.destroy();
+          return;
+        }
+        return sendJson(response, { id, object: "agent.session.deleted", deleted: true });
+      }
+    }
+
+    const environmentMatch = url.pathname.match(/^\/v1\/agents\/environments\/([^/]+)$/);
+    if (request.method === "GET" && environmentMatch) {
+      if (state.controls.environmentRetrieveDelayMs) await wait(state.controls.environmentRetrieveDelayMs);
+      if (state.controls.environmentRetrieveStatus !== 200) {
+        return sendError(response, state.controls.environmentRetrieveStatus, "Fixture Environment retrieve failed.");
+      }
+      const id = decodeURIComponent(environmentMatch[1]);
+      const sessionEnvironment = state.sessions[0]?.environment;
+      const expectedId = sessionEnvironment?.type === "self_hosted" ? sessionEnvironment.id : null;
+      if (id !== expectedId) return sendError(response, 404, "Fixture Environment not found.");
+      const canonicalId = id.toLowerCase();
+      const resource = {
+        id: canonicalUuidPattern.test(canonicalId) ? canonicalId : id,
+        object: "agent.environment",
+        type: "self_hosted",
+        status: state.controls.environmentResourceStatus,
+        files: [],
+        plugins: [],
+        skills: [],
+      };
+      if (state.controls.environmentResourceVariant === "missing_skills") delete resource.skills;
+      if (state.controls.environmentResourceVariant === "wrong_id") resource.id = "another_environment";
+      if (state.controls.environmentResourceVariant === "extra_field") resource.extra = true;
+      return sendJson(response, resource);
     }
 
     const itemsMatch = url.pathname.match(/^\/v1\/agents\/sessions\/([^/]+)\/items$/);
-    if (request.method === "GET" && itemsMatch) return sendJson(response, page(state.controls.itemsScenario ? patchItems() : []));
+    if (request.method === "GET" && itemsMatch) {
+      trackAbort(response, "itemReads");
+      if (state.controls.itemsRetrieveDelayMs) await wait(state.controls.itemsRetrieveDelayMs);
+      if (response.destroyed) return;
+      if (state.controls.itemsRetrieveStatus !== 200) {
+        return sendError(response, state.controls.itemsRetrieveStatus, "Fixture Items retrieve failed.");
+      }
+      const sessionId = decodeURIComponent(itemsMatch[1]);
+      if (!state.sessions.some((candidate) => candidate.id === sessionId)) {
+        return sendError(response, 404, "Fixture Session not found for Items.");
+      }
+      const items = sessionId !== "session_snapshot"
+        ? []
+        : state.controls.itemsScenario
+          ? patchItems()
+          : state.controls.turnsScenario
+            ? observableTurnItems()
+            : [];
+      return sendJson(response, page(items));
+    }
+
+    const turnsMatch = url.pathname.match(/^\/v1\/agents\/sessions\/([^/]+)\/turns$/);
+    if (request.method === "GET" && turnsMatch) {
+      trackAbort(response, "turnReads");
+      if (state.controls.turnsRetrieveDelayMs) await wait(state.controls.turnsRetrieveDelayMs);
+      if (response.destroyed) return;
+      if (state.controls.turnsRetrieveStatus !== 200) {
+        return sendError(response, state.controls.turnsRetrieveStatus, "Fixture Turns retrieve failed.");
+      }
+      const sessionId = decodeURIComponent(turnsMatch[1]);
+      if (!state.sessions.some((candidate) => candidate.id === sessionId)) {
+        return sendError(response, 404, "Fixture Session not found for Turns.");
+      }
+      const sessionTurns = state.turns.filter((turn) => turn.session_id === sessionId);
+      const after = url.searchParams.get("after");
+      const start = after ? sessionTurns.findIndex((turn) => turn.id === after) + 1 : 0;
+      if (after && start === 0) return sendError(response, 400, "Fixture Turn cursor not found.");
+      const requestedLimit = Number(url.searchParams.get("limit") ?? 20);
+      const size = Math.max(1, Math.min(requestedLimit, state.controls.turnsPageSize));
+      const data = sessionTurns.slice(start, start + size);
+      return sendJson(response, {
+        object: "list",
+        data,
+        has_more: start + data.length < sessionTurns.length,
+      });
+    }
 
     const eventsMatch = url.pathname.match(/^\/v1\/agents\/sessions\/([^/]+)\/events$/);
     if (request.method === "POST" && eventsMatch) {
@@ -304,19 +596,35 @@ const server = http.createServer(async (request, response) => {
       return;
     }
     if (request.method === "GET" && eventsMatch) {
+      trackAbort(response, "streams");
+      const sessionId = decodeURIComponent(eventsMatch[1]);
+      if (state.controls.streamOpenDelayMs) await wait(state.controls.streamOpenDelayMs);
+      if (response.destroyed) return;
+      if (!state.sessions.some((candidate) => candidate.id === sessionId)) {
+        return sendError(response, 404, "Fixture Session not found for stream.");
+      }
+      if (state.controls.streamStatus !== 200) {
+        return sendError(response, state.controls.streamStatus, "Fixture stream rejected.");
+      }
       response.writeHead(200, {
         "content-type": "text/event-stream; charset=utf-8",
         "cache-control": "no-cache, no-transform",
         connection: "keep-alive",
       });
+      streamResponses.set(response, sessionId);
       response.write(": fixture stream open\n\n");
       const statuses = [null, "pending", "ready", "connected", "disconnected", "failed", "expired"];
       const environmentStatus = statuses[state.controls.environmentEventStatus] ?? null;
       if (environmentStatus && state.controls.environmentEventCount > 0) {
         state.controls.environmentEventCount -= 1;
         state.sequence += 1;
+        const sessionEnvironment = state.sessions[0]?.environment;
+        const rawEnvironmentId = sessionEnvironment?.type === "self_hosted"
+          ? sessionEnvironment.id
+          : "environment_fixture";
+        const canonicalEnvironmentId = rawEnvironmentId.toLowerCase();
         const environment = {
-          id: "environment_fixture",
+          id: canonicalUuidPattern.test(canonicalEnvironmentId) ? canonicalEnvironmentId : rawEnvironmentId,
           type: "self_hosted",
           status: environmentStatus,
           error: environmentStatus === "failed" ? {
@@ -337,7 +645,10 @@ const server = http.createServer(async (request, response) => {
         setTimeout(() => response.end(), state.controls.streamCloseDelayMs);
       }
       const heartbeat = setInterval(() => response.write(": fixture heartbeat\n\n"), 10_000);
-      request.on("close", () => clearInterval(heartbeat));
+      request.on("close", () => {
+        clearInterval(heartbeat);
+        streamResponses.delete(response);
+      });
       return;
     }
 

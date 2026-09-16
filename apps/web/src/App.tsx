@@ -10,6 +10,7 @@ import { AgentCoreError } from "@agents-core-web/agents-client";
 import type {
   AgentCore,
   AgentSession,
+  AgentTurn,
   CreateAgentInput,
   FunctionResultInput,
   SavedAgent,
@@ -36,12 +37,35 @@ import {
   type StreamState,
 } from "./features/sessions/SessionsView";
 import {
+  removeSession,
+  reconcileUnknownSessionDelete,
+  replaceSessionMetadata,
+  requestSessionDelete,
+  requestSessionDetail,
+  requestSessionUpdate,
+  selectionAfterSessionDelete,
+  SessionActionError,
+  SessionMetadataConflictError,
+} from "./features/sessions/actions/session-actions";
+import {
+  environmentObservationFromResource,
+  environmentIdsMatch,
+  environmentReadIsCurrent,
+  matchingSessionSnapshot,
   reduceEnvironmentObservation,
-  reconcileEnvironmentObservation,
+  selfHostedEnvironmentId,
   type EnvironmentObservation,
   type ScopedEnvironmentObservation,
+  unavailableEnvironmentObservation,
   visibleEnvironmentObservation,
 } from "./features/sessions/environment/environment-state";
+import {
+  listAllTurns,
+  matchingTurnSnapshot,
+  mergeDurableAndLiveTurns,
+  turnReadIsCurrent,
+  upsertTurn,
+} from "./features/sessions/turns/turn-state";
 import { SystemView } from "./features/system/SystemView";
 import {
   createCore,
@@ -157,6 +181,13 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [items, setItems] = useState<SessionItem[]>([]);
   const [itemsSessionId, setItemsSessionId] = useState<string | null>(null);
+  const [turns, setTurns] = useState<AgentTurn[]>([]);
+  const [turnsSessionId, setTurnsSessionId] = useState<string | null>(null);
+  const [turnCollectionLoad, setTurnCollectionLoad] = useState<SelectedSessionLoad>({
+    sessionId: null,
+    state: "idle",
+    error: null,
+  });
   const [environmentObservations, setEnvironmentObservations] = useState<Map<string, ScopedEnvironmentObservation>>(
     () => new Map(),
   );
@@ -180,7 +211,9 @@ export function App() {
   );
   const [busy, setBusy] = useState(false);
   const selectedIdRef = useRef<string | null>(selectedId);
+  const sessionsRef = useRef<AgentSession[]>(sessions);
   const itemsSessionIdRef = useRef<string | null>(itemsSessionId);
+  const turnsSessionIdRef = useRef<string | null>(turnsSessionId);
   const connectionGenerationRef = useRef(0);
   const agentCollectionRequestRef = useRef(0);
   const sessionCollectionRequestRef = useRef(0);
@@ -189,10 +222,16 @@ export function App() {
   const sessionRequestRef = useRef(new Map<string, number>());
   const sessionEventRevisionRef = useRef(new Map<string, number>());
   const itemEventRevisionRef = useRef(new Map<string, number>());
+  const turnEventRevisionRef = useRef(new Map<string, number>());
   const environmentEventRevisionRef = useRef(new Map<string, number>());
+  const environmentRequestRef = useRef(new Map<string, number>());
+  const sessionEnvironmentIdRef = useRef(new Map<string, string | null>());
   const operationRequestRef = useRef(0);
   const streamEpochRef = useRef(0);
+  const selectedSessionReadAbortRef = useRef<AbortController | null>(null);
+  const selectedStreamAbortRef = useRef<AbortController | null>(null);
   selectedIdRef.current = selectedId;
+  sessionsRef.current = sessions;
 
   const core = useMemo(() => createCore(connection), [connection]);
   const coreGeneration = connectionGenerationRef.current;
@@ -208,6 +247,12 @@ export function App() {
       ? selectedSessionLoad.state
       : "loading";
   const detailError = selectedSessionLoad.sessionId === selectedId ? selectedSessionLoad.error : null;
+  const turnState: SessionDetailState = !selectedId
+    ? "idle"
+    : turnCollectionLoad.sessionId === selectedId
+      ? turnCollectionLoad.state
+      : "loading";
+  const turnError = turnCollectionLoad.sessionId === selectedId ? turnCollectionLoad.error : null;
   const streamState: StreamState = !selectedId
     ? "idle"
     : streamConnection.sessionId !== selectedId
@@ -266,6 +311,37 @@ export function App() {
     ) return false;
     if (result.status === "fulfilled") {
       if (sessionRevision === sessionCollectionRevisionRef.current) {
+        const nextEnvironmentIds = new Map(
+          result.value.data.map((session) => [session.id, selfHostedEnvironmentId(session.environment)]),
+        );
+        const changedEnvironmentSessions = new Set<string>();
+        for (const [sessionId, environmentId] of nextEnvironmentIds) {
+          if (!environmentIdsMatch(sessionEnvironmentIdRef.current.get(sessionId), environmentId)) {
+            changedEnvironmentSessions.add(sessionId);
+          }
+        }
+        for (const sessionId of sessionEnvironmentIdRef.current.keys()) {
+          if (!nextEnvironmentIds.has(sessionId)) changedEnvironmentSessions.add(sessionId);
+        }
+        for (const sessionId of changedEnvironmentSessions) {
+          environmentRequestRef.current.set(
+            sessionId,
+            (environmentRequestRef.current.get(sessionId) ?? 0) + 1,
+          );
+          environmentEventRevisionRef.current.set(
+            sessionId,
+            (environmentEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+          );
+        }
+        sessionEnvironmentIdRef.current = nextEnvironmentIds;
+        if (changedEnvironmentSessions.size) {
+          setEnvironmentObservations((current) => {
+            if (![...changedEnvironmentSessions].some((sessionId) => current.has(sessionId))) return current;
+            const next = new Map(current);
+            for (const sessionId of changedEnvironmentSessions) next.delete(sessionId);
+            return next;
+          });
+        }
         setSessions(result.value.data);
         setSelectedId((current) => {
           if (current && result.value.data.some((session) => session.id === current)) return current;
@@ -288,8 +364,45 @@ export function App() {
       const request = (sessionRequestRef.current.get(sessionId) ?? 0) + 1;
       const sessionRevision = sessionEventRevisionRef.current.get(sessionId) ?? 0;
       const itemRevision = itemEventRevisionRef.current.get(sessionId) ?? 0;
+      const turnRevision = turnEventRevisionRef.current.get(sessionId) ?? 0;
       const environmentRevision = environmentEventRevisionRef.current.get(sessionId) ?? 0;
       sessionRequestRef.current.set(sessionId, request);
+      const turnRead = { coreGeneration, request, sessionId };
+      void listAllTurns(core, sessionId, signal).then((sessionTurns) => {
+        const currentTurnRead = {
+          coreGeneration: connectionGenerationRef.current,
+          request: sessionRequestRef.current.get(sessionId) ?? 0,
+          sessionId,
+          selectedSessionId: selectedIdRef.current,
+        };
+        if (!turnReadIsCurrent(turnRead, currentTurnRead)) return;
+        const liveRevisionChanged = turnRevision !== (turnEventRevisionRef.current.get(sessionId) ?? 0);
+        const currentTurnsSessionId = turnsSessionIdRef.current;
+        turnsSessionIdRef.current = sessionId;
+        setTurns((current) => (
+          liveRevisionChanged
+            ? mergeDurableAndLiveTurns(
+              sessionTurns,
+              currentTurnsSessionId === sessionId ? current : [],
+            )
+            : sessionTurns
+        ));
+        setTurnsSessionId(sessionId);
+        setTurnCollectionLoad({ sessionId, state: "ready", error: null });
+      }).catch((error: unknown) => {
+        const currentTurnRead = {
+          coreGeneration: connectionGenerationRef.current,
+          request: sessionRequestRef.current.get(sessionId) ?? 0,
+          sessionId,
+          selectedSessionId: selectedIdRef.current,
+        };
+        if (!turnReadIsCurrent(turnRead, currentTurnRead) || isAbort(error)) return;
+        setTurnCollectionLoad({
+          sessionId,
+          state: "failed",
+          error: errorMessage(error),
+        });
+      });
       try {
         const [session, sessionItems] = await Promise.all([
           core.retrieveSession(sessionId, { signal }),
@@ -299,24 +412,17 @@ export function App() {
           coreGeneration !== connectionGenerationRef.current ||
           request !== sessionRequestRef.current.get(sessionId)
         ) return false;
-        if (sessionRevision === (sessionEventRevisionRef.current.get(sessionId) ?? 0)) {
+        const currentSessionRevision = sessionEventRevisionRef.current.get(sessionId) ?? 0;
+        const sessionIsCurrent = sessionRevision === currentSessionRevision;
+        const environmentId = selfHostedEnvironmentId(session.environment);
+        if (sessionIsCurrent) {
+          sessionEnvironmentIdRef.current.set(sessionId, environmentId);
           sessionCollectionRevisionRef.current += 1;
           setSessions((current) => {
             const found = current.some((value) => value.id === session.id);
             return found
               ? current.map((value) => (value.id === session.id ? session : value))
               : [session, ...current];
-          });
-        }
-        if (environmentRevision === (environmentEventRevisionRef.current.get(sessionId) ?? 0)) {
-          setEnvironmentObservations((current) => {
-            const existing = current.get(sessionId);
-            const reconciled = reconcileEnvironmentObservation(existing?.observation ?? null, session);
-            if (reconciled === existing?.observation) return current;
-            const next = new Map(current);
-            if (reconciled && existing) next.set(sessionId, { ...existing, observation: reconciled });
-            else next.delete(sessionId);
-            return next;
           });
         }
         if (selectedIdRef.current === sessionId) {
@@ -336,6 +442,59 @@ export function App() {
         if (selectedIdRef.current === sessionId) {
           setSelectedSessionLoad({ sessionId, state: "ready", error: null });
         }
+
+        if (!sessionIsCurrent) return true;
+        if (!environmentId) {
+          if (environmentRevision === (environmentEventRevisionRef.current.get(sessionId) ?? 0)) {
+            setEnvironmentObservations((current) => {
+              if (!current.has(sessionId)) return current;
+              const next = new Map(current);
+              next.delete(sessionId);
+              return next;
+            });
+          }
+          return true;
+        }
+        if (signal?.aborted || selectedIdRef.current !== sessionId) return false;
+
+        const environmentStreamEpoch = streamEpochRef.current;
+        const environmentRequest = (environmentRequestRef.current.get(sessionId) ?? 0) + 1;
+        environmentRequestRef.current.set(sessionId, environmentRequest);
+        const environmentRead = {
+          coreGeneration,
+          sessionId,
+          environmentId,
+          sessionRequest: request,
+          environmentRequest,
+          streamEpoch: environmentStreamEpoch,
+          sessionRevision,
+          environmentRevision,
+        };
+        let observation: EnvironmentObservation;
+        try {
+          const resource = await core.retrieveEnvironment(environmentId, { signal });
+          observation = environmentObservationFromResource(resource, environmentId)
+            ?? unavailableEnvironmentObservation(environmentId);
+        } catch (error) {
+          if (isAbort(error)) return false;
+          observation = unavailableEnvironmentObservation(environmentId);
+        }
+        if (signal?.aborted || !environmentReadIsCurrent(environmentRead, {
+          coreGeneration: connectionGenerationRef.current,
+          sessionId,
+          environmentId: sessionEnvironmentIdRef.current.get(sessionId) ?? "",
+          sessionRequest: sessionRequestRef.current.get(sessionId) ?? 0,
+          environmentRequest: environmentRequestRef.current.get(sessionId) ?? 0,
+          streamEpoch: streamEpochRef.current,
+          sessionRevision: sessionEventRevisionRef.current.get(sessionId) ?? 0,
+          environmentRevision: environmentEventRevisionRef.current.get(sessionId) ?? 0,
+          selectedSessionId: selectedIdRef.current,
+        })) return false;
+        setEnvironmentObservations((current) => {
+          const next = new Map(current);
+          next.set(sessionId, { observation, sessionId, streamEpoch: environmentStreamEpoch });
+          return next;
+        });
         return true;
       } catch (error) {
         if (
@@ -354,6 +513,16 @@ export function App() {
     [core, coreGeneration, notify],
   );
 
+  const refreshSelectedSession = useCallback((sessionId: string): Promise<boolean> => {
+    if (selectedIdRef.current !== sessionId) return Promise.resolve(false);
+    selectedSessionReadAbortRef.current?.abort();
+    const controller = new AbortController();
+    // Turn pagination can outlive refreshSession's Session/Item result, so retain this
+    // controller until the next selected read, selection change, deletion, or Core change.
+    selectedSessionReadAbortRef.current = controller;
+    return refreshSession(sessionId, controller.signal);
+  }, [refreshSession]);
+
   const recoverSessionWorkspace = useCallback(() => {
     void (async () => {
       const generation = coreGeneration;
@@ -361,38 +530,56 @@ export function App() {
       const refreshed = await refreshSessions();
       if (!refreshed || generation !== connectionGenerationRef.current) return;
       const sessionId = selectedIdRef.current;
-      if (sessionId) await refreshSession(sessionId);
+      if (sessionId) await refreshSelectedSession(sessionId);
     })();
-  }, [coreGeneration, refreshAgents, refreshSession, refreshSessions]);
+  }, [coreGeneration, refreshAgents, refreshSelectedSession, refreshSessions]);
 
   useEffect(() => {
     setAgents([]);
     setSessions([]);
     setItems([]);
+    setTurns([]);
     setEnvironmentObservations(new Map());
     itemsSessionIdRef.current = null;
     setItemsSessionId(null);
+    turnsSessionIdRef.current = null;
+    setTurnsSessionId(null);
+    setTurnCollectionLoad({ sessionId: null, state: "idle", error: null });
     setSelectedId(null);
     void refreshAgents();
     void refreshSessions();
   }, [refreshAgents, refreshSessions]);
 
   useEffect(() => {
+    selectedSessionReadAbortRef.current?.abort();
     if (!selectedId) {
+      selectedSessionReadAbortRef.current = null;
       setItems([]);
+      setTurns([]);
       itemsSessionIdRef.current = null;
       setItemsSessionId(null);
+      turnsSessionIdRef.current = null;
+      setTurnsSessionId(null);
+      setTurnCollectionLoad({ sessionId: null, state: "idle", error: null });
       setSelectedSessionLoad({ sessionId: null, state: "idle", error: null });
       setStreamConnection({ sessionId: null, state: "idle", error: null });
       return;
     }
     setItems([]);
+    setTurns([]);
     itemsSessionIdRef.current = selectedId;
     setItemsSessionId(selectedId);
+    turnsSessionIdRef.current = selectedId;
+    setTurnsSessionId(selectedId);
+    setTurnCollectionLoad({ sessionId: selectedId, state: "loading", error: null });
     setSelectedSessionLoad({ sessionId: selectedId, state: "loading", error: null });
     environmentEventRevisionRef.current.set(
       selectedId,
       (environmentEventRevisionRef.current.get(selectedId) ?? 0) + 1,
+    );
+    environmentRequestRef.current.set(
+      selectedId,
+      (environmentRequestRef.current.get(selectedId) ?? 0) + 1,
     );
     setEnvironmentObservations((current) => {
       if (!current.has(selectedId)) return current;
@@ -400,16 +587,20 @@ export function App() {
       next.delete(selectedId);
       return next;
     });
-    const controller = new AbortController();
-    void refreshSession(selectedId, controller.signal);
-    return () => controller.abort();
-  }, [refreshSession, selectedId]);
+    void refreshSelectedSession(selectedId);
+    return () => {
+      selectedSessionReadAbortRef.current?.abort();
+      selectedSessionReadAbortRef.current = null;
+    };
+  }, [refreshSelectedSession, selectedId]);
 
   useEffect(() => {
+    selectedStreamAbortRef.current?.abort();
     if (!selectedId) return;
 
     const sessionId = selectedId;
     const controller = new AbortController();
+    selectedStreamAbortRef.current = controller;
     const streamEpoch = streamEpochRef.current + 1;
     streamEpochRef.current = streamEpoch;
     setStreamConnection({ sessionId, state: "connecting", error: null });
@@ -436,6 +627,28 @@ export function App() {
       if (!isCurrentStream()) return;
       if (typeof event.session_id === "string" && event.session_id && event.session_id !== sessionId) return;
       const eventType = typeof event.type === "string" ? event.type : "";
+      const eventSession = matchingSessionSnapshot(event, sessionId);
+      if (eventSession) {
+        const nextEnvironmentId = selfHostedEnvironmentId(eventSession.environment);
+        const previousEnvironmentId = sessionEnvironmentIdRef.current.get(sessionId);
+        if (!environmentIdsMatch(previousEnvironmentId, nextEnvironmentId)) {
+          sessionEnvironmentIdRef.current.set(sessionId, nextEnvironmentId);
+          environmentRequestRef.current.set(
+            sessionId,
+            (environmentRequestRef.current.get(sessionId) ?? 0) + 1,
+          );
+          environmentEventRevisionRef.current.set(
+            sessionId,
+            (environmentEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+          );
+          setEnvironmentObservations((current) => {
+            if (!current.has(sessionId)) return current;
+            const next = new Map(current);
+            next.delete(sessionId);
+            return next;
+          });
+        }
+      }
       const isEnvironmentEvent = eventType.startsWith("agent.session.environment.");
       if (isEnvironmentEvent) {
         environmentEventRevisionRef.current.set(
@@ -446,19 +659,40 @@ export function App() {
           const next = new Map(current);
           const existing = current.get(sessionId);
           const previous = existing?.streamEpoch === streamEpoch ? existing.observation : null;
-          const reduced = reduceEnvironmentObservation(previous, event, sessionId);
+          const reduced = reduceEnvironmentObservation(
+            previous,
+            event,
+            sessionId,
+            sessionEnvironmentIdRef.current.get(sessionId) ?? null,
+          );
           if (reduced) next.set(sessionId, { observation: reduced, sessionId, streamEpoch });
           else next.delete(sessionId);
           return next;
         });
       }
-      if (event.session) {
+      if (eventSession) {
         sessionEventRevisionRef.current.set(
           sessionId,
           (sessionEventRevisionRef.current.get(sessionId) ?? 0) + 1,
         );
         sessionCollectionRevisionRef.current += 1;
-        setSessions((current) => current.map((session) => (session.id === event.session?.id ? event.session : session)));
+        setSessions((current) => current.map((session) => (session.id === eventSession.id ? eventSession : session)));
+      }
+      const eventTurn = matchingTurnSnapshot(event, sessionId);
+      if (eventTurn) {
+        turnEventRevisionRef.current.set(
+          sessionId,
+          (turnEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+        );
+        if (selectedIdRef.current === sessionId) {
+          const currentTurnsSessionId = turnsSessionIdRef.current;
+          turnsSessionIdRef.current = sessionId;
+          setTurnsSessionId(sessionId);
+          setTurns((current) => upsertTurn(
+            currentTurnsSessionId === sessionId ? current : [],
+            eventTurn,
+          ));
+        }
       }
       if (event.item || eventType.includes(".output_text.")) {
         itemEventRevisionRef.current.set(
@@ -514,6 +748,10 @@ export function App() {
                 sessionId,
                 (environmentEventRevisionRef.current.get(sessionId) ?? 0) + 1,
               );
+              environmentRequestRef.current.set(
+                sessionId,
+                (environmentRequestRef.current.get(sessionId) ?? 0) + 1,
+              );
               setEnvironmentObservations((current) => {
                 if (!current.has(sessionId)) return current;
                 const next = new Map(current);
@@ -568,6 +806,7 @@ export function App() {
       refreshCoordinator?.dispose();
       recovery.invalidate();
       controller.abort();
+      if (selectedStreamAbortRef.current === controller) selectedStreamAbortRef.current = null;
     };
   }, [core, coreGeneration, notify, refreshSession, selectedId, streamRetryRevision]);
 
@@ -641,6 +880,148 @@ export function App() {
     setView("sessions");
   };
 
+  const retrieveSessionForAction = useCallback(async (sessionId: string) => {
+    const generation = coreGeneration;
+    try {
+      const session = await requestSessionDetail(core, sessionId);
+      return generation === connectionGenerationRef.current ? session : undefined;
+    } catch (error) {
+      if (generation !== connectionGenerationRef.current) return undefined;
+      throw error;
+    }
+  }, [core, coreGeneration]);
+
+  const updateSessionMetadata = async (
+    sessionId: string,
+    baselineMetadata: Record<string, string>,
+    draftMetadata: Record<string, string>,
+  ): Promise<AgentSession | undefined> => {
+    const generation = coreGeneration;
+    let updated: AgentSession;
+    try {
+      updated = await requestSessionUpdate(core, sessionId, baselineMetadata, draftMetadata);
+    } catch (error) {
+      if (generation !== connectionGenerationRef.current) return undefined;
+      if (error instanceof SessionMetadataConflictError && error.latestSession) {
+        sessionCollectionRevisionRef.current += 1;
+        sessionEventRevisionRef.current.set(
+          sessionId,
+          (sessionEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+        );
+        setSessions((current) => replaceSessionMetadata(current, error.latestSession as AgentSession));
+      }
+      throw error;
+    }
+    if (generation !== connectionGenerationRef.current) {
+      notify("The previous Core returned a Session update after the connection changed. The current Core view was not modified.", "error");
+      return undefined;
+    }
+    sessionCollectionRevisionRef.current += 1;
+    sessionEventRevisionRef.current.set(
+      sessionId,
+      (sessionEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+    );
+    setSessions((current) => replaceSessionMetadata(current, updated));
+    notify("Session metadata updated.", "success");
+    return updated;
+  };
+
+  const removeSessionFromWorkspace = (sessionId: string, message: string): boolean => {
+    const selectedAtCompletion = selectedIdRef.current;
+    const deletingSelected = selectedAtCompletion === sessionId;
+    const nextSelectedId = selectionAfterSessionDelete(
+      sessionsRef.current,
+      selectedAtCompletion,
+      sessionId,
+    );
+    const increment = (revisions: Map<string, number>) => {
+      revisions.set(sessionId, (revisions.get(sessionId) ?? 0) + 1);
+    };
+    sessionCollectionRevisionRef.current += 1;
+    increment(sessionRequestRef.current);
+    increment(sessionEventRevisionRef.current);
+    increment(itemEventRevisionRef.current);
+    increment(turnEventRevisionRef.current);
+    increment(environmentEventRevisionRef.current);
+    increment(environmentRequestRef.current);
+    sessionEnvironmentIdRef.current.delete(sessionId);
+
+    setSessions((current) => {
+      const next = removeSession(current, sessionId);
+      sessionsRef.current = next;
+      return next;
+    });
+    setSessionSendFailures((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Map(current);
+      next.delete(sessionId);
+      return next;
+    });
+    setEnvironmentObservations((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Map(current);
+      next.delete(sessionId);
+      return next;
+    });
+
+    if (deletingSelected) {
+      selectedIdRef.current = nextSelectedId;
+      streamEpochRef.current += 1;
+      selectedSessionReadAbortRef.current?.abort();
+      selectedSessionReadAbortRef.current = null;
+      selectedStreamAbortRef.current?.abort();
+      selectedStreamAbortRef.current = null;
+      itemsSessionIdRef.current = null;
+      turnsSessionIdRef.current = null;
+      setItems([]);
+      setItemsSessionId(null);
+      setTurns([]);
+      setTurnsSessionId(null);
+      setSelectedSessionLoad({ sessionId: null, state: "idle", error: null });
+      setTurnCollectionLoad({ sessionId: null, state: "idle", error: null });
+      setStreamConnection({ sessionId: null, state: "idle", error: null });
+      setSelectedId(nextSelectedId);
+    }
+    notify(message, "success");
+    return true;
+  };
+
+  const deleteSessionFromCore = async (sessionId: string): Promise<boolean> => {
+    const generation = coreGeneration;
+    try {
+      await requestSessionDelete(core, sessionId);
+    } catch (error) {
+      if (generation !== connectionGenerationRef.current) return false;
+      if (!(error instanceof SessionActionError) || error.kind !== "unknown_write") throw error;
+
+      const reconciliation = await reconcileUnknownSessionDelete(core, sessionId);
+      if (generation !== connectionGenerationRef.current) return false;
+      if (reconciliation.state === "missing") {
+        return removeSessionFromWorkspace(
+          sessionId,
+          "Session is absent from Agent Core after reconciling the unknown deletion result.",
+        );
+      }
+      if (reconciliation.state === "unknown") {
+        throw new SessionActionError(
+          `${error.message} The follow-up durable Session refresh also failed, so the result remains unknown.`,
+          "unknown_write",
+          { cause: error },
+        );
+      }
+      throw new SessionActionError(
+        `${error.message} A follow-up durable Session refresh confirmed that the Session is still present.`,
+        "request_failed",
+        { cause: error },
+      );
+    }
+    if (generation !== connectionGenerationRef.current) {
+      notify("The previous Core confirmed Session deletion after the connection changed. The current Core view was not modified.", "error");
+      return false;
+    }
+    return removeSessionFromWorkspace(sessionId, "Session deleted from Agent Core.");
+  };
+
   const sendMessage = async (text: string) => {
     const sessionId = selectedId;
     if (!sessionId) return;
@@ -676,7 +1057,7 @@ export function App() {
       next.delete(sessionId);
       return next;
     });
-    await refreshSession(sessionId);
+    await refreshSelectedSession(sessionId);
   };
 
   const cancel = async () => {
@@ -684,7 +1065,7 @@ export function App() {
     if (!sessionId) return;
     await run(() => core.cancelTurn(sessionId), "Cancellation requested.");
     if (coreGeneration !== connectionGenerationRef.current || selectedIdRef.current !== sessionId) return;
-    await refreshSession(sessionId);
+    await refreshSelectedSession(sessionId);
   };
 
   const submitFunctionResult = async (input: FunctionResultInput) => {
@@ -692,7 +1073,7 @@ export function App() {
     if (!sessionId) return;
     await run(() => core.submitFunctionResult(sessionId, input), "Function result submitted.");
     if (coreGeneration !== connectionGenerationRef.current || selectedIdRef.current !== sessionId) return;
-    await refreshSession(sessionId);
+    await refreshSelectedSession(sessionId);
   };
 
   const applyConnection = (next: CoreConnection) => {
@@ -705,9 +1086,16 @@ export function App() {
     sessionRequestRef.current.clear();
     sessionEventRevisionRef.current.clear();
     itemEventRevisionRef.current.clear();
+    turnEventRevisionRef.current.clear();
     environmentEventRevisionRef.current.clear();
+    environmentRequestRef.current.clear();
+    sessionEnvironmentIdRef.current.clear();
     operationRequestRef.current += 1;
     streamEpochRef.current += 1;
+    selectedSessionReadAbortRef.current?.abort();
+    selectedSessionReadAbortRef.current = null;
+    selectedStreamAbortRef.current?.abort();
+    selectedStreamAbortRef.current = null;
     saveConnection(normalized);
     setBusy(false);
     setAgentCollectionState("connecting");
@@ -716,11 +1104,15 @@ export function App() {
     setSessionCollectionError(null);
     setSelectedId(null);
     setSelectedSessionLoad({ sessionId: null, state: "idle", error: null });
+    setTurnCollectionLoad({ sessionId: null, state: "idle", error: null });
     setStreamConnection({ sessionId: null, state: "idle", error: null });
     setSessionSendFailures(new Map());
     setEnvironmentObservations(new Map());
     itemsSessionIdRef.current = null;
     setItemsSessionId(null);
+    turnsSessionIdRef.current = null;
+    setTurnsSessionId(null);
+    setTurns([]);
     setConnection(normalized);
     setConnectionOpen(false);
   };
@@ -807,29 +1199,36 @@ export function App() {
         <div className="page-transition" key={view}>
           {view === "sessions" ? (
             <SessionsView
+              key={`sessions:${coreGeneration}`}
               agents={agents}
               sessions={sessions}
               selected={selected}
               items={itemsSessionId === selectedId ? items : []}
+              turns={turnsSessionId === selectedId ? turns : []}
               busy={busy}
               coreError={sessionCollectionError}
               coreState={sessionCollectionState}
               detailError={detailError}
               detailState={detailState}
+              turnError={turnError}
+              turnState={turnState}
               environmentObservation={environmentObservation}
               sendError={sendError}
               streamError={streamError}
               streamState={streamState}
               onCancel={cancel}
               onCreateSession={createSession}
+              onDeleteSession={deleteSessionFromCore}
               onFunctionResult={submitFunctionResult}
               onRefresh={recoverSessionWorkspace}
               onRetrySession={() => {
-                if (selectedId) void refreshSession(selectedId);
+                if (selectedId) void refreshSelectedSession(selectedId);
               }}
               onRetryStream={retryCurrentStream}
+              onRetrieveSession={retrieveSessionForAction}
               onSelect={setSelectedId}
               onSend={sendMessage}
+              onUpdateSession={updateSessionMetadata}
             />
           ) : null}
           {view === "agents" ? (

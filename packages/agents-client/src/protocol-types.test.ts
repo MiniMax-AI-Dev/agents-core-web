@@ -1,17 +1,24 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import fixture from "./fixtures/parsar-8cc2898c/environment-protocol.json";
+import environmentResources from "./fixtures/parsar-0438880a/environment-resources.json";
+import turnResources from "./fixtures/parsar-0438880a/turn-resources.json";
 import type {
+  AgentEnvironmentResource,
   AgentEnvironment,
+  AgentTurn,
   AgentSessionEnvironmentEvent,
   EnvironmentConnectionAction,
-  EnvironmentStatus,
+  EnvironmentResourceStatus,
   FunctionCallAction,
   RequiredAction,
   SelfHostedAgentEnvironment,
   UnknownAgentEnvironment,
   UnknownSessionEvent,
   UnknownSessionItem,
+  SessionEnvironmentStatus,
+  TokenUsage,
+  TurnStatus,
 } from "./types";
 
 describe("Parsar 8cc2898c Environment protocol types", () => {
@@ -52,14 +59,14 @@ describe("Parsar 8cc2898c Environment protocol types", () => {
       "connected",
       "disconnected",
       "failed",
-    ] satisfies EnvironmentStatus[]);
+    ] satisfies SessionEnvironmentStatus[]);
     expect(events[4]?.environment.error).toEqual({
       code: "environment_failed",
       type: "environment_error",
       message: "The Environment could not become available.",
     });
     expectTypeOf<AgentSessionEnvironmentEvent["type"]>().toEqualTypeOf<
-      `agent.session.environment.${EnvironmentStatus}`
+      `agent.session.environment.${SessionEnvironmentStatus}`
     >();
   });
 
@@ -77,5 +84,73 @@ describe("Parsar 8cc2898c Environment protocol types", () => {
     expect(event.contract_marker).toBe("preserved");
     expect(expired.type).toBe("agent.session.environment.expired");
     expect(expired.contract_marker).toBe("unsupported_session_event_status");
+  });
+});
+
+describe("Parsar 0438880a Environment retrieve resource", () => {
+  it("models every durable resource status independently from live ready", () => {
+    const resources = environmentResources.resources as AgentEnvironmentResource[];
+    expect(resources.map((resource) => resource.status)).toEqual([
+      "pending",
+      "connected",
+      "disconnected",
+      "expired",
+      "failed",
+    ] satisfies EnvironmentResourceStatus[]);
+    for (const resource of resources) {
+      expect(Object.keys(resource).sort()).toEqual([
+        "files", "id", "object", "plugins", "skills", "status", "type",
+      ]);
+      expect(resource.files).toEqual([]);
+      expect(resource.plugins).toEqual([]);
+      expect(resource.skills).toEqual([]);
+    }
+    expectTypeOf<EnvironmentResourceStatus>().not.toEqualTypeOf<SessionEnvironmentStatus>();
+  });
+
+  it("retains raw malformed and unsupported fixtures as untrusted test inputs", () => {
+    expect(environmentResources.unsupported.ready.status).toBe("ready");
+    expect(environmentResources.unsupported.unknown_type.type).toBe("openai_hosted");
+    expect("skills" in environmentResources.malformed.missing_skills).toBe(false);
+  });
+
+  it("pins uppercase UUID lookup to the canonical response identity", () => {
+    const retrieval = environmentResources.canonical_retrieve;
+    const resource = retrieval.response as AgentEnvironmentResource;
+
+    expect(retrieval.request_id.toLowerCase()).toBe(resource.id);
+    expect(resource.object).toBe("agent.environment");
+  });
+});
+
+describe("Parsar 0438880a Turn observability resources", () => {
+  it("models every durable lifecycle state and nullable measurements", () => {
+    const turns = turnResources.turns as AgentTurn[];
+
+    expect(turns.map((turn) => turn.status)).toEqual([
+      "queued",
+      "in_progress",
+      "waiting",
+      "completed",
+      "failed",
+      "cancelled",
+    ] satisfies TurnStatus[]);
+    expect(turns[0]?.started_at).toBeNull();
+    expect(turns[0]?.usage).toBeNull();
+    expect(turns[3]?.completed_at).toBe(1700000068);
+    expect(turns[4]?.error).toEqual({
+      code: "internal_error",
+      message: "The execution could not complete.",
+    });
+  });
+
+  it("keeps aggregate Session Usage distinct from one Turn measurement", () => {
+    const turns = turnResources.turns as AgentTurn[];
+    const aggregate = turnResources.session_usage as TokenUsage;
+
+    expect(turns[3]?.usage?.total_tokens).toBe(13);
+    expect(aggregate.total_tokens).toBe(26);
+    expect(aggregate.input_tokens_details.cached_tokens).toBe(8);
+    expect(aggregate.output_tokens_details.reasoning_tokens).toBe(4);
   });
 });
