@@ -457,6 +457,57 @@ function isStringRecord(value) {
   return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
 }
 
+function isCredentialFreeHTTPUrl(value) {
+  if (
+    !isNonEmptyString(value) ||
+    value.trim() !== value ||
+    value.includes("?") ||
+    value.includes("#")
+  ) {
+    return false;
+  }
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      Boolean(url.hostname) &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isCanonicalSavedMCPTool(value) {
+  const transport = value.transport;
+  return (
+    hasOwn(value, "server_label") &&
+    isNonEmptyString(value.server_label) &&
+    value.server_label.trim() !== "" &&
+    hasOwn(value, "transport") &&
+    isRecord(transport) &&
+    transport.type === "http" &&
+    hasOwn(transport, "server_url") &&
+    isCredentialFreeHTTPUrl(transport.server_url) &&
+    (!hasOwn(transport, "headers") ||
+      (isStringRecord(transport.headers) && Object.keys(transport.headers).length === 0)) &&
+    hasOwn(value, "allowed_tools") &&
+    (value.allowed_tools === null ||
+      (Array.isArray(value.allowed_tools) && value.allowed_tools.every(isNonEmptyString))) &&
+    value.connection_origin === "service" &&
+    hasOwn(value, "credential_id") &&
+    (value.credential_id === null || isNonEmptyString(value.credential_id)) &&
+    hasOwn(value, "request_metadata") &&
+    isRecord(value.request_metadata) &&
+    Object.keys(value.request_metadata).length === 0 &&
+    hasOwn(value, "required") &&
+    value.required === false
+  );
+}
+
 function isCanonicalMultiAgent(value) {
   if (
     !isRecord(value) ||
@@ -525,6 +576,7 @@ function isBasicSavedAgentToolEnvelope(value) {
       typeof value.defer_loading === "boolean"
     );
   }
+  if (value.type === "mcp") return isCanonicalSavedMCPTool(value);
   return true;
 }
 

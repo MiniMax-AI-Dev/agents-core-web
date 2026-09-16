@@ -90,6 +90,20 @@ function canonicalAgent(overrides = {}) {
   };
 }
 
+function canonicalMCPTool(overrides = {}) {
+  return {
+    type: "mcp",
+    server_label: "records",
+    transport: { type: "http", server_url: "https://mcp.fixture.invalid/tools", headers: {} },
+    allowed_tools: null,
+    connection_origin: "service",
+    credential_id: null,
+    request_metadata: {},
+    required: false,
+    ...overrides,
+  };
+}
+
 function canonicalAgentPage(agent = canonicalAgent(), overrides = {}) {
   const cursor = agent && typeof agent === "object" ? agent.id : null;
   return {
@@ -379,16 +393,19 @@ test("accepts a canonical non-empty page with additive and unknown tool variants
         { type: "function", name: "", description: "", parameters: {}, defer_loading: false },
         { type: "tool_search", additive_nested: true },
         { type: "programmatic_tool_calling", enabled: true },
-        {
-          type: "mcp",
-          server_label: "records",
-          transport: { type: "http", server_url: "https://mcp.fixture.invalid/tools", headers: {} },
-          allowed_tools: null,
-          connection_origin: "service",
-          credential_id: null,
-          request_metadata: {},
-          required: false,
-        },
+        canonicalMCPTool({
+          transport: {
+            type: "http",
+            server_url: "https://mcp.fixture.invalid/tools",
+            headers: {},
+            additive_nested: true,
+          },
+          additive_nested: true,
+        }),
+        canonicalMCPTool({
+          server_label: "records-without-headers",
+          transport: { type: "http", server_url: "https://mcp.fixture.invalid/no-headers" },
+        }),
         { type: "future_tool", additive_nested: true },
       ],
       additive_agent: true,
@@ -445,6 +462,70 @@ test("rejects malformed or non-canonical Agents list pages", async (t) => {
     }))],
     ["wrong programmatic tool field type", canonicalAgentPage(canonicalAgent({
       tools: [{ type: "programmatic_tool_calling", enabled: "true" }],
+    }))],
+    ["incomplete MCP tool", canonicalAgentPage(canonicalAgent({
+      tools: [{ type: "mcp" }],
+    }))],
+    ["empty MCP server label", canonicalAgentPage(canonicalAgent({
+      tools: [canonicalMCPTool({ server_label: "" })],
+    }))],
+    ["whitespace-only MCP server label", canonicalAgentPage(canonicalAgent({
+      tools: [canonicalMCPTool({ server_label: "   " })],
+    }))],
+    ["wrong MCP transport type", canonicalAgentPage(canonicalAgent({
+      tools: [canonicalMCPTool({
+        transport: { type: "stdio", server_url: "https://mcp.fixture.invalid/tools", headers: {} },
+      })],
+    }))],
+    ["credential-bearing MCP server URL", canonicalAgentPage(canonicalAgent({
+      tools: [canonicalMCPTool({
+        transport: { type: "http", server_url: "https://user@mcp.fixture.invalid/tools", headers: {} },
+      })],
+    }))],
+    ["MCP server URL with an empty query", canonicalAgentPage(canonicalAgent({
+      tools: [canonicalMCPTool({
+        transport: { type: "http", server_url: "https://mcp.fixture.invalid/tools?", headers: {} },
+      })],
+    }))],
+    ["MCP server URL with surrounding whitespace", canonicalAgentPage(canonicalAgent({
+      tools: [canonicalMCPTool({
+        transport: { type: "http", server_url: " https://mcp.fixture.invalid/tools", headers: {} },
+      })],
+    }))],
+    ["wrong MCP header field type", canonicalAgentPage(canonicalAgent({
+      tools: [canonicalMCPTool({
+        transport: { type: "http", server_url: "https://mcp.fixture.invalid/tools", headers: [] },
+      })],
+    }))],
+    ["nonempty saved MCP headers", canonicalAgentPage(canonicalAgent({
+      tools: [canonicalMCPTool({
+        transport: {
+          type: "http",
+          server_url: "https://mcp.fixture.invalid/tools",
+          headers: { authorization: "secret-marker" },
+        },
+      })],
+    }))],
+    ["wrong MCP allow-list item", canonicalAgentPage(canonicalAgent({
+      tools: [canonicalMCPTool({ allowed_tools: [""] })],
+    }))],
+    ["wrong MCP connection origin", canonicalAgentPage(canonicalAgent({
+      tools: [canonicalMCPTool({ connection_origin: "environment" })],
+    }))],
+    ["wrong MCP credential field type", canonicalAgentPage(canonicalAgent({
+      tools: [canonicalMCPTool({ credential_id: 7 })],
+    }))],
+    ["wrong MCP request metadata type", canonicalAgentPage(canonicalAgent({
+      tools: [canonicalMCPTool({ request_metadata: [] })],
+    }))],
+    ["nonempty saved MCP request metadata", canonicalAgentPage(canonicalAgent({
+      tools: [canonicalMCPTool({ request_metadata: { private: "marker" } })],
+    }))],
+    ["wrong MCP required field type", canonicalAgentPage(canonicalAgent({
+      tools: [canonicalMCPTool({ required: "false" })],
+    }))],
+    ["unsupported required MCP server", canonicalAgentPage(canonicalAgent({
+      tools: [canonicalMCPTool({ required: true })],
     }))],
     ["inconsistent disabled multi-agent maximum", canonicalAgentPage(canonicalAgent({
       multi_agent: { enabled: false, max_concurrent_subagents: 4 },
