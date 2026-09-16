@@ -503,8 +503,7 @@ test("keeps the Agent ledger and dialogs usable at 390 px in light and dark mode
   expect(metrics.ledger?.right).toBeLessThanOrEqual(390);
   await attachScreenshot(page, testInfo, "narrow-light-agent-ledger");
 
-  await page.getByRole("button", { name: "Environments", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Environments Observed" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Environments", exact: true })).toHaveCount(0);
   const sessionsNavigation = page.getByRole("button", { name: "Sessions", exact: true });
   await sessionsNavigation.click();
   await expect(sessionsNavigation).toHaveAttribute("aria-current", "page");
@@ -515,6 +514,9 @@ test("keeps the Agent ledger and dialogs usable at 390 px in light and dark mode
   await globalCreate.click();
   const createPanel = page.getByRole("menu", { name: "Create" });
   await expect(createPanel).toBeVisible();
+  await expect(createPanel.getByRole("menuitem")).toHaveCount(2);
+  await expect(createPanel.getByRole("menuitem", { name: /Environment template/i })).toHaveCount(0);
+  await expect(createPanel.getByRole("menuitem", { name: /Environment key/i })).toHaveCount(0);
   const createPanelBox = await createPanel.boundingBox();
   expect(createPanelBox).not.toBeNull();
   expect(createPanelBox?.x ?? -1).toBeGreaterThanOrEqual(0);
@@ -1043,7 +1045,10 @@ test("renders self-hosted Environment and Workspace state safely across reconnec
   await expect(panel.getByRole("link", { name: "Launcher setup" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Environment connection required" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Function result required" })).toBeVisible();
-  await expect(page.getByLabel("Function result or error")).toBeVisible();
+  await expect(page.getByLabel("Function result or error")).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Return error" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Submit result" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Cancel active Turn" })).toBeEnabled();
   await expect(page.locator("body")).not.toContainText("launcher:private");
   await expect(page.locator("body")).not.toContainText("executor_token=secret");
   await expect(page.locator('a[href^="file:"]')).toHaveCount(0);
@@ -1403,4 +1408,26 @@ test("manually retries uncertain sends with the original key only while the payl
   expect(sends).toHaveLength(6);
   expect(sends[5]?.idempotencyKey).not.toBe(sends[4]?.idempotencyKey);
   await attachScreenshot(page, testInfo, "desktop-send-recovery");
+});
+
+test("keeps cancellation available for an Environment-only required action", async ({ page, request }) => {
+  await resetFixture(request);
+  await controlFixture(request, { environmentScenario: 6 });
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Environment connection required" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Function result required" })).toHaveCount(0);
+  const writesBefore = (await fixtureRequests(request)).filter(
+    (entry) => entry.method === "POST" && entry.path.endsWith("/events"),
+  ).length;
+  const cancel = page.getByRole("button", { name: "Cancel active Turn" });
+  await expect(cancel).toBeEnabled();
+  await cancel.click();
+  await expect.poll(async () => (await fixtureRequests(request)).filter(
+    (entry) => entry.method === "POST" && entry.path.endsWith("/events"),
+  ).length).toBe(writesBefore + 1);
+  const writes = (await fixtureRequests(request)).filter(
+    (entry) => entry.method === "POST" && entry.path.endsWith("/events"),
+  );
+  expect(writes.at(-1)?.body).toEqual({ events: [{ type: "agent.session.input.cancel" }] });
 });

@@ -253,7 +253,7 @@ function applyEnvironmentScenario(value) {
   const session = state.sessions[0];
   if (!session) return;
   const hostileRemote = "https://launcher:private@executor.example.test/connect?executor_token=secret#credential";
-  if (value === 1 || value === 4 || value === 5) {
+  if (value === 1 || value === 4 || value === 5 || value === 6) {
     session.environment = {
       type: "self_hosted",
       id: value === 5 ? canonicalEnvironmentUuid.toUpperCase() : "environment_fixture",
@@ -261,11 +261,15 @@ function applyEnvironmentScenario(value) {
       workspace_directory: `/workspace/<script>safe</script>/${"long/".repeat(45)}project`,
       capability_directories: ["/capabilities/read-only", `/capabilities/${"wide/".repeat(55)}`],
     };
-    session.status = value === 1 ? "requires_action" : "idle";
-    session.required_actions = value === 1 ? [
-      { type: "environment_connection", environment_id: "environment_fixture" },
-      { type: "function_call", call_id: "call_fixture", turn_id: "turn_fixture", name: "confirm", arguments: { safe: true } },
-    ] : [];
+    session.status = value === 1 || value === 6 ? "requires_action" : "idle";
+    session.required_actions = value === 1
+      ? [
+          { type: "environment_connection", environment_id: "environment_fixture" },
+          { type: "function_call", call_id: "call_fixture", turn_id: "turn_fixture", name: "confirm", arguments: { safe: true } },
+        ]
+      : value === 6
+        ? [{ type: "environment_connection", environment_id: "environment_fixture" }]
+        : [];
     return;
   }
   if (value === 2) {

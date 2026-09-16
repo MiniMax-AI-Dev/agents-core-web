@@ -89,11 +89,12 @@ describe("Agent Core connection modes", () => {
     const markup = renderModal("/v1", true);
 
     expect(markup).toContain("Operator-owned setup");
-    expect(markup).toContain("Connection guide");
-    expect(markup).toContain("Troubleshooting");
+    expect(markup).toContain("Legacy Web guide · 043 snapshot");
+    expect(markup).toContain("Legacy troubleshooting · 043 snapshot");
     expect(markup).toContain("Parsar Core setup");
     expect(markup).toContain("98c5b3312ad33e1fae8b94283a011eb3e5f4ee2c");
-    expect(markup).toContain("0438880ab21aa16d05cb91a4c7f91cc0abc12358");
+    expect(markup).toContain("d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee");
+    expect(markup).not.toContain("0438880ab21aa16d05cb91a4c7f91cc0abc12358");
     expect(markup).not.toContain("f7cdf591396529880d80f8211fc7a0f4768fdf46");
     expect(markup).not.toContain("8cc2898ca42b272cb3771234ee6a0ad0d2e932ba");
     expect(markup).not.toContain("7409e00ca25311805a9f8f0d03614f820e407642");
@@ -104,14 +105,14 @@ describe("Agent Core connection modes", () => {
     expect(markup).not.toContain("AGENTS_API_DAEMON_WS_URL");
   });
 
-  it("states the GET-only probe boundary and unknown execution readiness", () => {
+  it("states the GET-only probe boundary without disabling the current chat contract", () => {
     const markup = renderModal("/v1", true);
 
     expect(markup).toContain("Test connection");
     expect(markup).toContain("with one GET");
     expect(markup).toContain("never creates an Agent, Session, Turn, or Item");
-    expect(markup).toContain("Execution readiness remains Unknown / not verified");
-    expect(markup).toContain("does not prove a daemon, model, or provider is ready");
+    expect(markup).toContain("Chat uses the current Core events contract");
+    expect(markup).toContain("a real request can still fail");
   });
 });
 
@@ -172,8 +173,8 @@ describe("Connection probe status", () => {
     const markup = renderToStaticMarkup(<ConnectionProbeStatus state={state} />);
 
     expect(markup).toContain(expected);
-    expect(markup).toContain("Execution readiness: Unknown / not verified");
-    expect(markup).not.toContain("Execution readiness: Ready");
+    expect(markup).toContain("Chat uses the current Agents API contract");
+    expect(markup).toContain("does not start a Turn or verify its runtime dependencies");
   });
 
   it("uses an alert for failures and a polite status for authenticated access", () => {

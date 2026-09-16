@@ -29,7 +29,6 @@ import {
   requestAgentDetail,
   requestAgentUpdate,
 } from "./features/agents/agent-actions";
-import { EnvironmentsView } from "./features/environments/EnvironmentsView";
 import {
   SessionsView,
   type SessionDetailState,
@@ -1262,16 +1261,6 @@ export function App() {
               onRetrieve={retrieveAgent}
               onStartSession={createSession}
               onUpdate={updateAgent}
-            />
-          ) : null}
-          {view === "environments" ? (
-            <EnvironmentsView
-              sessions={sessions}
-              observations={environmentObservations}
-              onOpenSession={(sessionId) => {
-                setSelectedId(sessionId);
-                setView("sessions");
-              }}
             />
           ) : null}
           {view === "system" ? <SystemView /> : null}

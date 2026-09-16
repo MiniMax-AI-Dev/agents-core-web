@@ -5,24 +5,25 @@ OpenAI-hosted service compatibility.
 
 ## Compatibility baseline
 
-- Parsar Core:
-  [`0438880a`](https://github.com/MiniMax-AI-Dev/parsar/commit/0438880ab21aa16d05cb91a4c7f91cc0abc12358)
-- The product-navigation, Agent execution-admission, and Environment-unavailable boundaries were re-audited
-  against Parsar [`c15d42a2`](https://github.com/MiniMax-AI-Dev/parsar/commit/c15d42a270c0667bcaa83a6b9d01a9892ebf7edd).
-  That revision still exposes only Environment retrieve plus Session-bound
-  `self_hosted` creation; it adds no public Environment list, template, file, or
-  browser-facing key management route.
+- Current Parsar Core compatibility audit:
+  [`d91ba48a`](https://github.com/MiniMax-AI-Dev/parsar/commit/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee).
+  This immutable revision re-confirms the Web-used Agent admission, chat, and
+  Environment boundaries. `OpenAI-Beta: agents=v1` plus the `/v1/agents/**`
+  resources and Session events endpoint are the versioned Web/Core contract. Core
+  exposes no additional public execution-readiness, capability, or build-version
+  resource; Web does not require one before using the documented chat events. It
+  exposes Environment retrieve plus Session-bound `self_hosted` data, but no public
+  Environment list, template, file-management, or browser-facing key route.
 - Upstream resource source: `openai-python` 3.13.0 beta Agents resources at
   [`d7c41efe`](https://github.com/openai/openai-python/tree/d7c41efee1b0802b79f3f88a678ef2052b06e9ce/src/openai/resources/beta/agents)
 - Required beta header: `OpenAI-Beta: agents=v1`
 - Core base: same-origin `/v1` through the Web proxy for stock Parsar Core; a direct
   URL only for a compatible Core or proxy with explicit CORS support
 
-Parsar's pinned inventory contains 42 upstream operations in 15 resource classes;
-the referenced Core revision has handlers for 20 operations, and those handlers
-still implement partial request/event semantics. Importing an official SDK or
-accepting extra fields is not compatibility proof. Unsupported capabilities must
-fail explicitly.
+Parsar implements a partial subset of the pinned upstream resource inventory, and
+its handlers still implement partial request/event semantics. Importing an official
+SDK or accepting extra fields is not compatibility proof. Unsupported capabilities
+must fail explicitly.
 
 Requests use `Authorization: Bearer <execution-principal key>`. Optional
 `OpenAI-Organization` and `OpenAI-Project` headers, when present, must exactly match
@@ -37,21 +38,21 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 | Sessions create/list/retrieve | Yes | Yes | UI creates idle `environment:none` Sessions; client types also cover the pinned `self_hosted` request and safe response projection |
 | Sessions update/delete | Yes | Yes | Title/string metadata editing and one-Session confirmed deletion; no bulk or Workspace deletion |
 | Session live events | Yes | Yes | Authenticated `fetch` stream, not `EventSource` |
-| Input message | Yes | Yes | Opens SSE before submission; uncertain failures retain the in-memory payload/key for an explicit unchanged manual retry only |
+| Input message / steering | Yes | Yes | Opens SSE before submitting `agent.session.input.message`; only HTTP 204 is durable admission, while Core errors or an unexpected 2xx remain visible and uncertain failures retain the in-memory payload/key for an explicit unchanged manual retry only |
 | Active Turn cancel | Yes | Yes | Submitted as a Session event, not a Turn-create endpoint |
 | Turn list | Yes | Yes, read-only | Selected Sessions load every page in ascending creation order; no Turn mutation UI |
 | Turn retrieve | Yes | No | Reusable client diagnostic method; timeline recovery uses the all-pages list |
 | Item list/recovery | Yes | Yes | Authoritative recovery after stream loss |
 | Parsar `apply_patch` Item presentation | Existing function Item fields | Yes, read-only | Parsar extension recognized only for the pinned `changes[].{path,kind,diff}` shape; not an OpenAI standard Item type |
-| Function result/error | Yes | Yes | Initial UI supports text result/error handoff only for `function_call` actions |
+| Function result/error | Yes | Yes | Supports text `agent.session.input.tool_result` success/error handoff for exact `function_call` actions |
 | Initial-input creation stream | Later | No | Idle-create flow avoids the early-event race |
 | Artifacts/files | Later | No | Required Core resources are not implemented |
 | Environment connection action | Yes | Render-only | `environment_connection` is distinct from a function call; Web shows an operator-owned, non-actionable state and sends no result |
 | Environment lifecycle events | Yes | Read-only | UI projects pinned pending, ready, connected, disconnected, and failed live snapshots; unknown/malformed status events clear prior live claims and render as unavailable |
 | Environment retrieve | Yes | Yes, read-only | For a valid `self_hosted` Session Environment ID, reads the exact public resource fields and durable status; no create/list/update/delete support |
-| Environment overview | Session-derived only | Yes, read-only | Shows only `self_hosted` projections in currently loaded Sessions and their already-observed matching status; explicitly not a Core Environment catalog |
-| Environment templates | No | Explicitly unavailable | The navigation/Create surface does not simulate template reads or writes |
-| Environment keys | No public browser API | Explicitly unavailable | Operator-issued executor credentials never enter browser state or request previews |
+| Environment overview | No public list API | No top-level UI | Web does not turn loaded Session projections into a catalog; a selected Session may still show its exact Environment data |
+| Environment templates | No | Hidden | No navigation or Create entry is shown without a Core contract |
+| Environment keys | No public browser API | Hidden | Operator-issued executor credentials never enter browser state, request previews, navigation, or Create actions |
 | Vaults | Later | No | Credentials must never be stored in browser metadata |
 | Protocol Subagents / enabled multi-agent | Later | No | Distinct from storing multiple Agent configurations |
 | Usage/observability | Response types | Yes, scoped | Session aggregate and per-Turn token Usage are labelled separately; unavailable measurements remain unknown, not zero |
@@ -59,15 +60,22 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 ## Runtime boundary
 
 - The Web currently creates only `environment: {"type":"none"}` Sessions.
+- Message, active-Turn steering, cancel, and function-result/error writes use the
+  current `agents=v1` Session events contract. Web does not add a separate private
+  runtime-readiness gate. Only exact HTTP 204 denotes durable event admission;
+  every other status, including another 2xx, fails closed. HTTP acceptance, health,
+  Agent creation, and an open SSE stream still do not prove that execution will
+  complete; subsequent durable Session, Turn, and Item state is authoritative.
 - Product navigation and the global Create menu do not widen the protocol. Agent
-  and idle Session creation call the existing client methods. Environment template
-  and Environment key entries are non-actionable unavailable states.
+  and idle Session creation call the existing client methods. The top-level
+  Environments destination and Environment template/key entries are absent because
+  Core exposes no corresponding list or management APIs.
 - The Agent setup request preview is derived entirely from editable Agent fields and
   the sanitized Core base URL. Its authorization header always contains the literal
   `${AGENTS_CORE_API_KEY}` placeholder; it never reads or renders the connection's
   server-managed or current-tab bearer.
 - Saved Agent persistence and Session execution are separate contracts. Parsar
-  `c15d42a2` can store explicit reasoning, non-`auto` service tiers, and JSON-schema
+  `d91ba48a` can store explicit reasoning, non-`auto` service tiers, and JSON-schema
   text formats, but rejects each of them before creating a Session. Enabled
   multi-agent configuration, saved-only tool types, deferred/invalid/duplicate
   function or MCP identities, and MCP credentials without attached Vaults are
@@ -80,13 +88,9 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 - Saved Agent names are limited to 128 Unicode characters. Agent metadata is limited
   to 16 string pairs, 64 Unicode characters per key, and 512 per value; the Web
   enforces those limits before a write.
-- The Environments overview filters the currently loaded Session collection to exact
-  `self_hosted` projections. A matching durable/live observation may annotate that
-  row, but an absent row or observation remains unknown. The view does not derive a
-  list from database state, Environment IDs, executor registrations, or operator keys.
-- Parsar Core at the pinned revision has a narrow `self_hosted` profile for empty
-  Session creation followed by constrained idle text input. The Web does not create
-  that profile, but it safely renders selected Sessions that already carry one. This
+- Parsar Core at the audited revision supports Session-bound `self_hosted` data and
+  its documented event inputs. This Web does not create or connect that profile; it
+  safely renders selected Sessions that already carry one. That read-only projection
   does not expand the missing Environment create/list/update/delete, template, or
   file-operation surface.
 - The reusable client distinguishes the admitted `self_hosted` request fields
@@ -161,7 +165,8 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
   multi-agent, executable-tool-shape, and unattached-credential incompatibilities
   are authoritative at Session creation; a real Turn remains necessary to prove
   model/provider execution and conditional Codex `low`/`high` verbosity support.
-  Claude SDK accepts medium verbosity only.
+  Web never sends a paid Turn merely as a capability probe. Claude SDK accepts
+  medium verbosity only.
 
 Environment creation and management beyond the narrow read, provider selection,
 Files, Plugins, Skills, Artifacts, Vault, hosted runtimes, and Workspace lifecycle
@@ -297,14 +302,14 @@ read keeps the existing conversation usable.
   observability. They are not per-Item timing, monetary cost, provider attribution,
   or a complete OpenAI Trace waterfall.
 
-The client never retries a write automatically. For an input message that fails with
-a network/response-loss error, HTTP 5xx, or transient 408/409/425/429, the Web keeps
-the original payload and idempotency key in memory. Only a later user-initiated Send
-of the byte-for-byte unchanged payload reuses that key. Editing the payload, changing
-Session/Core, a successful response, or a permanent 4xx starts a new operation with a
-new key. This state is intentionally not stored in browser persistence, and the UI
-cannot prove whether an uncertain request was accepted until durable Core state
-reconciles.
+The client never retries a write automatically. For an input message that receives
+an unexpected non-204 2xx, loses its network/response, or fails with HTTP 5xx or a
+transient 408/409/425/429, the Web keeps the original payload and idempotency key in
+memory. Only a later user-initiated Send of the byte-for-byte unchanged payload
+reuses that key. Editing the payload, changing Session/Core, a successful response,
+or a permanent 4xx starts a new operation with a new key. This state is intentionally
+not stored in browser persistence, and the UI cannot prove whether an uncertain
+request was accepted until durable Core state reconciles.
 
 HTTP acceptance, `/healthz`, an open SSE connection, and successful Agent creation
 do not prove that a daemon, native harness, model ID, or provider credential can

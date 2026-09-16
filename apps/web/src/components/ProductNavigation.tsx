@@ -1,10 +1,9 @@
-import { Bot, Boxes, MessageSquare, type LucideIcon } from "lucide-react";
+import { Bot, MessageSquare, type LucideIcon } from "lucide-react";
 
-export type ProductView = "agents" | "environments" | "sessions";
+export type ProductView = "agents" | "sessions";
 
 const productViews: Array<{ id: ProductView; label: string; icon: LucideIcon }> = [
   { id: "agents", label: "Agents", icon: Bot },
-  { id: "environments", label: "Environments", icon: Boxes },
   { id: "sessions", label: "Sessions", icon: MessageSquare },
 ];
 

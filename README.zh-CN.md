@@ -70,9 +70,11 @@ AGENTS_API_PROXY_TOKEN_FILE=/absolute/private/path/to/web-token
 修改后重启 `pnpm dev`。凭据应保留在服务端。只有兼容 Core 通过 CORS
 明确允许 Web 的源、方法和请求头时，才能在连接对话框中使用 Core 直连 URL。
 
-还没有运行中的 Core？请参阅[连接 Agent Core](docs/core-connection.md)。
-该文档包含完整的 PostgreSQL、调用方凭据、执行设备、daemon、原生执行适配层（harness）、
-`CODEX_HOME`、安全、验证和停止流程。
+还没有运行中的 Core？请使用不可变的
+[当前 Parsar 配置指南](https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/services/agents-api/README.md#standalone-http-service)。
+仓库内的[旧版 Web 连接手册](docs/core-connection.md)固定在文首标注的旧 revision；
+将其中 PostgreSQL、调用方凭据、执行设备、daemon、原生执行适配层（harness）、
+`CODEX_HOME`、验证和停止流程用于更新版 Core 前必须重新核对。
 
 ## 第一次使用
 
@@ -108,15 +110,17 @@ WebSocket 当作 API URL。
 | --- | --- |
 | Web 无法访问 Core | 确认 Core 地址和 `AGENTS_API_PROXY_TARGET`，然后重启 Vite |
 | `401 invalid_api_key` | 明文调用方 Bearer 凭据必须与 Core 当前的密钥绑定匹配 |
-| `503 execution_unavailable` / `Execution is not enabled` | Core 可以访问，但没有已启用的执行链路；请连接其配置的 executor/daemon |
+| `503 execution_unavailable` / `Execution is not enabled` | Core 拒绝执行；请检查其安全错误、运行时和 ownership 状态。worker、executor 或 daemon 可能未配置或已断连，也可能丢失了执行 lease |
 | Agent 保存成功但模型运行失败 | 使用已连接运行时支持的 model ID 和提供商凭据 |
 
 `/healthz` 只能证明 HTTP 存活，不能证明聊天已就绪。重试结果不确定的请求前，
-请先查看[完整故障排查](docs/core-connection.md#troubleshooting)。
+请先核对 Core 持久状态和当前固定版本的 Parsar 指南；
+[旧版 043 故障排查快照](docs/core-connection.md#troubleshooting)仅供历史参考。
 
 ## 文档入口
 
-- [连接 Agent Core](docs/core-connection.md) — 完整本地和部署配置
+- [当前 Parsar Core 配置](https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/services/agents-api/README.md#standalone-http-service) — 不可变的当前上游指南
+- [旧版 Web 连接手册](docs/core-connection.md) — 历史 `0438880` 快照，使用前必须重新核对
 - [协议覆盖范围](docs/protocol-coverage.md) — 准确的已支持 API 范围
 - [架构说明](docs/architecture.md) — 所有权、运行时和信任边界
 - [路线图](docs/roadmap.md) — 计划中的 Web 和 Core 集成

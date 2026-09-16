@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { CreateMenuContent } from "./CreateMenu";
 
 describe("Create menu", () => {
-  it("keeps supported actions separate from explicit Core-unavailable resources", () => {
+  it("shows only actions supported by the current Core contract", () => {
     const html = renderToStaticMarkup(
       <CreateMenuContent
         canCreateAgent
@@ -15,10 +15,11 @@ describe("Create menu", () => {
     );
 
     expect(html).toContain('role="menu"');
-    expect(html).toContain("Environment template");
-    expect(html).toContain("Core exposes no template API");
-    expect(html).toContain("operator-owned, never browser-managed");
-    expect(html.match(/aria-disabled="true"/g)).toHaveLength(2);
+    expect(html).toContain("Agent");
+    expect(html).toContain("Start Session");
+    expect(html).not.toContain("Environment template");
+    expect(html).not.toContain("Environment key");
+    expect(html).not.toContain('aria-disabled="true"');
     expect(html).not.toContain("executor_token");
   });
 });

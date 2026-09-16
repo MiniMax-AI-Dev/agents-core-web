@@ -1,8 +1,6 @@
 import {
   Bot,
   ChevronDown,
-  FileBox,
-  KeyRound,
   MessageSquare,
   Plus,
 } from "lucide-react";
@@ -27,14 +25,6 @@ export function CreateMenuContent({
         <Bot size={16} strokeWidth={1.5} aria-hidden="true" />
         <span><strong>Agent</strong><small>Save a reusable Agent definition</small></span>
       </button>
-      <div className="create-menu-unavailable" role="menuitem" aria-disabled="true">
-        <FileBox size={16} strokeWidth={1.5} aria-hidden="true" />
-        <span><strong>Environment template</strong><small>Unavailable · Core exposes no template API</small></span>
-      </div>
-      <div className="create-menu-unavailable" role="menuitem" aria-disabled="true">
-        <KeyRound size={16} strokeWidth={1.5} aria-hidden="true" />
-        <span><strong>Environment key</strong><small>Unavailable · operator-owned, never browser-managed</small></span>
-      </div>
       <button type="button" role="menuitem" onClick={onStartSession} disabled={!canStartSession}>
         <MessageSquare size={16} strokeWidth={1.5} aria-hidden="true" />
         <span>

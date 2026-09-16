@@ -80,7 +80,7 @@ interface SessionsViewProps {
   ) => Promise<AgentSession | undefined>;
 }
 
-const executorSetupUrl = "https://github.com/MiniMax-AI-Dev/parsar/blob/main/services/agents-api/README.md#internal-execution-device-connection";
+const coreRuntimeSetupUrl = "https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/services/agents-api/README.md#public-text-execution";
 
 function SessionsListSkeleton() {
   return (
@@ -192,6 +192,30 @@ function UnsupportedActionNotice() {
   );
 }
 
+function CancelActiveTurnButton({ busy, onCancel }: { busy: boolean; onCancel: () => void }) {
+  return (
+    <button
+      className="composer-action"
+      type="button"
+      onClick={onCancel}
+      disabled={busy}
+      aria-label="Cancel active Turn"
+      title="Cancel active Turn"
+    >
+      <Square size={13} fill="currentColor" strokeWidth={1.5} />
+    </button>
+  );
+}
+
+function CancelOnlyBar({ busy, onCancel }: { busy: boolean; onCancel: () => void }) {
+  return (
+    <section className="active-turn-cancel-bar" aria-label="Active Turn controls">
+      <p>Turn continuation is unavailable, but cancellation remains available.</p>
+      <CancelActiveTurnButton busy={busy} onCancel={onCancel} />
+    </section>
+  );
+}
+
 function FunctionActionBar({
   actions,
   agentName,
@@ -261,9 +285,7 @@ function FunctionActionBar({
         >
           Submit result
         </button>
-        <button className="composer-action" type="button" onClick={onCancel} disabled={busy} aria-label="Cancel active Turn" title="Cancel active Turn">
-          <Square size={13} fill="currentColor" strokeWidth={1.5} />
-        </button>
+        <CancelActiveTurnButton busy={busy} onCancel={onCancel} />
       </div>
     </section>
   );
@@ -433,6 +455,10 @@ export function SessionsView({
   const functionActions = requiredActions.filter(isFunctionCallAction);
   const unsupportedActionCount = requiredActions.length - environmentConnections.length - functionActions.length + (
     !requiredActionsAreValid || selected?.status === "requires_action" && !requiredActions.length ? 1 : 0
+  );
+  const showCancelOnly = Boolean(
+    (selected?.status === "in_progress" || selected?.status === "requires_action") &&
+    (unsupportedActionCount > 0 || environmentConnections.length > 0 && functionActions.length === 0),
   );
 
   return (
@@ -617,21 +643,21 @@ export function SessionsView({
                 {sendError ? (
                   <ErrorState
                     className="session-send-error"
-                    title={sendError.code === "execution_unavailable" ? "Execution daemon is unavailable" : "Message wasn’t sent"}
+                    title={sendError.code === "execution_unavailable" ? "Core execution is unavailable" : "Message wasn’t sent"}
                     description={sendError.code === "execution_unavailable"
-                      ? "Agent Core is online, but this service does not currently have an execution worker. Your draft was restored and was not retried."
+                      ? "Agent Core rejected this execution request. Your draft was restored and was not retried."
                       : sendError.uncertain
                         ? "Core may have accepted this message before the response was lost. Your draft was restored and was not retried."
                         : "Agent Core rejected the message. Your draft was restored and was not retried."}
                     detail={sendError.message}
                     hint={sendError.code === "execution_unavailable"
-                      ? "Start Core with AGENTS_API_DAEMON_WS_URL, connect a same-tenant parsar-daemon, then explicitly send the unchanged draft again."
+                      ? "Review the Core error and operator runtime configuration, then explicitly send the unchanged draft again when Core is ready."
                       : sendError.uncertain
                         ? "Review durable state first. Explicitly send the unchanged draft to reuse its key; editing it creates a new operation."
                         : "Review the error, then send the restored draft as a new operation when the Core is ready."}
                     action={sendError.code === "execution_unavailable" ? (
-                      <a className="button outline" href={executorSetupUrl} target="_blank" rel="noreferrer">
-                        Executor setup
+                      <a className="button outline" href={coreRuntimeSetupUrl} target="_blank" rel="noreferrer">
+                        Core runtime setup
                         <ExternalLink size={13} strokeWidth={1.5} aria-hidden="true" />
                       </a>
                     ) : undefined}
@@ -673,6 +699,9 @@ export function SessionsView({
               <EnvironmentConnectionNotice action={action} key={`${action.environment_id}:${index}`} />
             ))}
             {unsupportedActionCount ? <UnsupportedActionNotice /> : null}
+            {showCancelOnly ? (
+              <CancelOnlyBar busy={busy} onCancel={cancel} />
+            ) : null}
             {!unsupportedActionCount && functionActions.length ? (
                 <FunctionActionBar
                   actions={functionActions}
@@ -706,9 +735,7 @@ export function SessionsView({
                   <span>{selected.agent.name || "Untitled Agent"}</span>
                 </span>
                 {selected.status === "in_progress" || selected.status === "requires_action" ? (
-                  <button className="composer-action" type="button" onClick={cancel} disabled={busy} aria-label="Cancel active Turn" title="Cancel active Turn">
-                    <Square size={13} fill="currentColor" strokeWidth={1.5} />
-                  </button>
+                  <CancelActiveTurnButton busy={busy} onCancel={cancel} />
                 ) : (
                   <button
                     className="composer-action send"

@@ -17,8 +17,8 @@ This boundary is intentional:
 - Core fixes and runtime-provider work are contributed upstream instead of copied or
   simulated in Web.
 
-The current compatibility baseline is Parsar
-[`0438880a`](https://github.com/MiniMax-AI-Dev/parsar/commit/0438880ab21aa16d05cb91a4c7f91cc0abc12358),
+The current compatibility audit baseline is Parsar
+[`d91ba48a`](https://github.com/MiniMax-AI-Dev/parsar/commit/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee),
 whose contract is pinned to `openai-python` 3.13.0 commit
 [`d7c41efe`](https://github.com/openai/openai-python/tree/d7c41efee1b0802b79f3f88a678ef2052b06e9ce/src/openai/resources/beta/agents).
 This is a fixed beta subset, not a claim that every current OpenAI Agents API
@@ -142,17 +142,19 @@ Session and Environment identity, request/event revisions, stream epoch, selecti
 and abort checks reject late state. The TypeScript client exposes Turn list/retrieve
 for diagnostics, but the current UI does not use them in recovery.
 
-The client never retries an uncertain write automatically. The current UI does not
-persist one generated idempotency key across a manual resend, so it must not imply
-that pressing Send again is a safe retry. Durable/live terminal precedence and
-pending-operation key persistence remain M1 hardening work.
+The client never retries an uncertain write automatically. It keeps a failed
+message payload and idempotency key in memory only for an explicit byte-for-byte
+unchanged manual resend. Editing the payload, changing Session/Core, receiving a
+successful exact HTTP 204, or receiving a permanent rejection creates a new
+operation. Any other 2xx fails closed and remains uncertain because the documented
+Session events contract admits writes only with 204.
 
 ## Runtime profiles
 
-The Web currently creates `environment: {"type":"none"}` Sessions. On Parsar
-`0438880a`, Core also contains a narrow Codex `self_hosted` profile for empty Sessions
-followed by constrained idle text input. The Web does not create or connect that
-profile, but for an already selected self-hosted Session it reads the durable
+The Web currently creates `environment: {"type":"none"}` Sessions. Parsar
+`d91ba48a` also exposes Session-bound `self_hosted` data and documented event inputs.
+The Web does not create or connect that profile, but for an already selected
+self-hosted Session it reads the durable
 Environment's exact safe projection and status. Durable `expired` and live-only
 `ready` remain separate states; empty installation arrays do not describe a host or
 Workspace. This profile is not equivalent to the internal daemon socket, Docker,
@@ -193,8 +195,10 @@ workaround.
 
 The development proxy is loopback-only convenience, not a production security
 boundary. Production must terminate TLS, authenticate Web users, authorize requests,
-and hold the Core bearer in a reverse proxy/BFF. See
-[Connecting Agent Core](core-connection.md) for the local setup and credential flow.
+and hold the Core bearer in a reverse proxy/BFF. Use the immutable
+[current Parsar setup guide](https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/services/agents-api/README.md#standalone-http-service)
+for Core lifecycle and treat [Connecting Agent Core](core-connection.md) as a legacy
+Web runbook pinned to the older revision stated at its top.
 
 ## Sources
 
@@ -202,6 +206,6 @@ and hold the Core bearer in a reverse proxy/BFF. See
 - [Official OpenAI Agents API overview](https://developers.openai.com/api/docs/guides/agents-api/overview)
 - [Official OpenAI Session lifecycle](https://developers.openai.com/api/docs/guides/agents-api/sessions)
 - [Pinned `openai-python` Agents resources](https://github.com/openai/openai-python/tree/d7c41efee1b0802b79f3f88a678ef2052b06e9ce/src/openai/resources/beta/agents)
-- [Parsar Agents API contract at `0438880a`](https://github.com/MiniMax-AI-Dev/parsar/blob/0438880ab21aa16d05cb91a4c7f91cc0abc12358/contracts/agents-api/README.md)
-- [Parsar Environment contract at `0438880a`](https://github.com/MiniMax-AI-Dev/parsar/blob/0438880ab21aa16d05cb91a4c7f91cc0abc12358/contracts/agents-api/environments.md)
-- [Parsar standalone service guide at `0438880a`](https://github.com/MiniMax-AI-Dev/parsar/blob/0438880ab21aa16d05cb91a4c7f91cc0abc12358/services/agents-api/README.md)
+- [Parsar Agents API contract at `d91ba48a`](https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/contracts/agents-api/README.md)
+- [Parsar Environment contract at `d91ba48a`](https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/contracts/agents-api/environments.md)
+- [Parsar standalone service guide at `d91ba48a`](https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/services/agents-api/README.md)
