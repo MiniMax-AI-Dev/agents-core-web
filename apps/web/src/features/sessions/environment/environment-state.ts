@@ -7,6 +7,24 @@ import type {
   StreamError,
 } from "@agents-core-web/agents-client";
 
+const canonicalUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** UUID identities are case-insensitive; opaque Environment IDs remain exact. */
+export function environmentIdsMatch(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  if (left === null || left === undefined || right === null || right === undefined) {
+    return left === right;
+  }
+  const canonicalLeft = left.toLowerCase();
+  const canonicalRight = right.toLowerCase();
+  if (canonicalUuidPattern.test(canonicalLeft) && canonicalUuidPattern.test(canonicalRight)) {
+    return canonicalLeft === canonicalRight;
+  }
+  return left === right;
+}
+
 function isSessionEnvironmentStatus(value: string): value is SessionEnvironmentStatus {
   return value === "pending" || value === "ready" || value === "connected" || value === "disconnected" || value === "failed";
 }
@@ -67,7 +85,7 @@ export function environmentReadIsCurrent(
   return read.coreGeneration === current.coreGeneration &&
     read.sessionId === current.sessionId &&
     read.sessionId === current.selectedSessionId &&
-    read.environmentId === current.environmentId &&
+    environmentIdsMatch(read.environmentId, current.environmentId) &&
     read.sessionRequest === current.sessionRequest &&
     read.environmentRequest === current.environmentRequest &&
     read.streamEpoch === current.streamEpoch &&
@@ -143,7 +161,7 @@ export function environmentObservationFromResource(
   resource: AgentEnvironmentResource,
   expectedEnvironmentId: string,
 ): DurableEnvironmentObservation | null {
-  if (resource.id !== expectedEnvironmentId || resource.type !== "self_hosted") return null;
+  if (!environmentIdsMatch(resource.id, expectedEnvironmentId) || resource.type !== "self_hosted") return null;
   return {
     source: "durable",
     environmentId: resource.id,
@@ -182,7 +200,7 @@ export function reduceEnvironmentObservation(
     event.session_id !== expectedSessionId
   ) return current;
   const next = environmentObservationFromEvent(event);
-  if (next && expectedEnvironmentId && next.environmentId !== expectedEnvironmentId) return null;
+  if (next && expectedEnvironmentId && !environmentIdsMatch(next.environmentId, expectedEnvironmentId)) return null;
   if (expectedEnvironmentId === null) return null;
   return next;
 }
@@ -208,7 +226,7 @@ export function reconcileEnvironmentObservation(
 ): EnvironmentObservation | null {
   if (!observation) return null;
   const environmentId = selfHostedEnvironmentId(session.environment);
-  return environmentId === observation.environmentId && observation.environmentType === "self_hosted"
+  return environmentIdsMatch(environmentId, observation.environmentId) && observation.environmentType === "self_hosted"
     ? observation
     : null;
 }

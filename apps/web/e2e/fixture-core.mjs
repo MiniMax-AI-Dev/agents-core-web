@@ -3,6 +3,8 @@ import http from "node:http";
 const host = "127.0.0.1";
 const port = Number(process.env.AGENTS_FIXTURE_PORT ?? 18092);
 const baseline = 1_789_438_800;
+const canonicalEnvironmentUuid = "0f745b0d-b545-49cd-8d7e-4c31c80dc564";
+const canonicalUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function patchItems() {
   const longLine = `+export const longValue = "${"x".repeat(2_000)}";`;
@@ -156,10 +158,10 @@ function applyEnvironmentScenario(value) {
   const session = state.sessions[0];
   if (!session) return;
   const hostileRemote = "https://launcher:private@executor.example.test/connect?executor_token=secret#credential";
-  if (value === 1 || value === 4) {
+  if (value === 1 || value === 4 || value === 5) {
     session.environment = {
       type: "self_hosted",
-      id: "environment_fixture",
+      id: value === 5 ? canonicalEnvironmentUuid.toUpperCase() : "environment_fixture",
       remote_url: hostileRemote,
       workspace_directory: `/workspace/<script>safe</script>/${"long/".repeat(45)}project`,
       capability_directories: ["/capabilities/read-only", `/capabilities/${"wide/".repeat(55)}`],
@@ -501,9 +503,12 @@ const server = http.createServer(async (request, response) => {
         return sendError(response, state.controls.environmentRetrieveStatus, "Fixture Environment retrieve failed.");
       }
       const id = decodeURIComponent(environmentMatch[1]);
-      if (id !== "environment_fixture") return sendError(response, 404, "Fixture Environment not found.");
+      const sessionEnvironment = state.sessions[0]?.environment;
+      const expectedId = sessionEnvironment?.type === "self_hosted" ? sessionEnvironment.id : null;
+      if (id !== expectedId) return sendError(response, 404, "Fixture Environment not found.");
+      const canonicalId = id.toLowerCase();
       const resource = {
-        id,
+        id: canonicalUuidPattern.test(canonicalId) ? canonicalId : id,
         object: "agent.environment",
         type: "self_hosted",
         status: state.controls.environmentResourceStatus,
@@ -603,8 +608,13 @@ const server = http.createServer(async (request, response) => {
       if (environmentStatus && state.controls.environmentEventCount > 0) {
         state.controls.environmentEventCount -= 1;
         state.sequence += 1;
+        const sessionEnvironment = state.sessions[0]?.environment;
+        const rawEnvironmentId = sessionEnvironment?.type === "self_hosted"
+          ? sessionEnvironment.id
+          : "environment_fixture";
+        const canonicalEnvironmentId = rawEnvironmentId.toLowerCase();
         const environment = {
-          id: "environment_fixture",
+          id: canonicalUuidPattern.test(canonicalEnvironmentId) ? canonicalEnvironmentId : rawEnvironmentId,
           type: "self_hosted",
           status: environmentStatus,
           error: environmentStatus === "failed" ? {
