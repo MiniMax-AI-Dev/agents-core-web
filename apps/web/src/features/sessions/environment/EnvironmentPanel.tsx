@@ -10,7 +10,7 @@ import type {
 import { StatusIcon, type StatusKind } from "../../../components/StatusIcon";
 import { environmentIdsMatch, type EnvironmentObservation } from "./environment-state";
 
-const parsarBaseline = "0438880ab21aa16d05cb91a4c7f91cc0abc12358";
+const parsarBaseline = "d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee";
 const coreSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/services/agents-api/README.md#native-executor-transport-prerequisite`;
 const launcherSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/packages/codex-executor/README.md#connect-an-executor`;
 

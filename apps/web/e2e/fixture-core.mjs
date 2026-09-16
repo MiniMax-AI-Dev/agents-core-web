@@ -253,12 +253,6 @@ function applyEnvironmentScenario(value) {
   const session = state.sessions[0];
   if (!session) return;
   const hostileRemote = "https://launcher:private@executor.example.test/connect?executor_token=secret#credential";
-  if (value === 7) {
-    session.environment = { type: "none" };
-    session.status = "in_progress";
-    session.required_actions = [];
-    return;
-  }
   if (value === 1 || value === 4 || value === 5 || value === 6) {
     session.environment = {
       type: "self_hosted",

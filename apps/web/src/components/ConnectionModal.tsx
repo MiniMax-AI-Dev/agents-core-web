@@ -29,7 +29,7 @@ export type ConnectionProbeState =
   | { status: "complete"; result: CoreProbeResult };
 
 const webBaseline = "98c5b3312ad33e1fae8b94283a011eb3e5f4ee2c";
-const parsarBaseline = "0438880ab21aa16d05cb91a4c7f91cc0abc12358";
+const parsarBaseline = "d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee";
 const operatorGuideUrl = `https://github.com/MiniMax-AI-Dev/agents-core-web/blob/${webBaseline}/docs/core-connection.md`;
 const troubleshootingUrl = `${operatorGuideUrl}#troubleshooting`;
 const parsarCoreSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/services/agents-api/README.md#standalone-http-service`;
@@ -102,7 +102,7 @@ export function ConnectionProbeStatus({ state }: { state: ConnectionProbeState }
     >
       <strong>{copy.title}</strong>
       <p>{copy.detail}</p>
-      <small>Execution compatibility: Unknown / not publicly proven. Turn-driving writes remain disabled.</small>
+      <small>Chat uses the current Agents API contract. This read-only probe does not start a Turn or verify its runtime dependencies.</small>
     </div>
   );
 }
@@ -316,11 +316,11 @@ export function ConnectionModal({
         </div>
         <div className="connection-guide-links">
           <a className="connection-guide-link" href={operatorGuideUrl} target="_blank" rel="noreferrer">
-            Connection guide
+            Legacy Web guide · 043 snapshot
             <ExternalLink size={12} strokeWidth={1.5} aria-hidden="true" />
           </a>
           <a className="connection-guide-link" href={troubleshootingUrl} target="_blank" rel="noreferrer">
-            Troubleshooting
+            Legacy troubleshooting · 043 snapshot
             <ExternalLink size={12} strokeWidth={1.5} aria-hidden="true" />
           </a>
           <a className="connection-guide-link" href={parsarCoreSetupUrl} target="_blank" rel="noreferrer">
@@ -331,7 +331,7 @@ export function ConnectionModal({
       </section>
       <div className="notice neutral">
         <Info size={14} strokeWidth={1.5} aria-hidden="true" />
-        Execution compatibility remains Unknown / not publicly proven, so Turn-driving writes stay disabled. HTTP access does not prove a daemon, model, or provider is ready.
+        Test connection verifies Agents API access only. Chat uses the current Core events contract; a real request can still fail when its worker, executor, model, or provider is unavailable.
       </div>
     </Modal>
   );

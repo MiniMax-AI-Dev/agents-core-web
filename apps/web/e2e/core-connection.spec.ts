@@ -303,7 +303,7 @@ test("announces loading, authenticated access, and each safe failure state from 
     methods.push(route.request().method());
     const reply = replies.shift();
     if (!reply) return route.abort("failed");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 150));
     if ("abort" in reply) return route.abort("failed");
     return route.fulfill({
       status: reply.status,
@@ -333,8 +333,8 @@ test("announces loading, authenticated access, and each safe failure state from 
     await expect(loading).toContainText("Testing Core connection…");
     const terminal = dialog.getByRole(expected.role);
     await expect(terminal).toContainText(expected.text);
-    await expect(terminal).toContainText("Execution compatibility: Unknown / not publicly proven");
-    await expect(terminal).toContainText("Turn-driving writes remain disabled");
+    await expect(terminal).toContainText("Chat uses the current Agents API contract");
+    await expect(terminal).toContainText("does not start a Turn or verify its runtime dependencies");
     if (expected.absentText) await expect(terminal).not.toContainText(expected.absentText);
   }
 
@@ -374,8 +374,8 @@ test("turns a stalled probe into one bounded unreachable result", async ({ page,
     (window as ProbeInstrumentationWindow).__stalledProbeCallCount ?? 0
   ))).toBe(1);
   await expect(dialog.getByRole("alert")).toContainText("Core unreachable", { timeout: 7_500 });
-  await expect(dialog.getByRole("alert")).toContainText("Execution compatibility: Unknown / not publicly proven");
-  await expect(dialog.getByRole("alert")).toContainText("Turn-driving writes remain disabled");
+  await expect(dialog.getByRole("alert")).toContainText("Chat uses the current Agents API contract");
+  await expect(dialog.getByRole("alert")).toContainText("does not start a Turn or verify its runtime dependencies");
   expect(await page.evaluate(() => (window as ProbeInstrumentationWindow).__stalledProbeCallCount)).toBe(1);
 });
 

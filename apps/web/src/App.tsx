@@ -29,7 +29,6 @@ import {
   requestAgentDetail,
   requestAgentUpdate,
 } from "./features/agents/agent-actions";
-import { EnvironmentsView } from "./features/environments/EnvironmentsView";
 import {
   SessionsView,
   type SessionDetailState,
@@ -75,10 +74,6 @@ import {
 } from "./lib/connection";
 import { settleCollection } from "./lib/collection-load";
 import {
-  DEFAULT_EXECUTION_COMPATIBILITY,
-  guardedExecutionWrite,
-} from "./lib/execution-compatibility";
-import {
   beginPendingSend,
   failPendingSend,
   type FailedPendingSend,
@@ -103,8 +98,6 @@ import {
 } from "./lib/stream-reconnect";
 
 type View = ProductView | "system";
-
-const executionCompatibility = DEFAULT_EXECUTION_COMPATIBILITY;
 
 interface StreamConnection {
   sessionId: string | null;
@@ -1042,44 +1035,39 @@ export function App() {
   const sendMessage = async (text: string) => {
     const sessionId = selectedId;
     if (!sessionId) return;
-    await guardedExecutionWrite(executionCompatibility, {
-      connectionGeneration: connectionGenerationRef.current,
-      sessionId: selectedIdRef.current ?? "",
-    }, async () => {
-      if (!streamReady) {
-        const message = "Wait for the live event stream to connect before sending.";
-        notify(message, "error");
-        throw new Error(message);
-      }
-      const previousFailure = sessionSendFailures.get(sessionId);
-      const pending = beginPendingSend(sessionId, text, previousFailure);
-      setSessionSendFailures((current) => {
-        if (!current.has(sessionId)) return current;
-        const next = new Map(current);
-        next.delete(sessionId);
-        return next;
-      });
-      try {
-        await run(() => core.sendMessage(sessionId, text, pending.idempotencyKey));
-      } catch (error) {
-        if (coreGeneration === connectionGenerationRef.current) {
-          setSessionSendFailures((current) => {
-            const next = new Map(current);
-            next.set(sessionId, failPendingSend(pending, error, errorMessage(error)));
-            return next;
-          });
-        }
-        throw error;
-      }
-      if (coreGeneration !== connectionGenerationRef.current || selectedIdRef.current !== sessionId) return;
-      setSessionSendFailures((current) => {
-        if (!current.has(sessionId)) return current;
-        const next = new Map(current);
-        next.delete(sessionId);
-        return next;
-      });
-      await refreshSelectedSession(sessionId);
+    if (!streamReady) {
+      const message = "Wait for the live event stream to connect before sending.";
+      notify(message, "error");
+      throw new Error(message);
+    }
+    const previousFailure = sessionSendFailures.get(sessionId);
+    const pending = beginPendingSend(sessionId, text, previousFailure);
+    setSessionSendFailures((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Map(current);
+      next.delete(sessionId);
+      return next;
     });
+    try {
+      await run(() => core.sendMessage(sessionId, text, pending.idempotencyKey));
+    } catch (error) {
+      if (coreGeneration === connectionGenerationRef.current) {
+        setSessionSendFailures((current) => {
+          const next = new Map(current);
+          next.set(sessionId, failPendingSend(pending, error, errorMessage(error)));
+          return next;
+        });
+      }
+      throw error;
+    }
+    if (coreGeneration !== connectionGenerationRef.current || selectedIdRef.current !== sessionId) return;
+    setSessionSendFailures((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Map(current);
+      next.delete(sessionId);
+      return next;
+    });
+    await refreshSelectedSession(sessionId);
   };
 
   const cancel = async () => {
@@ -1093,14 +1081,9 @@ export function App() {
   const submitFunctionResult = async (input: FunctionResultInput) => {
     const sessionId = selectedId;
     if (!sessionId) return;
-    await guardedExecutionWrite(executionCompatibility, {
-      connectionGeneration: connectionGenerationRef.current,
-      sessionId: selectedIdRef.current ?? "",
-    }, async () => {
-      await run(() => core.submitFunctionResult(sessionId, input), "Function result submitted.");
-      if (coreGeneration !== connectionGenerationRef.current || selectedIdRef.current !== sessionId) return;
-      await refreshSelectedSession(sessionId);
-    });
+    await run(() => core.submitFunctionResult(sessionId, input), "Function result submitted.");
+    if (coreGeneration !== connectionGenerationRef.current || selectedIdRef.current !== sessionId) return;
+    await refreshSelectedSession(sessionId);
   };
 
   const applyConnection = (next: CoreConnection) => {
@@ -1241,8 +1224,6 @@ export function App() {
               onCreateRequestConsumed={consumeSessionCreateRequest}
               detailError={detailError}
               detailState={detailState}
-              executionCompatibility={executionCompatibility}
-              executionConnectionGeneration={coreGeneration}
               turnError={turnError}
               turnState={turnState}
               environmentObservation={environmentObservation}
@@ -1280,16 +1261,6 @@ export function App() {
               onRetrieve={retrieveAgent}
               onStartSession={createSession}
               onUpdate={updateAgent}
-            />
-          ) : null}
-          {view === "environments" ? (
-            <EnvironmentsView
-              sessions={sessions}
-              observations={environmentObservations}
-              onOpenSession={(sessionId) => {
-                setSelectedId(sessionId);
-                setView("sessions");
-              }}
             />
           ) : null}
           {view === "system" ? <SystemView /> : null}

@@ -11,7 +11,7 @@ import {
   RefreshCw,
   Square,
 } from "lucide-react";
-import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import type {
   AgentSession,
@@ -30,10 +30,6 @@ import { Modal } from "../../components/Modal";
 import { Skeleton } from "../../components/Skeleton";
 import { StatusIcon, type StatusKind } from "../../components/StatusIcon";
 import type { CoreConnectionState } from "../../lib/connection";
-import {
-  executionWriteBlocker,
-  type ExecutionCompatibility,
-} from "../../lib/execution-compatibility";
 import { useThreadScroll } from "../../lib/use-thread-scroll";
 import { knownSessionAdmissionBlocker } from "../agents/session-admission";
 import {
@@ -61,8 +57,6 @@ interface SessionsViewProps {
   onCreateRequestConsumed?: (request: number) => void;
   detailError: string | null;
   detailState: SessionDetailState;
-  executionCompatibility: ExecutionCompatibility;
-  executionConnectionGeneration: number;
   turnError?: string | null;
   turnState?: TurnTimelineLoadState;
   environmentObservation?: EnvironmentObservation | null;
@@ -86,7 +80,7 @@ interface SessionsViewProps {
   ) => Promise<AgentSession | undefined>;
 }
 
-const executorSetupUrl = "https://github.com/MiniMax-AI-Dev/parsar/blob/main/services/agents-api/README.md#internal-execution-device-connection";
+const coreRuntimeSetupUrl = "https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/services/agents-api/README.md#public-text-execution";
 
 function SessionsListSkeleton() {
   return (
@@ -198,23 +192,6 @@ function UnsupportedActionNotice() {
   );
 }
 
-function ExecutionCompatibilityNotice({ id, blocker }: { id: string; blocker: string }) {
-  return (
-    <section
-      className="environment-connection-notice execution-compatibility-notice"
-      id={id}
-      role="note"
-      aria-label="Execution writes unavailable"
-    >
-      <div className="environment-connection-notice-heading">
-        <StatusIcon status="interrupted" />
-        <strong>Session is read-only</strong>
-      </div>
-      <p>{blocker}</p>
-    </section>
-  );
-}
-
 function CancelActiveTurnButton({ busy, onCancel }: { busy: boolean; onCancel: () => void }) {
   return (
     <button
@@ -244,8 +221,6 @@ function FunctionActionBar({
   agentName,
   autoFocus,
   busy,
-  executionBlocker,
-  executionDescriptionId,
   onCancel,
   onSubmit,
 }: {
@@ -253,8 +228,6 @@ function FunctionActionBar({
   agentName: string;
   autoFocus: boolean;
   busy: boolean;
-  executionBlocker: string | null;
-  executionDescriptionId?: string;
   onCancel: () => void;
   onSubmit: (input: FunctionResultInput) => Promise<void>;
 }) {
@@ -292,16 +265,14 @@ function FunctionActionBar({
         onChange={(event) => setResult(event.target.value)}
         placeholder="Return a result or describe the error…"
         aria-label="Function result or error"
-        aria-describedby={executionDescriptionId}
         rows={3}
-        disabled={busy || Boolean(executionBlocker)}
+        disabled={busy}
       />
       <div className="approval-actions">
         <button
           className="button outline"
           type="button"
-          disabled={busy || Boolean(executionBlocker)}
-          aria-describedby={executionDescriptionId}
+          disabled={busy}
           onClick={() => submit(false)}
         >
           Return error
@@ -309,8 +280,7 @@ function FunctionActionBar({
         <button
           className="button primary"
           type="button"
-          disabled={busy || Boolean(executionBlocker) || !result.trim()}
-          aria-describedby={executionDescriptionId}
+          disabled={busy || !result.trim()}
           onClick={() => submit(true)}
         >
           Submit result
@@ -334,8 +304,6 @@ export function SessionsView({
   onCreateRequestConsumed,
   detailError,
   detailState,
-  executionCompatibility,
-  executionConnectionGeneration,
   turnError = null,
   turnState = "idle",
   environmentObservation = null,
@@ -366,7 +334,6 @@ export function SessionsView({
   const [actionSession, setActionSession] = useState<AgentSession | null>(null);
   const [viewport, setViewport] = useState<HTMLDivElement | null>(null);
   const [threadContent, setThreadContent] = useState<HTMLDivElement | null>(null);
-  const executionNoticeId = useId();
   const sendingRef = useRef(false);
   const pageRef = useRef<HTMLElement>(null);
   const newSessionActionRef = useRef<HTMLButtonElement>(null);
@@ -384,10 +351,6 @@ export function SessionsView({
 
   const selectedAgent = agents.find((agent) => agent.id === agentId);
   const selectedAgentBlocker = selectedAgent ? knownSessionAdmissionBlocker(selectedAgent) : null;
-  const executionBlocker = executionWriteBlocker(executionCompatibility, {
-    connectionGeneration: executionConnectionGeneration,
-    sessionId: selected?.id ?? "",
-  });
 
   useEffect(() => {
     if (selectedAgent && !selectedAgentBlocker) return;
@@ -680,21 +643,21 @@ export function SessionsView({
                 {sendError ? (
                   <ErrorState
                     className="session-send-error"
-                    title={sendError.code === "execution_unavailable" ? "Execution daemon is unavailable" : "Message wasn’t sent"}
+                    title={sendError.code === "execution_unavailable" ? "Core execution is unavailable" : "Message wasn’t sent"}
                     description={sendError.code === "execution_unavailable"
-                      ? "Agent Core is online, but this service does not currently have an execution worker. Your draft was restored and was not retried."
+                      ? "Agent Core rejected this execution request. Your draft was restored and was not retried."
                       : sendError.uncertain
                         ? "Core may have accepted this message before the response was lost. Your draft was restored and was not retried."
                         : "Agent Core rejected the message. Your draft was restored and was not retried."}
                     detail={sendError.message}
                     hint={sendError.code === "execution_unavailable"
-                      ? "Start Core with AGENTS_API_DAEMON_WS_URL, connect a same-tenant parsar-daemon, then explicitly send the unchanged draft again."
+                      ? "Review the Core error and operator runtime configuration, then explicitly send the unchanged draft again when Core is ready."
                       : sendError.uncertain
                         ? "Review durable state first. Explicitly send the unchanged draft to reuse its key; editing it creates a new operation."
                         : "Review the error, then send the restored draft as a new operation when the Core is ready."}
                     action={sendError.code === "execution_unavailable" ? (
-                      <a className="button outline" href={executorSetupUrl} target="_blank" rel="noreferrer">
-                        Executor setup
+                      <a className="button outline" href={coreRuntimeSetupUrl} target="_blank" rel="noreferrer">
+                        Core runtime setup
                         <ExternalLink size={13} strokeWidth={1.5} aria-hidden="true" />
                       </a>
                     ) : undefined}
@@ -713,11 +676,9 @@ export function SessionsView({
                 {detailState === "ready" && streamState !== "failed" && selected.status !== "failed" && !items.length ? (
                   <div className="conversation-empty">
                     <Bot size={24} strokeWidth={1.5} />
-                    <h3>{executionBlocker ? "Session is read-only" : "Session is ready"}</h3>
+                    <h3>Session is ready</h3>
                     <p>
-                      {executionBlocker
-                        ? "You can inspect durable state and live events, but this Web will not submit execution writes."
-                        : streamState === "listening"
+                      {streamState === "listening"
                         ? "Live events are connected. Message execution also requires a Core worker and executor."
                         : "Opening the event stream before enabling the composer."}
                     </p>
@@ -734,9 +695,6 @@ export function SessionsView({
           </div>
 
           <footer className="composer-footer">
-            {executionBlocker ? (
-              <ExecutionCompatibilityNotice id={executionNoticeId} blocker={executionBlocker} />
-            ) : null}
             {environmentConnections.map((action, index) => (
               <EnvironmentConnectionNotice action={action} key={`${action.environment_id}:${index}`} />
             ))}
@@ -750,8 +708,6 @@ export function SessionsView({
                   agentName={selected.agent.name || "Agent"}
                   autoFocus={!environmentConnections.length && !unsupportedActionCount}
                   busy={busy || detailState !== "ready"}
-                  executionBlocker={executionBlocker}
-                  executionDescriptionId={executionBlocker ? executionNoticeId : undefined}
                   onCancel={cancel}
                   onSubmit={onFunctionResult}
                 />
@@ -768,15 +724,10 @@ export function SessionsView({
                   element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
                 }}
                 onKeyDown={onComposerKeyDown}
-                placeholder={selected.status === "failed"
-                  ? "This Session has failed"
-                  : executionBlocker
-                    ? "Execution compatibility is not publicly proven"
-                    : `Message ${selected.agent.name || "the Agent"}…`}
+                placeholder={selected.status === "failed" ? "This Session has failed" : `Message ${selected.agent.name || "the Agent"}…`}
                 aria-label="Message the Agent"
-                aria-describedby={executionBlocker ? executionNoticeId : undefined}
                 rows={1}
-                disabled={Boolean(executionBlocker) || detailState !== "ready" || selected.status === "failed"}
+                disabled={detailState !== "ready" || selected.status === "failed"}
               />
               <div className="composer-bar">
                 <span className="composer-context">
@@ -791,8 +742,7 @@ export function SessionsView({
                     type="submit"
                     aria-label="Send message"
                     title="Send message"
-                    disabled={Boolean(executionBlocker) || busy || detailState !== "ready" || !message.trim() || selected.status === "failed" || streamState !== "listening"}
-                    aria-describedby={executionBlocker ? executionNoticeId : undefined}
+                    disabled={busy || detailState !== "ready" || !message.trim() || selected.status === "failed" || streamState !== "listening"}
                   >
                     <ArrowUp size={16} strokeWidth={2} />
                   </button>

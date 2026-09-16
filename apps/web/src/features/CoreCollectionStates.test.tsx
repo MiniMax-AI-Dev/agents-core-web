@@ -13,8 +13,6 @@ const agentsCallbacks = {
 };
 
 const sessionsCallbacks = {
-  executionCompatibility: { state: "unknown" as const },
-  executionConnectionGeneration: 0,
   onCancel: async () => undefined,
   onCreateSession: async () => undefined,
   onDeleteSession: async () => true,
@@ -150,7 +148,7 @@ describe("Agent Core collection states", () => {
     expect(empty).toContain("Select or create a Session");
   });
 
-  it("keeps stale Sessions and a healthy selected workspace inspectable after collection refresh fails", () => {
+  it("keeps stale Sessions and a healthy selected workspace usable after collection refresh fails", () => {
     const failed = renderToStaticMarkup(
       <SessionsView
         agents={[]}
@@ -173,73 +171,7 @@ describe("Agent Core collection states", () => {
     expect(failed).toContain("sessions refresh failed");
     expect(failed).toContain("Existing durable item");
     expect(failed).toContain("listening");
-    expect(failed).toContain("Session is read-only");
-    expect(composer).toContain("disabled");
-  });
-
-  it("keeps message and function-result execution writes read-only until compatibility is proven", () => {
-    const messageView = renderToStaticMarkup(
-      <SessionsView
-        agents={[]}
-        sessions={[selectedSession]}
-        selected={selectedSession}
-        items={[]}
-        busy={false}
-        coreError={null}
-        coreState="ready"
-        detailError={null}
-        detailState="ready"
-        streamError={null}
-        streamState="listening"
-        {...sessionsCallbacks}
-        executionCompatibility={{ state: "unknown" }}
-      />,
-    );
-    const composer = messageView.match(/<textarea[^>]*aria-label="Message the Agent"[^>]*>/)?.[0] ?? "";
-    const send = messageView.match(/<button[^>]*aria-label="Send message"[^>]*>/)?.[0] ?? "";
-
-    expect(messageView).toContain('aria-label="Execution writes unavailable"');
-    expect(messageView).toContain("Execution compatibility is not publicly proven by the connected Core");
-    expect(messageView).toContain("This Web keeps the Session read-only");
-    expect(messageView).not.toContain("does not currently have an execution worker");
-    expect(composer).toContain("disabled");
-    expect(send).toContain("disabled");
-
-    const functionView = renderToStaticMarkup(
-      <SessionsView
-        agents={[]}
-        sessions={[]}
-        selected={{
-          ...selectedSession,
-          status: "requires_action",
-          required_actions: [{
-            type: "function_call",
-            call_id: "call_01",
-            turn_id: "turn_01",
-            name: "lookup",
-            arguments: { query: "fixture" },
-          }],
-        }}
-        items={[]}
-        busy={false}
-        coreError={null}
-        coreState="ready"
-        detailError={null}
-        detailState="ready"
-        streamError={null}
-        streamState="listening"
-        {...sessionsCallbacks}
-        executionCompatibility={{ state: "unsupported" }}
-      />,
-    );
-    const functionInput = functionView.match(/<textarea[^>]*aria-label="Function result or error"[^>]*>/)?.[0] ?? "";
-    const cancel = functionView.match(/<button[^>]*aria-label="Cancel active Turn"[^>]*>/)?.[0] ?? "";
-
-    expect(functionView).toContain("reports this execution profile as unsupported");
-    expect(functionInput).toContain("disabled");
-    expect(functionView).toMatch(/<button[^>]*disabled=""[^>]*>Return error<\/button>/);
-    expect(functionView).toMatch(/<button[^>]*disabled=""[^>]*>Submit result<\/button>/);
-    expect(cancel).not.toContain("disabled");
+    expect(composer).not.toContain("disabled");
   });
 
   it("does not claim an empty timeline before the selected Session load succeeds", () => {
@@ -271,8 +203,8 @@ describe("Agent Core collection states", () => {
     expect(failed).toContain("items request failed");
     expect(failed).toContain("Retry");
     expect(failed).not.toContain("Session is ready");
-    expect(ready).toContain("Session is read-only");
-    expect(ready).toContain("You can inspect durable state and live events");
+    expect(ready).toContain("Session is ready");
+    expect(ready).toContain("Message execution also requires a Core worker and executor.");
   });
 
   it("keeps durable Items visible beside refresh and terminal Session failures", () => {
@@ -371,11 +303,13 @@ describe("Agent Core collection states", () => {
       />,
     );
 
-    expect(failed).toContain("Execution daemon is unavailable");
+    expect(failed).toContain("Core execution is unavailable");
     expect(failed).toContain("Execution is not enabled on this service.");
     expect(failed).toContain("Your draft was restored and was not retried.");
-    expect(failed).toContain("AGENTS_API_DAEMON_WS_URL");
-    expect(failed).toContain("Executor setup");
+    expect(failed).toContain("operator runtime configuration");
+    expect(failed).toContain("Core runtime setup");
+    expect(failed).toContain("d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee");
+    expect(failed).not.toContain("AGENTS_API_DAEMON_WS_URL");
   });
 
   it("renders Environment connection actions separately from simultaneous function results", () => {
