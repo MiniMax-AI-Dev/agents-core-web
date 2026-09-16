@@ -5,6 +5,7 @@ const fixtureBaseUrl = `http://127.0.0.1:${process.env.AGENTS_FIXTURE_PORT ?? 18
 interface FixtureRequest {
   method: string;
   path: string;
+  query?: string;
   beta: string | null;
   authorizationPresent: boolean;
   idempotencyKeyPresent: boolean;
@@ -19,6 +20,11 @@ async function resetFixture(request: APIRequestContext) {
 
 async function controlFixture(request: APIRequestContext, control: Record<string, number | string>) {
   const response = await request.post(`${fixtureBaseUrl}/__fixture/control`, { data: control });
+  expect(response.ok()).toBe(true);
+}
+
+async function emitTurnFixture(request: APIRequestContext, status: "completed" | "failed" | "cancelled") {
+  const response = await request.post(`${fixtureBaseUrl}/__fixture/emit-turn`, { data: { status } });
   expect(response.ok()).toBe(true);
 }
 
@@ -500,6 +506,100 @@ test("applies a buffered live Environment event after an earlier durable snapsho
   await expect(panel).toContainText("Connected");
   await expect(panel).toContainText("last supported live event observed after the durable Environment snapshot");
   await expect(panel).not.toContainText("Pending");
+});
+
+test("loads every Turn page, reconciles terminal events, and keeps failures beside conversation Items", async ({ page, request }, testInfo) => {
+  await resetFixture(request);
+  await controlFixture(request, {
+    turnsScenario: 1,
+    turnsPageSize: 2,
+  });
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+
+  const timeline = page.getByRole("region", { name: "Turn timeline" });
+  await expect(timeline).toContainText("7 observed Turns");
+  for (const status of ["Queued", "In progress", "Waiting", "Completed", "Failed", "Cancelled"]) {
+    await expect(timeline.getByRole("img", { name: `Turn status: ${status}` }).first()).toBeVisible();
+  }
+  await expect(timeline).toContainText("Running ·");
+  await expect(timeline.locator('[data-turn-id="turn_completed"]')).toContainText("7s");
+  await expect(timeline.getByRole("region", { name: "Session aggregate usage" })).toContainText("26");
+  await expect(timeline.locator('[data-turn-id="turn_completed"]').getByRole("group", { name: "Usage for Turn turn_completed" })).toContainText("13");
+  const failed = timeline.locator('[data-turn-id="turn_failed"]');
+  await expect(failed).toContainText("The execution could not complete.");
+  await expect(failed).toContainText("1 linked Item");
+  await expect(page.getByText("Persisted input before the Turn failed.")).toBeVisible();
+  await expect(timeline).toContainText("1 Item is not associated with an observed Turn yet.");
+
+  const readsBeforeTerminal = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "GET" && entry.path.endsWith("/turns")
+  ));
+  expect(readsBeforeTerminal.length).toBeGreaterThanOrEqual(4);
+  expect(readsBeforeTerminal.some((entry) => entry.query === "?limit=100&order=asc")).toBe(true);
+  expect(readsBeforeTerminal.some((entry) => entry.query?.includes("after=turn_in_progress"))).toBe(true);
+  expect(readsBeforeTerminal.every((entry) => entry.body === undefined)).toBe(true);
+
+  const terminal = timeline.locator('[data-turn-id="turn_terminal_refresh"]');
+  await expect(terminal).toHaveAttribute("data-turn-status", "in_progress");
+  await emitTurnFixture(request, "completed");
+  await expect(terminal).toHaveAttribute("data-turn-status", "completed");
+  await expect(terminal).toContainText("Turn usage");
+  await expect.poll(async () => (
+    await fixtureRequests(request)
+  ).filter((entry) => entry.method === "GET" && entry.path.endsWith("/turns")).length).toBeGreaterThan(readsBeforeTerminal.length);
+
+  await controlFixture(request, { turnsRetrieveStatus: 503 });
+  await page.getByRole("button", { name: "Recover durable state" }).click();
+  await expect(timeline.locator(".turn-timeline-failure")).toContainText("Couldn’t load Turn history");
+  await expect(timeline).toContainText("last observed Turn timeline remains visible");
+  await expect(page.getByText("Completed Turn output remains in the conversation.")).toBeVisible();
+  await expect(page.getByLabel("Message the Agent")).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await timeline.evaluate((element) => element.scrollIntoView({ block: "start" }));
+  const widths = await timeline.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return {
+      viewport: innerWidth,
+      document: document.documentElement.scrollWidth,
+      body: document.body.scrollWidth,
+      left: box.left,
+      right: box.right,
+    };
+  });
+  expect(widths.document).toBeLessThanOrEqual(widths.viewport);
+  expect(widths.body).toBeLessThanOrEqual(widths.viewport);
+  expect(widths.left).toBeGreaterThanOrEqual(0);
+  expect(widths.right).toBeLessThanOrEqual(widths.viewport);
+  await attachElementScreenshot(timeline, testInfo, "narrow-turn-timeline");
+});
+
+test("drops a delayed Turn page after switching Sessions", async ({ page, request }) => {
+  await resetFixture(request);
+  await controlFixture(request, {
+    turnsScenario: 1,
+    turnsRetrieveDelayMs: 700,
+    turnsPageSize: 2,
+  });
+  await page.goto("/");
+  const timeline = page.getByRole("region", { name: "Turn timeline" });
+  await expect(page.getByText("Completed Turn output remains in the conversation.")).toBeVisible({ timeout: 1_500 });
+  await expect(timeline).toContainText("Loading every Turn page");
+  await page.getByRole("button", { name: "Agents" }).click();
+  await expect(page.getByRole("table", { name: "Agents" })).toBeVisible();
+  await page.getByRole("button", { name: /Start a Session with Second Agent/ }).click();
+
+  await expect(timeline).toContainText("No Turns reported yet.");
+  await page.waitForTimeout(3_000);
+  await expect(timeline).not.toContainText("turn_queued");
+  await expect(page.getByText("Completed Turn output remains in the conversation.")).toHaveCount(0);
+
+  const turnReads = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "GET" && entry.path.endsWith("/turns")
+  ));
+  expect(turnReads.some((entry) => entry.path.includes("session_snapshot"))).toBe(true);
+  expect(turnReads.some((entry) => entry.path.includes("session_created_"))).toBe(true);
 });
 
 test("renders Parsar patches as accessible read-only diffs in desktop and narrow themes", async ({ page, request }, testInfo) => {

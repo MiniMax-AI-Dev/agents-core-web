@@ -2,9 +2,11 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 
 import fixture from "./fixtures/parsar-8cc2898c/environment-protocol.json";
 import environmentResources from "./fixtures/parsar-0438880a/environment-resources.json";
+import turnResources from "./fixtures/parsar-0438880a/turn-resources.json";
 import type {
   AgentEnvironmentResource,
   AgentEnvironment,
+  AgentTurn,
   AgentSessionEnvironmentEvent,
   EnvironmentConnectionAction,
   EnvironmentResourceStatus,
@@ -15,6 +17,8 @@ import type {
   UnknownSessionEvent,
   UnknownSessionItem,
   SessionEnvironmentStatus,
+  TokenUsage,
+  TurnStatus,
 } from "./types";
 
 describe("Parsar 8cc2898c Environment protocol types", () => {
@@ -116,5 +120,37 @@ describe("Parsar 0438880a Environment retrieve resource", () => {
 
     expect(retrieval.request_id.toLowerCase()).toBe(resource.id);
     expect(resource.object).toBe("agent.environment");
+  });
+});
+
+describe("Parsar 0438880a Turn observability resources", () => {
+  it("models every durable lifecycle state and nullable measurements", () => {
+    const turns = turnResources.turns as AgentTurn[];
+
+    expect(turns.map((turn) => turn.status)).toEqual([
+      "queued",
+      "in_progress",
+      "waiting",
+      "completed",
+      "failed",
+      "cancelled",
+    ] satisfies TurnStatus[]);
+    expect(turns[0]?.started_at).toBeNull();
+    expect(turns[0]?.usage).toBeNull();
+    expect(turns[3]?.completed_at).toBe(1700000068);
+    expect(turns[4]?.error).toEqual({
+      code: "internal_error",
+      message: "The execution could not complete.",
+    });
+  });
+
+  it("keeps aggregate Session Usage distinct from one Turn measurement", () => {
+    const turns = turnResources.turns as AgentTurn[];
+    const aggregate = turnResources.session_usage as TokenUsage;
+
+    expect(turns[3]?.usage?.total_tokens).toBe(13);
+    expect(aggregate.total_tokens).toBe(26);
+    expect(aggregate.input_tokens_details.cached_tokens).toBe(8);
+    expect(aggregate.output_tokens_details.reasoning_tokens).toBe(4);
   });
 });

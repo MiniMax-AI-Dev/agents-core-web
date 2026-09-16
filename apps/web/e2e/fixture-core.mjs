@@ -25,6 +25,26 @@ function patchItems() {
   ];
 }
 
+function observableTurns() {
+  return [
+    { id: "turn_queued", agent_id: "agent_a", session_id: "session_snapshot", object: "agent.session.turn", status: "queued", created_at: baseline - 18, started_at: null, completed_at: null, error: null, usage: null },
+    { id: "turn_in_progress", agent_id: "agent_a", session_id: "session_snapshot", object: "agent.session.turn", status: "in_progress", created_at: baseline - 17, started_at: baseline - 16, completed_at: null, error: null, usage: null },
+    { id: "turn_waiting", agent_id: "agent_a", session_id: "session_snapshot", object: "agent.session.turn", status: "waiting", created_at: baseline - 15, started_at: baseline - 14, completed_at: null, error: null, usage: null },
+    { id: "turn_completed", agent_id: "agent_a", session_id: "session_snapshot", object: "agent.session.turn", status: "completed", created_at: baseline - 13, started_at: baseline - 12, completed_at: baseline - 5, error: null, usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13, input_tokens_details: { cached_tokens: 4 }, output_tokens_details: { reasoning_tokens: 2 } } },
+    { id: "turn_failed", agent_id: "agent_a", session_id: "session_snapshot", object: "agent.session.turn", status: "failed", created_at: baseline - 4, started_at: baseline - 3, completed_at: baseline - 2, error: { code: "internal_error", message: "The execution could not complete." }, usage: null },
+    { id: "turn_cancelled", agent_id: "agent_a", session_id: "session_snapshot", object: "agent.session.turn", status: "cancelled", created_at: baseline - 1, started_at: baseline, completed_at: baseline + 1, error: null, usage: null },
+    { id: "turn_terminal_refresh", agent_id: "agent_a", session_id: "session_snapshot", object: "agent.session.turn", status: "in_progress", created_at: baseline + 2, started_at: baseline + 3, completed_at: null, error: null, usage: null },
+  ];
+}
+
+function observableTurnItems() {
+  return [
+    { id: "turn_message", turn_id: "turn_completed", type: "message", status: "completed", role: "assistant", content: [{ type: "output_text", text: "Completed Turn output remains in the conversation." }] },
+    { id: "failed_input", turn_id: "turn_failed", type: "message", status: "completed", role: "user", content: [{ type: "input_text", text: "Persisted input before the Turn failed." }] },
+    { id: "unassociated", turn_id: "turn_not_loaded", type: "message", status: "completed", role: "assistant", content: [{ type: "output_text", text: "This Item is waiting for its Turn page." }] },
+  ];
+}
+
 function savedAgent(id, name, model, updatedAt) {
   return {
     id,
@@ -67,6 +87,7 @@ function initialState() {
       created_at: baseline - 20,
       last_active_at: baseline - 10,
     }],
+    turns: [],
     requests: [],
     controls: {
       retrieveDelayMs: 0,
@@ -78,6 +99,10 @@ function initialState() {
       sendStatus: 204,
       sendResponseLoss: 0,
       itemsScenario: 0,
+      turnsScenario: 0,
+      turnsRetrieveDelayMs: 0,
+      turnsRetrieveStatus: 200,
+      turnsPageSize: 2,
       environmentScenario: 0,
       environmentRetrieveDelayMs: 0,
       environmentRetrieveStatus: 200,
@@ -91,6 +116,24 @@ function initialState() {
     },
     sequence: 0,
   };
+}
+
+function applyTurnsScenario(value) {
+  const session = state.sessions[0];
+  if (!session) return;
+  if (value === 1) {
+    state.turns = observableTurns();
+    session.usage = {
+      input_tokens: 20,
+      output_tokens: 6,
+      total_tokens: 26,
+      input_tokens_details: { cached_tokens: 8 },
+      output_tokens_details: { reasoning_tokens: 4 },
+    };
+    return;
+  }
+  state.turns = [];
+  session.usage = null;
 }
 
 function applyEnvironmentScenario(value) {
@@ -126,6 +169,31 @@ function applyEnvironmentScenario(value) {
 }
 
 let state = initialState();
+const streamResponses = new Set();
+
+function emitTurnLifecycle(status) {
+  const index = state.turns.findIndex((turn) => turn.id === "turn_terminal_refresh");
+  const existing = state.turns[index];
+  if (!existing || !["completed", "failed", "cancelled"].includes(status)) return false;
+  const terminal = {
+    ...existing,
+    status,
+    completed_at: baseline + 10,
+    error: status === "failed" ? { code: "internal_error", message: "The execution could not complete." } : null,
+    usage: status === "completed" ? { input_tokens: 5, output_tokens: 2, total_tokens: 7, input_tokens_details: { cached_tokens: 1 }, output_tokens_details: { reasoning_tokens: 1 } } : null,
+  };
+  state.turns[index] = terminal;
+  state.sequence += 1;
+  const event = `id: turn_${state.sequence}\ndata: ${JSON.stringify({
+    type: `agent.session.turn.${status}`,
+    event_id: `turn_${state.sequence}`,
+    session_id: "session_snapshot",
+    turn_id: terminal.id,
+    turn: terminal,
+  })}\n\n`;
+  for (const stream of streamResponses) stream.write(event);
+  return true;
+}
 
 function sendJson(response, value, status = 200) {
   const body = JSON.stringify(value);
@@ -168,6 +236,7 @@ function recordRequest(request, url, body) {
   state.requests.push({
     method: request.method,
     path: url.pathname,
+    query: url.search,
     beta: request.headers["openai-beta"] ?? null,
     authorizationPresent: Boolean(request.headers.authorization),
     idempotencyKeyPresent: Boolean(request.headers["idempotency-key"]),
@@ -196,13 +265,22 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, { ready: true });
     }
     if (request.method === "POST" && url.pathname === "/__fixture/reset") {
+      for (const stream of streamResponses) stream.end();
+      streamResponses.clear();
       state = initialState();
       return sendJson(response, { reset: true });
     }
     if (request.method === "POST" && url.pathname === "/__fixture/control") {
       state.controls = { ...state.controls, ...await readJson(request) };
       applyEnvironmentScenario(state.controls.environmentScenario);
+      applyTurnsScenario(state.controls.turnsScenario);
       return sendJson(response, state.controls);
+    }
+    if (request.method === "POST" && url.pathname === "/__fixture/emit-turn") {
+      const input = await readJson(request);
+      return emitTurnLifecycle(input.status)
+        ? sendJson(response, { emitted: true })
+        : sendError(response, 400, "Fixture terminal Turn is unavailable.");
     }
     if (request.method === "GET" && url.pathname === "/__fixture/requests") {
       return sendJson(response, state.requests);
@@ -319,7 +397,41 @@ const server = http.createServer(async (request, response) => {
     }
 
     const itemsMatch = url.pathname.match(/^\/v1\/agents\/sessions\/([^/]+)\/items$/);
-    if (request.method === "GET" && itemsMatch) return sendJson(response, page(state.controls.itemsScenario ? patchItems() : []));
+    if (request.method === "GET" && itemsMatch) {
+      const sessionId = decodeURIComponent(itemsMatch[1]);
+      const items = sessionId !== "session_snapshot"
+        ? []
+        : state.controls.itemsScenario
+          ? patchItems()
+          : state.controls.turnsScenario
+            ? observableTurnItems()
+            : [];
+      return sendJson(response, page(items));
+    }
+
+    const turnsMatch = url.pathname.match(/^\/v1\/agents\/sessions\/([^/]+)\/turns$/);
+    if (request.method === "GET" && turnsMatch) {
+      if (state.controls.turnsRetrieveDelayMs) await wait(state.controls.turnsRetrieveDelayMs);
+      if (state.controls.turnsRetrieveStatus !== 200) {
+        return sendError(response, state.controls.turnsRetrieveStatus, "Fixture Turns retrieve failed.");
+      }
+      const sessionId = decodeURIComponent(turnsMatch[1]);
+      if (!state.sessions.some((candidate) => candidate.id === sessionId)) {
+        return sendError(response, 404, "Fixture Session not found for Turns.");
+      }
+      const sessionTurns = state.turns.filter((turn) => turn.session_id === sessionId);
+      const after = url.searchParams.get("after");
+      const start = after ? sessionTurns.findIndex((turn) => turn.id === after) + 1 : 0;
+      if (after && start === 0) return sendError(response, 400, "Fixture Turn cursor not found.");
+      const requestedLimit = Number(url.searchParams.get("limit") ?? 20);
+      const size = Math.max(1, Math.min(requestedLimit, state.controls.turnsPageSize));
+      const data = sessionTurns.slice(start, start + size);
+      return sendJson(response, {
+        object: "list",
+        data,
+        has_more: start + data.length < sessionTurns.length,
+      });
+    }
 
     const eventsMatch = url.pathname.match(/^\/v1\/agents\/sessions\/([^/]+)\/events$/);
     if (request.method === "POST" && eventsMatch) {
@@ -345,6 +457,7 @@ const server = http.createServer(async (request, response) => {
         "cache-control": "no-cache, no-transform",
         connection: "keep-alive",
       });
+      streamResponses.add(response);
       response.write(": fixture stream open\n\n");
       const statuses = [null, "pending", "ready", "connected", "disconnected", "failed", "expired"];
       const environmentStatus = statuses[state.controls.environmentEventStatus] ?? null;
@@ -378,7 +491,10 @@ const server = http.createServer(async (request, response) => {
         setTimeout(() => response.end(), state.controls.streamCloseDelayMs);
       }
       const heartbeat = setInterval(() => response.write(": fixture heartbeat\n\n"), 10_000);
-      request.on("close", () => clearInterval(heartbeat));
+      request.on("close", () => {
+        clearInterval(heartbeat);
+        streamResponses.delete(response);
+      });
       return;
     }
 

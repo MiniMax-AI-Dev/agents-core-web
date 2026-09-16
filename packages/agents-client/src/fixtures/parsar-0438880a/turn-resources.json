@@ -1,0 +1,92 @@
+{
+  "turns": [
+    {
+      "id": "turn_queued",
+      "agent_id": "agent_snapshot",
+      "session_id": "session_01",
+      "object": "agent.session.turn",
+      "status": "queued",
+      "created_at": 1700000000,
+      "started_at": null,
+      "completed_at": null,
+      "error": null,
+      "usage": null
+    },
+    {
+      "id": "turn_in_progress",
+      "agent_id": "agent_snapshot",
+      "session_id": "session_01",
+      "object": "agent.session.turn",
+      "status": "in_progress",
+      "created_at": 1700000001,
+      "started_at": 1700000002,
+      "completed_at": null,
+      "error": null,
+      "usage": null
+    },
+    {
+      "id": "turn_waiting",
+      "agent_id": "agent_snapshot",
+      "session_id": "session_01",
+      "object": "agent.session.turn",
+      "status": "waiting",
+      "created_at": 1700000003,
+      "started_at": 1700000004,
+      "completed_at": null,
+      "error": null,
+      "usage": null
+    },
+    {
+      "id": "turn_completed",
+      "agent_id": "agent_snapshot",
+      "session_id": "session_01",
+      "object": "agent.session.turn",
+      "status": "completed",
+      "created_at": 1700000005,
+      "started_at": 1700000006,
+      "completed_at": 1700000068,
+      "error": null,
+      "usage": {
+        "input_tokens": 10,
+        "output_tokens": 3,
+        "total_tokens": 13,
+        "input_tokens_details": { "cached_tokens": 4 },
+        "output_tokens_details": { "reasoning_tokens": 2 }
+      }
+    },
+    {
+      "id": "turn_failed",
+      "agent_id": "agent_snapshot",
+      "session_id": "session_01",
+      "object": "agent.session.turn",
+      "status": "failed",
+      "created_at": 1700000069,
+      "started_at": 1700000070,
+      "completed_at": 1700000072,
+      "error": {
+        "code": "internal_error",
+        "message": "The execution could not complete."
+      },
+      "usage": null
+    },
+    {
+      "id": "turn_cancelled",
+      "agent_id": "agent_snapshot",
+      "session_id": "session_01",
+      "object": "agent.session.turn",
+      "status": "cancelled",
+      "created_at": 1700000073,
+      "started_at": 1700000074,
+      "completed_at": 1700000075,
+      "error": null,
+      "usage": null
+    }
+  ],
+  "session_usage": {
+    "input_tokens": 20,
+    "output_tokens": 6,
+    "total_tokens": 26,
+    "input_tokens_details": { "cached_tokens": 8 },
+    "output_tokens_details": { "reasoning_tokens": 4 }
+  }
+}

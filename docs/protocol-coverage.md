@@ -34,7 +34,8 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 | Session live events | Yes | Yes | Authenticated `fetch` stream, not `EventSource` |
 | Input message | Yes | Yes | Opens SSE before submission; uncertain failures retain the in-memory payload/key for an explicit unchanged manual retry only |
 | Active Turn cancel | Yes | Yes | Submitted as a Session event, not a Turn-create endpoint |
-| Turn retrieve/list | Yes | No | Durable diagnostics UI deferred |
+| Turn list | Yes | Yes, read-only | Selected Sessions load every page in ascending creation order; no Turn mutation UI |
+| Turn retrieve | Yes | No | Reusable client diagnostic method; timeline recovery uses the all-pages list |
 | Item list/recovery | Yes | Yes | Authoritative recovery after stream loss |
 | Parsar `apply_patch` Item presentation | Existing function Item fields | Yes, read-only | Parsar extension recognized only for the pinned `changes[].{path,kind,diff}` shape; not an OpenAI standard Item type |
 | Function result/error | Yes | Yes | Initial UI supports text result/error handoff only for `function_call` actions |
@@ -45,7 +46,7 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 | Environment retrieve | Yes | Yes, read-only | For a valid `self_hosted` Session Environment ID, reads the exact public resource fields and durable status; no create/list/update/delete support |
 | Vaults | Later | No | Credentials must never be stored in browser metadata |
 | Protocol Subagents / enabled multi-agent | Later | No | Distinct from storing multiple Agent configurations |
-| Usage/observability | Response types | No | Missing measurements remain unknown, not zero |
+| Usage/observability | Response types | Yes, scoped | Session aggregate and per-Turn token Usage are labelled separately; unavailable measurements remain unknown, not zero |
 
 ## Runtime boundary
 
@@ -139,25 +140,33 @@ replay missed work.
 Every accepted replacement stream follows this order:
 
 1. reconnect the stream and buffer newly arriving events;
-2. retrieve the persisted Session and Items;
+2. retrieve the persisted Session and every page of Items while independently
+   starting the all-pages Turn read;
 3. after the current Session supplies a valid `self_hosted` ID, retrieve its durable
    Environment resource;
-4. apply the durable Session, Items, and Environment snapshot, then merge buffered
-   Items and apply newer buffered Environment events;
-5. inspect durable state before resubmitting an uncertain write.
+4. apply the durable Session, Items, and Environment snapshot without making a slow
+   or unavailable Turn endpoint block conversation recovery, then release buffered
+   events;
+5. when the independent Turn read settles, apply it only if its Core, request, and
+   selected Session are still current, merging any newer live Turn snapshot by event
+   revision;
+6. inspect durable state before resubmitting an uncertain write.
 
 At replacement-stream acceptance the Web clears the previous live Environment
 observation before the durable reads. Supported Environment events arriving during
 those reads are buffered and applied afterward, so a newer live state wins over the
 earlier durable snapshot. A late stream callback or read is fenced by Core
 generation, Session ID, Environment ID, Session and Environment request revisions,
-stream epoch, event revisions, selection, and abort signal. A missing, unauthorized,
+Turn and Item event revisions, stream epoch, selection, and abort signal. A missing, unauthorized,
 failed, or malformed Environment response clears stale connection claims and renders
 status as unavailable without blocking Session, Items, or conversation use. The UI
 never infers connected from health, stream state, Agent/model metadata, installation
 arrays, or absence of an action.
 
-For a same-ID Item, `completed`, `failed`, or `incomplete` beats `in_progress`
+For a same-ID Turn, a `completed`, `failed`, or `cancelled` snapshot does not
+regress to a later-arriving non-terminal snapshot. Durable creation order remains
+authoritative while a newer live snapshot can advance the same Turn. For a same-ID
+Item, `completed`, `failed`, or `incomplete` beats `in_progress`
 regardless of whether the terminal value came from the durable read or the live
 buffer. Otherwise, the later live projection wins while durable ordering remains
 authoritative. Duplicate, out-of-order, unknown, and no-op events do not stop later
@@ -166,9 +175,46 @@ generation checks also isolate any late result that could not be cancelled.
 
 Terminal Session (`idle`, `requires_action`, `failed`), Turn (`completed`, `failed`,
 `cancelled`), and live Environment (`ready`, `connected`, `disconnected`, `failed`)
-events schedule a coalesced durable Session/Items/Environment refresh. They do not
-restart the stream. Turn list/retrieve methods exist for diagnostics, but the current
-UI does not invoke them during recovery.
+events schedule a coalesced durable Session/Turns/Items/Environment refresh. They do
+not restart the stream. The Turn read shares the refresh's abort signal and request
+fence but settles independently, so a slow or failed Turn endpoint cannot delay
+durable conversation Items or buffered Item events. A Turn-list failure is isolated
+to its timeline: the last observed Turns remain visible, and a successful Session/Items
+read keeps the existing conversation usable.
+
+## Turn observability boundary
+
+- The selected Session loads `GET /agents/sessions/{session_id}/turns` with
+  `limit=100&order=asc`, follows `has_more` using the last returned Turn ID when the
+  optional list cursors are absent, and rejects a repeated/cyclic cursor or a Turn
+  scoped to another Session. Reads are abortable and never retried automatically.
+- The timeline presents observed Core snapshots for `queued`, `in_progress`,
+  `waiting`, `completed`, `failed`, and `cancelled`. Its all-pages read supplies the
+  authoritative creation order, while a newer exact lifecycle SSE snapshot may
+  advance a Turn before that read settles. Live projection is limited to exact
+  `created→queued`, `in_progress→in_progress`, `waiting→waiting`,
+  `completed→completed`, `failed→failed`, and `cancelled→cancelled` event/status
+  pairs; Item/output or unknown Turn event names and mismatched snapshots are ignored.
+  The UI therefore does not label the mixed projection as wholly durable. Items are
+  counted against their owning Turn only by the protocol `turn_id`; unmatched Items
+  remain in the conversation and are explicitly reported rather than hidden or
+  guessed.
+- Ended wall-clock duration is calculated only when both server `started_at` and
+  `completed_at` are valid and ordered. `in_progress` and `waiting` Turns show a
+  live, explicitly labelled running elapsed value from server `started_at` to the
+  viewer's current clock. Missing, invalid, or reversed timestamps render as
+  `Unknown`; Item `duration_ms` values are tool progress and are never summed or
+  relabelled as Turn wall-clock time.
+- A failed Turn's safe public `error.code` and `error.message` render beside its
+  timeline entry without removing conversation Items. The Web does not expose Core,
+  daemon, provider, or native-harness diagnostics absent from that resource.
+- The Web displays `input_tokens`, `output_tokens`, `total_tokens`, cached input
+  tokens, and reasoning output tokens. Session aggregate Usage and each Turn's Usage
+  use separately labelled areas. A null resource, missing nested metric, malformed
+  value, or unavailable measurement renders as `Unknown`, never inferred zero.
+- Turn status, timings, Usage, errors, and tool progress are resource-level
+  observability. They are not per-Item timing, monetary cost, provider attribution,
+  or a complete OpenAI Trace waterfall.
 
 The client never retries a write automatically. For an input message that fails with
 a network/response-loss error, HTTP 5xx, or transient 408/409/425/429, the Web keeps

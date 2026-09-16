@@ -414,11 +414,11 @@ Agent CRUD and idle Session/history operations work. Chat input intentionally re
 
 This exact response occurs before the event body is admitted, so after an intentional
 HTTP-only start it is safe to enable execution and submit the message. A timeout or
-disconnected write is different. The client never retries automatically, but the
-current UI does not retain the generated idempotency key across a manual resend.
-Refresh the durable Session and Items, and use the client's Turn reads or Core logs
-for diagnosis before deciding whether another submission is safe. A caller that
-implements a retry must explicitly reuse the original key.
+disconnected write is different. The client never retries automatically. The current
+UI retains the original payload and idempotency key in memory only for an explicit,
+byte-for-byte unchanged manual resend; editing the payload creates a new operation.
+Refresh the durable Session, Items, and Turn timeline, and use Core logs when the
+public resources are insufficient before deciding whether another submission is safe.
 
 ## Credential ownership
 
@@ -501,9 +501,11 @@ In Agents Core Web:
 2. Create an Agent using a model known to the selected native runtime.
 3. Create an `environment:none` Session and send one text message.
 4. Confirm the events POST returns `204` and live lifecycle/output events arrive.
-5. Confirm Items contain the user and assistant messages. For independent terminal
-   Turn proof, use the client's Turn read or the corresponding authenticated API read;
-   the current UI does not yet display the durable Turn resource.
+5. Confirm Items contain the user and assistant messages, then confirm the Turn
+   timeline shows the terminal Turn snapshot, server wall-clock timestamps, and
+   reported Usage. The timeline may also advance from an exact live lifecycle event;
+   reload or use the corresponding authenticated API read for independent durable
+   proof.
 6. Reload and confirm the completed state is recovered from resource reads.
 
 A completed Turn plus durable Item readback is execution evidence. Successful Agent
@@ -588,11 +590,13 @@ those settings.
 
 SSE is live-only and does not replay missed history, including with `Last-Event-ID`.
 The current UI reconnects for future events, buffers them, then retrieves Session and
-Items and, for a current valid `self_hosted` ID, the durable Environment. It applies
-that snapshot before newer buffered Environment events and merges Items by stable Item
-ID. Late reads/events are fenced across Core, Session, Environment, request/event
-revision, stream epoch, selection, and abort boundaries. Turn list/retrieve methods
-exist in the client for diagnostics but are not part of the current UI recovery path.
+Items and, for a current valid `self_hosted` ID, the durable Environment. It also
+starts an independent all-pages Turn read so a slow Turn endpoint cannot delay
+conversation recovery. It applies the Session/Items/Environment snapshot before newer
+buffered events, merges Items by stable Item ID, and reconciles the eventual Turn list
+with newer exact lifecycle snapshots. Late reads/events are fenced across Core,
+Session, Environment, request/event revision, stream epoch, selection, and abort
+boundaries.
 Inspect durable state before resending an input whose acceptance is uncertain.
 
 ## Stop safely

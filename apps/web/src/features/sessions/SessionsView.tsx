@@ -14,6 +14,7 @@ import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 
 
 import type {
   AgentSession,
+  AgentTurn,
   EnvironmentConnectionAction,
   FunctionCallAction,
   FunctionResultInput,
@@ -35,6 +36,7 @@ import {
 } from "./environment/EnvironmentPanel";
 import type { EnvironmentObservation } from "./environment/environment-state";
 import { ThreadItems } from "./items/ItemRenderers";
+import { TurnTimeline, type TurnTimelineLoadState } from "./turns/TurnTimeline";
 
 export type StreamState = "idle" | "connecting" | "listening" | "recovering" | "failed";
 export type SessionDetailState = "idle" | "loading" | "ready" | "failed";
@@ -44,11 +46,14 @@ interface SessionsViewProps {
   sessions: AgentSession[];
   selected: AgentSession | null;
   items: SessionItem[];
+  turns?: AgentTurn[];
   busy: boolean;
   coreError: string | null;
   coreState: CoreConnectionState;
   detailError: string | null;
   detailState: SessionDetailState;
+  turnError?: string | null;
+  turnState?: TurnTimelineLoadState;
   environmentObservation?: EnvironmentObservation | null;
   sendError?: FailedPendingSend | null;
   streamError: string | null;
@@ -257,11 +262,14 @@ export function SessionsView({
   sessions,
   selected,
   items,
+  turns = [],
   busy,
   coreError,
   coreState,
   detailError,
   detailState,
+  turnError = null,
+  turnState = "idle",
   environmentObservation = null,
   sendError = null,
   streamError,
@@ -467,6 +475,14 @@ export function SessionsView({
                   environment={selected.environment}
                   observation={environmentObservation}
                   connectionActions={environmentConnections}
+                />
+
+                <TurnTimeline
+                  turns={turns}
+                  items={items}
+                  sessionUsage={selected.usage}
+                  loadState={turnState}
+                  error={turnError}
                 />
 
                 <div className="message-stack">
