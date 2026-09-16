@@ -30,7 +30,7 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 | Saved Agents create/list | Yes | Yes | Model, name, instructions; many saved Agents per project |
 | Saved Agents retrieve/update/delete | Yes | Yes | Agent details support viewing, editing, and deleting saved Agents |
 | Sessions create/list/retrieve | Yes | Yes | UI creates idle `environment:none` Sessions; client types also cover the pinned `self_hosted` request and safe response projection |
-| Sessions update/delete | Yes | Later | Metadata/delete UI deferred |
+| Sessions update/delete | Yes | Yes | Title/string metadata editing and one-Session confirmed deletion; no bulk or Workspace deletion |
 | Session live events | Yes | Yes | Authenticated `fetch` stream, not `EventSource` |
 | Input message | Yes | Yes | Opens SSE before submission; uncertain failures retain the in-memory payload/key for an explicit unchanged manual retry only |
 | Active Turn cancel | Yes | Yes | Submitted as a Session event, not a Turn-create endpoint |
@@ -130,6 +130,50 @@ Environment creation and management beyond the narrow read, provider selection,
 Files, Plugins, Skills, Artifacts, Vault, hosted runtimes, and Workspace lifecycle
 controls remain unsupported by this Web or out of scope. Parsar's additional pinned
 handlers are not Web-supported merely because they exist upstream.
+
+## Session metadata and deletion
+
+- The Session action surface retrieves the latest durable Session when it opens and
+  again immediately before an update. Every action read must return a complete
+  canonical Session with the exact requested ID; a wrong-ID or malformed HTTP 200
+  response leaves the current view/draft unchanged and cannot authorize a write or
+  unlock an uncertain deletion retry. Runtime validation covers the Agent snapshot,
+  known Environment shapes, required-action variants, Usage counters, metadata, and
+  timestamps while preserving a structurally safe unknown Environment type as
+  unavailable. `metadata.title` supplies the optional display
+  title; the remaining arbitrary metadata values must be strings. The Web enforces
+  Parsar's pinned limit of 16 pairs, 64 Unicode characters per key, and 512 per value,
+  and explicitly warns that metadata must never contain credentials or secrets.
+- `POST /agents/sessions/{session_id}` replaces the complete metadata map. To avoid
+  silently erasing concurrent additions, the Web computes the user's changes from
+  the form baseline, applies only non-conflicting changes to the latest retrieved map,
+  and stops before POST when the same key diverged. The latest unrelated pairs are
+  rebased into the preserved draft before a later explicit retry. A confirmed response
+  must be a complete matching Session whose metadata exactly equals the submitted map;
+  only that metadata is merged into the live UI so an overlapping SSE status or Usage
+  snapshot is not regressed.
+- Update and delete have no idempotency key and are sent at most once per explicit
+  action. A missing Session or deterministic lifecycle conflict remains visible with
+  its draft. A 5xx, timeout, response loss, malformed success, or network failure is
+  treated as an unknown write result: the current Web view remains in place and no
+  write is retried automatically. After an unknown delete, the Web performs exactly
+  one read-only Session retrieval: 404 confirms removal, a canonical Session confirms
+  it is still present and unlocks a later explicitly confirmed delete, and another
+  failed read keeps deletion locked as unknown until the dialog is reopened and a
+  durable retrieval succeeds. A 409 is supported for a compatible Core; pinned Parsar
+  permits active Session metadata updates and does not make 409 the expected
+  active-Session path.
+- `DELETE /agents/sessions/{session_id}` removes a row only after the exact canonical
+  `{id, object:"agent.session.deleted", deleted:true}` confirmation. Deleting the
+  selected Session immediately aborts/fences its fetch stream and pending
+  Session/Item/Turn/Environment reads, clears its local Items, Turns, required actions,
+  Environment observation, send failure, and draft, then selects the next item at the
+  deleted position or the previous item at the end. Deleting an inactive Session does
+  not change the selected ID, stream epoch, composer, or current conversation state.
+- Parsar deletion is a public server lifecycle operation. It hides the durable public
+  Session/Items/Turns, closes its stream, cancels queued work, and requests asynchronous
+  cancellation of active work. It does not prove immediate native executor quiescence,
+  physical SQL/native-history erasure, or deletion of executor Workspace files.
 
 ## Live stream and recovery
 

@@ -37,6 +37,17 @@ import {
   type StreamState,
 } from "./features/sessions/SessionsView";
 import {
+  removeSession,
+  reconcileUnknownSessionDelete,
+  replaceSessionMetadata,
+  requestSessionDelete,
+  requestSessionDetail,
+  requestSessionUpdate,
+  selectionAfterSessionDelete,
+  SessionActionError,
+  SessionMetadataConflictError,
+} from "./features/sessions/actions/session-actions";
+import {
   environmentObservationFromResource,
   environmentIdsMatch,
   environmentReadIsCurrent,
@@ -200,6 +211,7 @@ export function App() {
   );
   const [busy, setBusy] = useState(false);
   const selectedIdRef = useRef<string | null>(selectedId);
+  const sessionsRef = useRef<AgentSession[]>(sessions);
   const itemsSessionIdRef = useRef<string | null>(itemsSessionId);
   const turnsSessionIdRef = useRef<string | null>(turnsSessionId);
   const connectionGenerationRef = useRef(0);
@@ -216,7 +228,10 @@ export function App() {
   const sessionEnvironmentIdRef = useRef(new Map<string, string | null>());
   const operationRequestRef = useRef(0);
   const streamEpochRef = useRef(0);
+  const selectedSessionReadAbortRef = useRef<AbortController | null>(null);
+  const selectedStreamAbortRef = useRef<AbortController | null>(null);
   selectedIdRef.current = selectedId;
+  sessionsRef.current = sessions;
 
   const core = useMemo(() => createCore(connection), [connection]);
   const coreGeneration = connectionGenerationRef.current;
@@ -498,6 +513,16 @@ export function App() {
     [core, coreGeneration, notify],
   );
 
+  const refreshSelectedSession = useCallback((sessionId: string): Promise<boolean> => {
+    if (selectedIdRef.current !== sessionId) return Promise.resolve(false);
+    selectedSessionReadAbortRef.current?.abort();
+    const controller = new AbortController();
+    // Turn pagination can outlive refreshSession's Session/Item result, so retain this
+    // controller until the next selected read, selection change, deletion, or Core change.
+    selectedSessionReadAbortRef.current = controller;
+    return refreshSession(sessionId, controller.signal);
+  }, [refreshSession]);
+
   const recoverSessionWorkspace = useCallback(() => {
     void (async () => {
       const generation = coreGeneration;
@@ -505,9 +530,9 @@ export function App() {
       const refreshed = await refreshSessions();
       if (!refreshed || generation !== connectionGenerationRef.current) return;
       const sessionId = selectedIdRef.current;
-      if (sessionId) await refreshSession(sessionId);
+      if (sessionId) await refreshSelectedSession(sessionId);
     })();
-  }, [coreGeneration, refreshAgents, refreshSession, refreshSessions]);
+  }, [coreGeneration, refreshAgents, refreshSelectedSession, refreshSessions]);
 
   useEffect(() => {
     setAgents([]);
@@ -526,7 +551,9 @@ export function App() {
   }, [refreshAgents, refreshSessions]);
 
   useEffect(() => {
+    selectedSessionReadAbortRef.current?.abort();
     if (!selectedId) {
+      selectedSessionReadAbortRef.current = null;
       setItems([]);
       setTurns([]);
       itemsSessionIdRef.current = null;
@@ -560,16 +587,20 @@ export function App() {
       next.delete(selectedId);
       return next;
     });
-    const controller = new AbortController();
-    void refreshSession(selectedId, controller.signal);
-    return () => controller.abort();
-  }, [refreshSession, selectedId]);
+    void refreshSelectedSession(selectedId);
+    return () => {
+      selectedSessionReadAbortRef.current?.abort();
+      selectedSessionReadAbortRef.current = null;
+    };
+  }, [refreshSelectedSession, selectedId]);
 
   useEffect(() => {
+    selectedStreamAbortRef.current?.abort();
     if (!selectedId) return;
 
     const sessionId = selectedId;
     const controller = new AbortController();
+    selectedStreamAbortRef.current = controller;
     const streamEpoch = streamEpochRef.current + 1;
     streamEpochRef.current = streamEpoch;
     setStreamConnection({ sessionId, state: "connecting", error: null });
@@ -775,6 +806,7 @@ export function App() {
       refreshCoordinator?.dispose();
       recovery.invalidate();
       controller.abort();
+      if (selectedStreamAbortRef.current === controller) selectedStreamAbortRef.current = null;
     };
   }, [core, coreGeneration, notify, refreshSession, selectedId, streamRetryRevision]);
 
@@ -848,6 +880,148 @@ export function App() {
     setView("sessions");
   };
 
+  const retrieveSessionForAction = useCallback(async (sessionId: string) => {
+    const generation = coreGeneration;
+    try {
+      const session = await requestSessionDetail(core, sessionId);
+      return generation === connectionGenerationRef.current ? session : undefined;
+    } catch (error) {
+      if (generation !== connectionGenerationRef.current) return undefined;
+      throw error;
+    }
+  }, [core, coreGeneration]);
+
+  const updateSessionMetadata = async (
+    sessionId: string,
+    baselineMetadata: Record<string, string>,
+    draftMetadata: Record<string, string>,
+  ): Promise<AgentSession | undefined> => {
+    const generation = coreGeneration;
+    let updated: AgentSession;
+    try {
+      updated = await requestSessionUpdate(core, sessionId, baselineMetadata, draftMetadata);
+    } catch (error) {
+      if (generation !== connectionGenerationRef.current) return undefined;
+      if (error instanceof SessionMetadataConflictError && error.latestSession) {
+        sessionCollectionRevisionRef.current += 1;
+        sessionEventRevisionRef.current.set(
+          sessionId,
+          (sessionEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+        );
+        setSessions((current) => replaceSessionMetadata(current, error.latestSession as AgentSession));
+      }
+      throw error;
+    }
+    if (generation !== connectionGenerationRef.current) {
+      notify("The previous Core returned a Session update after the connection changed. The current Core view was not modified.", "error");
+      return undefined;
+    }
+    sessionCollectionRevisionRef.current += 1;
+    sessionEventRevisionRef.current.set(
+      sessionId,
+      (sessionEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+    );
+    setSessions((current) => replaceSessionMetadata(current, updated));
+    notify("Session metadata updated.", "success");
+    return updated;
+  };
+
+  const removeSessionFromWorkspace = (sessionId: string, message: string): boolean => {
+    const selectedAtCompletion = selectedIdRef.current;
+    const deletingSelected = selectedAtCompletion === sessionId;
+    const nextSelectedId = selectionAfterSessionDelete(
+      sessionsRef.current,
+      selectedAtCompletion,
+      sessionId,
+    );
+    const increment = (revisions: Map<string, number>) => {
+      revisions.set(sessionId, (revisions.get(sessionId) ?? 0) + 1);
+    };
+    sessionCollectionRevisionRef.current += 1;
+    increment(sessionRequestRef.current);
+    increment(sessionEventRevisionRef.current);
+    increment(itemEventRevisionRef.current);
+    increment(turnEventRevisionRef.current);
+    increment(environmentEventRevisionRef.current);
+    increment(environmentRequestRef.current);
+    sessionEnvironmentIdRef.current.delete(sessionId);
+
+    setSessions((current) => {
+      const next = removeSession(current, sessionId);
+      sessionsRef.current = next;
+      return next;
+    });
+    setSessionSendFailures((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Map(current);
+      next.delete(sessionId);
+      return next;
+    });
+    setEnvironmentObservations((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Map(current);
+      next.delete(sessionId);
+      return next;
+    });
+
+    if (deletingSelected) {
+      selectedIdRef.current = nextSelectedId;
+      streamEpochRef.current += 1;
+      selectedSessionReadAbortRef.current?.abort();
+      selectedSessionReadAbortRef.current = null;
+      selectedStreamAbortRef.current?.abort();
+      selectedStreamAbortRef.current = null;
+      itemsSessionIdRef.current = null;
+      turnsSessionIdRef.current = null;
+      setItems([]);
+      setItemsSessionId(null);
+      setTurns([]);
+      setTurnsSessionId(null);
+      setSelectedSessionLoad({ sessionId: null, state: "idle", error: null });
+      setTurnCollectionLoad({ sessionId: null, state: "idle", error: null });
+      setStreamConnection({ sessionId: null, state: "idle", error: null });
+      setSelectedId(nextSelectedId);
+    }
+    notify(message, "success");
+    return true;
+  };
+
+  const deleteSessionFromCore = async (sessionId: string): Promise<boolean> => {
+    const generation = coreGeneration;
+    try {
+      await requestSessionDelete(core, sessionId);
+    } catch (error) {
+      if (generation !== connectionGenerationRef.current) return false;
+      if (!(error instanceof SessionActionError) || error.kind !== "unknown_write") throw error;
+
+      const reconciliation = await reconcileUnknownSessionDelete(core, sessionId);
+      if (generation !== connectionGenerationRef.current) return false;
+      if (reconciliation.state === "missing") {
+        return removeSessionFromWorkspace(
+          sessionId,
+          "Session is absent from Agent Core after reconciling the unknown deletion result.",
+        );
+      }
+      if (reconciliation.state === "unknown") {
+        throw new SessionActionError(
+          `${error.message} The follow-up durable Session refresh also failed, so the result remains unknown.`,
+          "unknown_write",
+          { cause: error },
+        );
+      }
+      throw new SessionActionError(
+        `${error.message} A follow-up durable Session refresh confirmed that the Session is still present.`,
+        "request_failed",
+        { cause: error },
+      );
+    }
+    if (generation !== connectionGenerationRef.current) {
+      notify("The previous Core confirmed Session deletion after the connection changed. The current Core view was not modified.", "error");
+      return false;
+    }
+    return removeSessionFromWorkspace(sessionId, "Session deleted from Agent Core.");
+  };
+
   const sendMessage = async (text: string) => {
     const sessionId = selectedId;
     if (!sessionId) return;
@@ -883,7 +1057,7 @@ export function App() {
       next.delete(sessionId);
       return next;
     });
-    await refreshSession(sessionId);
+    await refreshSelectedSession(sessionId);
   };
 
   const cancel = async () => {
@@ -891,7 +1065,7 @@ export function App() {
     if (!sessionId) return;
     await run(() => core.cancelTurn(sessionId), "Cancellation requested.");
     if (coreGeneration !== connectionGenerationRef.current || selectedIdRef.current !== sessionId) return;
-    await refreshSession(sessionId);
+    await refreshSelectedSession(sessionId);
   };
 
   const submitFunctionResult = async (input: FunctionResultInput) => {
@@ -899,7 +1073,7 @@ export function App() {
     if (!sessionId) return;
     await run(() => core.submitFunctionResult(sessionId, input), "Function result submitted.");
     if (coreGeneration !== connectionGenerationRef.current || selectedIdRef.current !== sessionId) return;
-    await refreshSession(sessionId);
+    await refreshSelectedSession(sessionId);
   };
 
   const applyConnection = (next: CoreConnection) => {
@@ -918,6 +1092,10 @@ export function App() {
     sessionEnvironmentIdRef.current.clear();
     operationRequestRef.current += 1;
     streamEpochRef.current += 1;
+    selectedSessionReadAbortRef.current?.abort();
+    selectedSessionReadAbortRef.current = null;
+    selectedStreamAbortRef.current?.abort();
+    selectedStreamAbortRef.current = null;
     saveConnection(normalized);
     setBusy(false);
     setAgentCollectionState("connecting");
@@ -1021,6 +1199,7 @@ export function App() {
         <div className="page-transition" key={view}>
           {view === "sessions" ? (
             <SessionsView
+              key={`sessions:${coreGeneration}`}
               agents={agents}
               sessions={sessions}
               selected={selected}
@@ -1039,14 +1218,17 @@ export function App() {
               streamState={streamState}
               onCancel={cancel}
               onCreateSession={createSession}
+              onDeleteSession={deleteSessionFromCore}
               onFunctionResult={submitFunctionResult}
               onRefresh={recoverSessionWorkspace}
               onRetrySession={() => {
-                if (selectedId) void refreshSession(selectedId);
+                if (selectedId) void refreshSelectedSession(selectedId);
               }}
               onRetryStream={retryCurrentStream}
+              onRetrieveSession={retrieveSessionForAction}
               onSelect={setSelectedId}
               onSend={sendMessage}
+              onUpdateSession={updateSessionMetadata}
             />
           ) : null}
           {view === "agents" ? (

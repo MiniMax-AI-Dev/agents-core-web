@@ -18,8 +18,34 @@ async function resetFixture(request: APIRequestContext) {
   expect(response.ok()).toBe(true);
 }
 
-async function controlFixture(request: APIRequestContext, control: Record<string, number | string>) {
+async function controlFixture(request: APIRequestContext, control: Record<string, unknown>) {
   const response = await request.post(`${fixtureBaseUrl}/__fixture/control`, { data: control });
+  expect(response.ok()).toBe(true);
+}
+
+interface FixtureState {
+  sessions: Array<{ id: string; metadata: Record<string, string> }>;
+  aborts: { sessionReads: number; itemReads: number; turnReads: number; streams: number };
+  openStreams: string[];
+}
+
+async function fixtureState(request: APIRequestContext): Promise<FixtureState> {
+  const response = await request.get(`${fixtureBaseUrl}/__fixture/state`);
+  expect(response.ok()).toBe(true);
+  return response.json() as Promise<FixtureState>;
+}
+
+async function setFixtureSessionMetadata(
+  request: APIRequestContext,
+  id: string,
+  metadata: Record<string, string>,
+) {
+  const response = await request.post(`${fixtureBaseUrl}/__fixture/session-metadata`, { data: { id, metadata } });
+  expect(response.ok()).toBe(true);
+}
+
+async function removeFixtureSession(request: APIRequestContext, id: string) {
+  const response = await request.post(`${fixtureBaseUrl}/__fixture/remove-session`, { data: { id } });
   expect(response.ok()).toBe(true);
 }
 
@@ -32,6 +58,42 @@ async function fixtureRequests(request: APIRequestContext): Promise<FixtureReque
   const response = await request.get(`${fixtureBaseUrl}/__fixture/requests`);
   expect(response.ok()).toBe(true);
   return response.json() as Promise<FixtureRequest[]>;
+}
+
+async function expectSelectedDeleteAbortsSessionRead(
+  page: Page,
+  request: APIRequestContext,
+  startRead: () => Promise<unknown>,
+) {
+  const path = "/v1/agents/sessions/session_snapshot";
+  const failedReads = new Map<string, string>();
+  page.on("requestfailed", (failedRequest) => {
+    const failedPath = new URL(failedRequest.url()).pathname;
+    if (failedRequest.method() === "GET") {
+      failedReads.set(failedPath, failedRequest.failure()?.errorText ?? "unknown failure");
+    }
+  });
+  const before = await fixtureState(request);
+  const previousReads = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "GET" && entry.path === path
+  )).length;
+
+  await startRead();
+  await expect.poll(async () => (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "GET" && entry.path === path
+  )).length).toBeGreaterThan(previousReads);
+
+  await page.locator(".conversation-session-action").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await dialog.getByRole("button", { name: "Delete Session" }).click();
+  await expect(dialog).toHaveCount(0);
+
+  await expect.poll(() => failedReads.get(path)).toContain("ERR_ABORTED");
+  await expect.poll(async () => (await fixtureState(request)).aborts.sessionReads)
+    .toBeGreaterThan(before.aborts.sessionReads);
+  expect((await fixtureState(request)).sessions.some((session) => session.id === "session_snapshot")).toBe(false);
 }
 
 async function openAgents(page: Page, request: APIRequestContext) {
@@ -313,6 +375,443 @@ test("starts one Session with an idempotency key and without browser authorizati
     expect(entry.beta).toBe("agents=v1");
     expect(entry.authorizationPresent).toBe(false);
   }
+});
+
+test("updates Session title and metadata after a latest read while preserving failed and unknown drafts", async ({ page, request }) => {
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  const manage = page.locator(".conversation-session-action");
+  const streamReadsBefore = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "GET" && entry.path.endsWith("/events")
+  )).length;
+
+  await manage.click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("button", { name: "Edit", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Edit", exact: true }).click();
+  await dialog.getByLabel("Session title", { exact: true }).fill("Renamed Session");
+  await dialog.getByLabel("Additional Session metadata", { exact: true }).fill('{"team":"web","note":"safe"}');
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog.getByRole("heading", { name: "Renamed Session" })).toBeVisible();
+  await expect(page.locator(".conversation-header h2")).toHaveText("Renamed Session");
+
+  let requests = await fixtureRequests(request);
+  const updateIndex = requests.findLastIndex((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions/session_snapshot"
+  ));
+  const latestReadIndex = requests.findLastIndex((entry, index) => (
+    index < updateIndex && entry.method === "GET" && entry.path === "/v1/agents/sessions/session_snapshot"
+  ));
+  expect(latestReadIndex).toBeGreaterThanOrEqual(0);
+  expect(latestReadIndex).toBeLessThan(updateIndex);
+  expect(requests[updateIndex]?.body).toEqual({
+    metadata: { team: "web", note: "safe", title: "Renamed Session" },
+  });
+  expect(requests.filter((entry) => entry.method === "GET" && entry.path.endsWith("/events"))).toHaveLength(streamReadsBefore);
+
+  await dialog.getByRole("button", { name: "Edit", exact: true }).click();
+  await dialog.getByLabel("Session title", { exact: true }).fill("Draft survives 503");
+  await controlFixture(request, { sessionUpdateStatus: 503 });
+  const postsBefore503 = requests.filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions/session_snapshot"
+  )).length;
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("503");
+  await expect(dialog.getByLabel("Session title", { exact: true })).toHaveValue("Draft survives 503");
+  await expect(page.locator(".conversation-header h2")).toHaveText("Renamed Session");
+  await page.waitForTimeout(350);
+  requests = await fixtureRequests(request);
+  expect(requests.filter((entry) => entry.method === "POST" && entry.path === "/v1/agents/sessions/session_snapshot"))
+    .toHaveLength(postsBefore503 + 1);
+
+  await controlFixture(request, { sessionUpdateResponseLoss: 1 });
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("result is unknown");
+  await expect(dialog.getByLabel("Session title", { exact: true })).toHaveValue("Draft survives 503");
+  await expect(page.locator(".conversation-header h2")).toHaveText("Renamed Session");
+  const postsAfterLoss = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions/session_snapshot"
+  )).length;
+  await page.waitForTimeout(350);
+  expect((await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions/session_snapshot"
+  ))).toHaveLength(postsAfterLoss);
+});
+
+test("preserves and safely rebases a Session metadata draft after a same-key conflict", async ({ page, request }) => {
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await page.locator(".conversation-session-action").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("button", { name: "Edit", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Edit", exact: true }).click();
+  await dialog.getByLabel("Session title", { exact: true }).fill("My preserved draft");
+  await setFixtureSessionMetadata(request, "session_snapshot", {
+    title: "Concurrent title",
+    concurrent: "must survive",
+  });
+
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("Metadata changed in Agent Core");
+  await expect(dialog.getByLabel("Session title", { exact: true })).toHaveValue("My preserved draft");
+  await expect(dialog.getByLabel("Additional Session metadata", { exact: true })).toContainText('"concurrent": "must survive"');
+  await expect(page.locator(".conversation-header h2")).toHaveText("Concurrent title");
+  let writes = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions/session_snapshot"
+  ));
+  expect(writes).toHaveLength(0);
+
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog.getByRole("heading", { name: "My preserved draft" })).toBeVisible();
+  writes = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions/session_snapshot"
+  ));
+  expect(writes).toHaveLength(1);
+  expect(writes[0]?.body).toEqual({
+    metadata: { title: "My preserved draft", concurrent: "must survive" },
+  });
+});
+
+test("rejects wrong-id and deep-malformed Session reads before writes or delete retries", async ({ page, request }) => {
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+
+  await controlFixture(request, { sessionRetrieveVariant: "wrong_id" });
+  await page.locator(".conversation-session-action").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("alert")).toContainText("invalid Session retrieval response");
+  await expect(dialog).toContainText("session_snapshot");
+  await expect(dialog).not.toContainText("another_session");
+
+  await dialog.getByRole("button", { name: "Edit", exact: true }).click();
+  await dialog.getByLabel("Session title", { exact: true }).fill("Draft stays local");
+  await controlFixture(request, { sessionRetrieveVariant: "deep_malformed" });
+  const writesBefore = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions/session_snapshot"
+  )).length;
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("invalid Session retrieval response");
+  await expect(dialog.getByLabel("Session title", { exact: true })).toHaveValue("Draft stays local");
+  expect((await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions/session_snapshot"
+  ))).toHaveLength(writesBefore);
+
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(dialog).toContainText("Exact Session: session_snapshot");
+  await controlFixture(request, {
+    sessionDeleteResponseLoss: 2,
+    sessionRetrieveVariant: "deep_malformed",
+  });
+  const deletesBefore = (await fixtureRequests(request)).filter((entry) => entry.method === "DELETE").length;
+  await dialog.getByRole("button", { name: "Delete Session" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("follow-up durable Session refresh also failed");
+  await expect(dialog.getByRole("button", { name: "Delete Session" })).toBeDisabled();
+  expect((await fixtureRequests(request)).filter((entry) => entry.method === "DELETE"))
+    .toHaveLength(deletesBefore + 1);
+});
+
+test("requires confirmation and reconciles unknown Session deletes once without retrying the write", async ({ page, request }) => {
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  const manage = page.locator(".conversation-session-action");
+  await manage.click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(dialog).toContainText("Exact Session: session_snapshot");
+  await expect(dialog).toContainText("not a promise of physical history erasure");
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog.getByRole("button", { name: "Edit", exact: true })).toBeFocused();
+  expect((await fixtureRequests(request)).filter((entry) => entry.method === "DELETE")).toHaveLength(0);
+
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await controlFixture(request, { sessionDeleteStatus: 409 });
+  await dialog.getByRole("button", { name: "Delete Session" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("compatible Core rejected");
+  await expect(page.locator(".conversation-header h2")).toHaveText("Lifecycle Agent");
+
+  await controlFixture(request, { sessionDeleteStatus: 503 });
+  const readsBefore503 = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "GET" && entry.path === "/v1/agents/sessions/session_snapshot"
+  )).length;
+  await dialog.getByRole("button", { name: "Delete Session" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("503");
+  await expect(dialog.getByRole("alert")).toContainText("refresh confirmed that the Session is still present");
+  await expect(page.locator(".conversation-header h2")).toHaveText("Lifecycle Agent");
+  let requests = await fixtureRequests(request);
+  expect(requests.filter((entry) => entry.method === "DELETE")).toHaveLength(2);
+  expect(requests.filter((entry) => (
+    entry.method === "GET" && entry.path === "/v1/agents/sessions/session_snapshot"
+  ))).toHaveLength(readsBefore503 + 1);
+
+  await controlFixture(request, {
+    sessionDeleteResponseLoss: 2,
+    sessionRetrieveStatus: 503,
+  });
+  const readsBeforeUnresolved = requests.filter((entry) => (
+    entry.method === "GET" && entry.path === "/v1/agents/sessions/session_snapshot"
+  )).length;
+  await dialog.getByRole("button", { name: "Delete Session" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("result is unknown");
+  await expect(dialog.getByRole("alert")).toContainText("follow-up durable Session refresh also failed");
+  await expect(page.locator(".conversation-header h2")).toHaveText("Lifecycle Agent");
+  await expect(dialog.getByRole("button", { name: "Delete Session" })).toBeDisabled();
+  requests = await fixtureRequests(request);
+  expect(requests.filter((entry) => entry.method === "DELETE")).toHaveLength(3);
+  expect(requests.filter((entry) => (
+    entry.method === "GET" && entry.path === "/v1/agents/sessions/session_snapshot"
+  ))).toHaveLength(readsBeforeUnresolved + 1);
+  await page.waitForTimeout(350);
+  expect((await fixtureRequests(request)).filter((entry) => entry.method === "DELETE")).toHaveLength(3);
+
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog.getByRole("button", { name: "Delete", exact: true })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await manage.click();
+  await expect(dialog.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await controlFixture(request, { sessionDeleteResponseLoss: 1 });
+  const readsBeforeAppliedLoss = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "GET" && entry.path === "/v1/agents/sessions/session_snapshot"
+  )).length;
+  await dialog.getByRole("button", { name: "Delete Session" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(".session-row").filter({ hasText: "Lifecycle Agent" })).toHaveCount(0);
+  requests = await fixtureRequests(request);
+  expect(requests.filter((entry) => entry.method === "DELETE")).toHaveLength(4);
+  expect(requests.filter((entry) => (
+    entry.method === "GET" && entry.path === "/v1/agents/sessions/session_snapshot"
+  ))).toHaveLength(readsBeforeAppliedLoss + 1);
+  await page.waitForTimeout(350);
+  expect((await fixtureRequests(request)).filter((entry) => entry.method === "DELETE")).toHaveLength(4);
+});
+
+test("keeps a stale Session row and surfaces each explicit repeated 404 deletion", async ({ page, request }) => {
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  const manage = page.locator(".conversation-session-action");
+  await manage.click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+  await removeFixtureSession(request, "session_snapshot");
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+
+  for (const expectedDeletes of [1, 2]) {
+    await dialog.getByRole("button", { name: "Delete Session" }).click();
+    await expect(dialog.getByRole("alert")).toContainText("not found in Agent Core");
+    await expect(page.locator(".conversation-header h2")).toHaveText("Lifecycle Agent");
+    expect((await fixtureRequests(request)).filter((entry) => entry.method === "DELETE")).toHaveLength(expectedDeletes);
+  }
+});
+
+test("deletes an inactive Session without disturbing the active composer or listening stream", async ({ page, request }) => {
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Agents" }).click();
+  await page.getByRole("button", { name: /Start a Session with Second Agent/ }).click();
+  await expect(page.locator(".conversation-header h2")).toHaveText("Second Agent");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  const composer = page.getByLabel("Message the Agent");
+  await composer.fill("active draft must survive");
+  const before = await fixtureState(request);
+  const activeId = before.sessions.find((session) => session.id !== "session_snapshot")?.id;
+  expect(activeId).toBeTruthy();
+  const activeStreamReads = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "GET" && entry.path === `/v1/agents/sessions/${activeId}/events`
+  )).length;
+
+  const inactiveRow = page.locator(".session-row").filter({ hasText: "Lifecycle Agent" });
+  await inactiveRow.locator(".session-row-action").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await controlFixture(request, { sessionDeleteDelayMs: 1_500 });
+  const deleteButton = dialog.locator(".modal-footer .button.danger");
+  const deleteClick = deleteButton.click();
+  await expect(deleteButton).toBeDisabled();
+  await expect(deleteButton).toHaveText("Deleting…");
+  await expect(inactiveRow).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  await deleteClick;
+  await expect(dialog).toHaveCount(0);
+  await expect(inactiveRow).toHaveCount(0);
+  await expect(composer).toHaveValue("active draft must survive");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(page.locator(".conversation-session-action")).toBeFocused();
+
+  const after = await fixtureState(request);
+  expect(after.aborts.streams).toBe(before.aborts.streams);
+  expect(after.openStreams).toContain(activeId);
+  expect((await fixtureRequests(request)).filter((entry) => (
+    entry.method === "GET" && entry.path === `/v1/agents/sessions/${activeId}/events`
+  ))).toHaveLength(activeStreamReads);
+});
+
+for (const pendingRead of [
+  {
+    label: "Session",
+    path: "/v1/agents/sessions/session_snapshot",
+    control: { sessionRetrieveDelayMs: 5_000 },
+  },
+  {
+    label: "Item",
+    path: "/v1/agents/sessions/session_snapshot/items",
+    control: { itemsRetrieveDelayMs: 5_000 },
+  },
+  {
+    label: "Turn",
+    path: "/v1/agents/sessions/session_snapshot/turns",
+    control: { turnsRetrieveDelayMs: 5_000 },
+  },
+] as const) {
+  test(`aborts the selected Session's pending ${pendingRead.label} read and SSE after confirmed delete`, async ({ page, request }) => {
+    const failedReads = new Map<string, string>();
+    page.on("requestfailed", (failedRequest) => {
+      const path = new URL(failedRequest.url()).pathname;
+      if (failedRequest.method() === "GET") {
+        failedReads.set(path, failedRequest.failure()?.errorText ?? "unknown failure");
+      }
+    });
+    await resetFixture(request);
+    await page.goto("/");
+    await expect(page.getByText("listening", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Agents" }).click();
+    await page.getByRole("button", { name: /Start a Session with Second Agent/ }).click();
+    await expect(page.locator(".conversation-header h2")).toHaveText("Second Agent");
+    await controlFixture(request, { turnsScenario: 1 });
+    await page.locator(".session-row").filter({ hasText: "Lifecycle Agent" }).locator(".session-row-select").click();
+    await expect(page.locator(".conversation-header h2")).toHaveText("Lifecycle Agent");
+    await expect(page.getByText("listening", { exact: true })).toBeVisible();
+    await expect(page.getByText("Completed Turn output remains in the conversation.")).toBeVisible();
+    await page.locator(".conversation-session-action").click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+    await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+    const before = await fixtureState(request);
+    const previousReads = (await fixtureRequests(request)).filter((entry) => (
+      entry.method === "GET" && entry.path === pendingRead.path
+    )).length;
+    await controlFixture(request, pendingRead.control);
+    await emitTurnFixture(request, "completed");
+    await expect.poll(async () => (await fixtureRequests(request)).filter((entry) => (
+      entry.method === "GET" && entry.path === pendingRead.path
+    )).length).toBeGreaterThan(previousReads);
+
+    await controlFixture(request, { sessionDeleteStreamCloseDelayMs: 3_000 });
+    await dialog.getByRole("button", { name: "Delete Session" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator(".conversation-header h2")).toHaveText("Second Agent");
+    await expect(page.getByText("Completed Turn output remains in the conversation.")).toHaveCount(0);
+    await expect(page.locator('[data-turn-id="turn_completed"]')).toHaveCount(0);
+    await expect(page.locator(".conversation-session-action")).toBeFocused();
+    await expect(page.getByText("listening", { exact: true })).toBeVisible();
+
+    await expect.poll(() => failedReads.get(pendingRead.path)).toContain("ERR_ABORTED");
+    await expect.poll(async () => (await fixtureState(request)).aborts.streams).toBeGreaterThan(before.aborts.streams);
+    const after = await fixtureState(request);
+    expect(after.sessions.some((session) => session.id === "session_snapshot")).toBe(false);
+    expect(after.openStreams).not.toContain("session_snapshot");
+  });
+}
+
+test("aborts a pending manual recovery read after deleting the selected Session", async ({ page, request }) => {
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await controlFixture(request, { sessionRetrieveDelayMs: 5_000 });
+
+  await expectSelectedDeleteAbortsSessionRead(page, request, () => (
+    page.getByRole("button", { name: "Recover durable state" }).click()
+  ));
+});
+
+test("aborts a pending detail retry read after deleting the selected Session", async ({ page, request }) => {
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await controlFixture(request, { sessionRetrieveStatus: 503 });
+  await page.getByRole("button", { name: "Recover durable state" }).click();
+  const detailError = page.locator(".session-detail-error");
+  await expect(detailError).toBeVisible();
+  await controlFixture(request, { sessionRetrieveDelayMs: 5_000 });
+
+  await expectSelectedDeleteAbortsSessionRead(page, request, () => (
+    detailError.getByRole("button", { name: "Retry" }).click()
+  ));
+});
+
+test("deletes the selected Session while its SSE is still connecting", async ({ page, request }) => {
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Agents" }).click();
+  await page.getByRole("button", { name: /Start a Session with Second Agent/ }).click();
+  await expect(page.locator(".conversation-header h2")).toHaveText("Second Agent");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+
+  await controlFixture(request, { streamOpenDelayMs: 3_000 });
+  await page.locator(".session-row").filter({ hasText: "Lifecycle Agent" }).locator(".session-row-select").click();
+  await expect(page.locator(".conversation-header h2")).toHaveText("Lifecycle Agent");
+  await expect(page.getByText("connecting", { exact: true })).toBeVisible();
+  const before = await fixtureState(request);
+
+  await page.locator(".conversation-session-action").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await dialog.getByRole("button", { name: "Delete Session" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(".conversation-header h2")).toHaveText("Second Agent");
+  await expect.poll(async () => (await fixtureState(request)).aborts.streams).toBeGreaterThan(before.aborts.streams);
+  expect((await fixtureState(request)).sessions.some((session) => session.id === "session_snapshot")).toBe(false);
+});
+
+test("keeps Session actions accessible and contained at 390 px in dark mode", async ({ page, request }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Dark theme" }).click();
+  const manage = page.locator(".conversation-session-action");
+  await manage.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  const metrics = await dialog.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const footer = element.querySelector(".modal-footer")?.getBoundingClientRect();
+    return {
+      viewportWidth: innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      left: box.left,
+      right: box.right,
+      bottom: box.bottom,
+      footerBottom: footer?.bottom ?? Number.POSITIVE_INFINITY,
+    };
+  });
+  expect(metrics.documentWidth).toBeLessThanOrEqual(metrics.viewportWidth);
+  expect(metrics.left).toBeGreaterThanOrEqual(0);
+  expect(metrics.right).toBeLessThanOrEqual(390);
+  expect(metrics.bottom).toBeLessThanOrEqual(844);
+  expect(metrics.footerBottom).toBeLessThanOrEqual(metrics.bottom);
+
+  await expect(dialog.getByRole("button", { name: "Edit", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog.getByRole("button", { name: "Edit", exact: true })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(manage).toBeFocused();
 });
 
 test("renders self-hosted Environment and Workspace state safely across reconnect and narrow themes", async ({ page, request }, testInfo) => {

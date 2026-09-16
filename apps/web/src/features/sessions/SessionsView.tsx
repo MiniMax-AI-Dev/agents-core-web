@@ -4,6 +4,7 @@ import {
   Bot,
   Clock3,
   Code2,
+  Ellipsis,
   ExternalLink,
   MessageSquare,
   Plus,
@@ -37,6 +38,7 @@ import {
 import type { EnvironmentObservation } from "./environment/environment-state";
 import { ThreadItems } from "./items/ItemRenderers";
 import { TurnTimeline, type TurnTimelineLoadState } from "./turns/TurnTimeline";
+import { SessionActionsDialog } from "./actions/SessionActionsDialog";
 
 export type StreamState = "idle" | "connecting" | "listening" | "recovering" | "failed";
 export type SessionDetailState = "idle" | "loading" | "ready" | "failed";
@@ -60,12 +62,19 @@ interface SessionsViewProps {
   streamState: StreamState;
   onCancel: () => Promise<void>;
   onCreateSession: (agentId: string) => Promise<void>;
+  onDeleteSession: (sessionId: string) => Promise<boolean>;
   onFunctionResult: (input: FunctionResultInput) => Promise<void>;
   onRefresh: () => void;
   onRetrySession: () => void;
   onRetryStream: () => void;
+  onRetrieveSession: (sessionId: string) => Promise<AgentSession | undefined>;
   onSelect: (sessionId: string) => void;
   onSend: (text: string) => Promise<void>;
+  onUpdateSession: (
+    sessionId: string,
+    baselineMetadata: Record<string, string>,
+    draftMetadata: Record<string, string>,
+  ) => Promise<AgentSession | undefined>;
 }
 
 const executorSetupUrl = "https://github.com/MiniMax-AI-Dev/parsar/blob/main/services/agents-api/README.md#internal-execution-device-connection";
@@ -276,19 +285,27 @@ export function SessionsView({
   streamState,
   onCancel,
   onCreateSession,
+  onDeleteSession,
   onFunctionResult,
   onRefresh,
   onRetrySession,
   onRetryStream,
+  onRetrieveSession,
   onSelect,
   onSend,
+  onUpdateSession,
 }: SessionsViewProps) {
   const [message, setMessage] = useState("");
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
+  const [actionSession, setActionSession] = useState<AgentSession | null>(null);
   const [viewport, setViewport] = useState<HTMLDivElement | null>(null);
   const [threadContent, setThreadContent] = useState<HTMLDivElement | null>(null);
   const sendingRef = useRef(false);
+  const pageRef = useRef<HTMLElement>(null);
+  const newSessionActionRef = useRef<HTMLButtonElement>(null);
+  const conversationActionRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusAfterDeleteRef = useRef(false);
   const draftsBySessionRef = useRef(new Map<string, string>());
   const selectedIdRef = useRef(selected?.id ?? null);
   selectedIdRef.current = selected?.id ?? null;
@@ -301,6 +318,22 @@ export function SessionsView({
   useEffect(() => {
     if (!agentId && agents[0]) setAgentId(agents[0].id);
   }, [agentId, agents]);
+
+  useEffect(() => {
+    if (actionSession && !sessions.some((session) => session.id === actionSession.id)) {
+      setActionSession(null);
+    }
+  }, [actionSession, sessions]);
+
+  useEffect(() => {
+    if (actionSession || !restoreFocusAfterDeleteRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const newSessionAction = newSessionActionRef.current?.disabled ? null : newSessionActionRef.current;
+      (conversationActionRef.current ?? newSessionAction ?? pageRef.current)?.focus();
+      restoreFocusAfterDeleteRef.current = false;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [actionSession, selected?.id, sessions]);
 
   useEffect(() => {
     const sessionId = selected?.id;
@@ -379,7 +412,7 @@ export function SessionsView({
   );
 
   return (
-    <section className="page-section session-page">
+    <section ref={pageRef} className="page-section session-page" tabIndex={-1}>
       <aside className="session-browser">
         <header className="session-browser-header">
           <h1>Sessions <span>Conversations</span></h1>
@@ -387,7 +420,7 @@ export function SessionsView({
             <button className="icon-button ghost" type="button" onClick={onRefresh} disabled={coreState === "connecting"} aria-label="Recover durable state">
               <RefreshCw className={coreState === "connecting" ? "refresh-spinning" : undefined} size={14} strokeWidth={1.5} />
             </button>
-            <button className="icon-button primary" type="button" onClick={() => setNewSessionOpen(true)} disabled={coreState !== "ready" || !agents.length} aria-label="New Session">
+            <button ref={newSessionActionRef} className="icon-button primary" type="button" onClick={() => setNewSessionOpen(true)} disabled={coreState !== "ready" || !agents.length} aria-label="New Session">
               <Plus size={14} strokeWidth={1.5} />
             </button>
           </div>
@@ -410,19 +443,34 @@ export function SessionsView({
             />
           ) : null}
           {coreState === "ready" || sessions.length ? sessions.map((session) => (
-            <button
-              type="button"
+            <div
               className={`session-row ${selected?.id === session.id ? "active" : ""}`}
               key={session.id}
-              onClick={() => onSelect(session.id)}
             >
-              <StatusIcon status={sessionStatusKind(session.status)} title={session.status.replaceAll("_", " ")} />
-              <span className="session-row-copy">
-                <strong>{sessionTitle(session)}</strong>
-                <small>{session.agent.name || session.agent.model}</small>
-              </span>
-              <span className="session-age">{relativeTime(session.last_active_at)}</span>
-            </button>
+              <button
+                type="button"
+                className="session-row-select"
+                aria-label={`${session.status.replaceAll("_", " ")} ${session.agent.name || session.agent.model} · ${sessionTitle(session)}`}
+                onClick={() => onSelect(session.id)}
+              >
+                <StatusIcon status={sessionStatusKind(session.status)} title={session.status.replaceAll("_", " ")} />
+                <span className="session-row-copy">
+                  <strong>{sessionTitle(session)}</strong>
+                  <small>{session.agent.name || session.agent.model}</small>
+                </span>
+                <span className="session-age">{relativeTime(session.last_active_at)}</span>
+              </button>
+              <button
+                className="session-row-action icon-button ghost"
+                type="button"
+                aria-label={`Manage ${sessionTitle(session)}`}
+                title="Session details and actions"
+                disabled={busy}
+                onClick={() => setActionSession(session)}
+              >
+                <Ellipsis size={14} strokeWidth={1.5} aria-hidden="true" />
+              </button>
+            </div>
           )) : null}
           {coreState === "ready" && !sessions.length ? (
             <div className="session-list-empty">
@@ -460,6 +508,17 @@ export function SessionsView({
               <StatusIcon status={streamStatusKind(streamState)} />
               {streamState}
             </div>
+            <button
+              ref={conversationActionRef}
+              className="icon-button ghost conversation-session-action"
+              type="button"
+              aria-label={`Manage ${sessionTitle(selected)}`}
+              title="Session details and actions"
+              disabled={busy}
+              onClick={() => setActionSession(selected)}
+            >
+              <Ellipsis size={14} strokeWidth={1.5} aria-hidden="true" />
+            </button>
           </header>
 
           <div className="conversation-thread-frame">
@@ -658,6 +717,19 @@ export function SessionsView({
           <StatusIcon status="completed" /> The Session starts idle so the UI can subscribe before the first Turn.
         </div>
       </Modal>
+      <SessionActionsDialog
+        busy={busy}
+        session={actionSession}
+        onClose={() => setActionSession(null)}
+        onDelete={onDeleteSession}
+        onDeleted={(sessionId) => {
+          draftsBySessionRef.current.delete(sessionId);
+          if (selectedIdRef.current === sessionId) setMessage("");
+          restoreFocusAfterDeleteRef.current = true;
+        }}
+        onRetrieve={onRetrieveSession}
+        onUpdate={onUpdateSession}
+      />
     </section>
   );
 }

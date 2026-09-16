@@ -111,8 +111,27 @@ function initialState() {
       environmentEventStatus: 0,
       environmentEventCount: 0,
       streamStatus: 200,
+      streamOpenDelayMs: 0,
       streamCloseCount: 0,
       streamCloseDelayMs: 30,
+      sessionRetrieveDelayMs: 0,
+      sessionRetrieveStatus: 200,
+      sessionRetrieveVariant: "valid",
+      sessionUpdateDelayMs: 0,
+      sessionUpdateStatus: 200,
+      sessionUpdateResponseLoss: 0,
+      sessionDeleteDelayMs: 0,
+      sessionDeleteStatus: 200,
+      sessionDeleteResponseLoss: 0,
+      sessionDeleteStreamCloseDelayMs: 0,
+      itemsRetrieveDelayMs: 0,
+      itemsRetrieveStatus: 200,
+    },
+    aborts: {
+      sessionReads: 0,
+      itemReads: 0,
+      turnReads: 0,
+      streams: 0,
     },
     sequence: 0,
   };
@@ -169,7 +188,7 @@ function applyEnvironmentScenario(value) {
 }
 
 let state = initialState();
-const streamResponses = new Set();
+const streamResponses = new Map();
 
 function emitTurnLifecycle(status) {
   const index = state.turns.findIndex((turn) => turn.id === "turn_terminal_refresh");
@@ -191,7 +210,7 @@ function emitTurnLifecycle(status) {
     turn_id: terminal.id,
     turn: terminal,
   })}\n\n`;
-  for (const stream of streamResponses) stream.write(event);
+  for (const stream of streamResponses.keys()) stream.write(event);
   return true;
 }
 
@@ -257,6 +276,16 @@ function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function trackAbort(response, key) {
+  let finished = false;
+  response.once("finish", () => {
+    finished = true;
+  });
+  response.once("close", () => {
+    if (!finished) state.aborts[key] += 1;
+  });
+}
+
 const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? "/", `http://${host}:${port}`);
@@ -265,7 +294,7 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, { ready: true });
     }
     if (request.method === "POST" && url.pathname === "/__fixture/reset") {
-      for (const stream of streamResponses) stream.end();
+      for (const stream of streamResponses.keys()) stream.end();
       streamResponses.clear();
       state = initialState();
       return sendJson(response, { reset: true });
@@ -284,6 +313,26 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === "GET" && url.pathname === "/__fixture/requests") {
       return sendJson(response, state.requests);
+    }
+    if (request.method === "GET" && url.pathname === "/__fixture/state") {
+      return sendJson(response, {
+        sessions: state.sessions,
+        aborts: state.aborts,
+        openStreams: [...streamResponses.values()],
+      });
+    }
+    if (request.method === "POST" && url.pathname === "/__fixture/session-metadata") {
+      const input = await readJson(request);
+      const target = state.sessions.find((session) => session.id === input.id);
+      if (!target) return sendError(response, 404, "Fixture Session not found.");
+      target.metadata = input.metadata;
+      return sendJson(response, target);
+    }
+    if (request.method === "POST" && url.pathname === "/__fixture/remove-session") {
+      const input = await readJson(request);
+      const before = state.sessions.length;
+      state.sessions = state.sessions.filter((session) => session.id !== input.id);
+      return sendJson(response, { removed: state.sessions.length !== before });
     }
 
     const body = request.method === "GET" || request.method === "DELETE" ? undefined : await readJson(request);
@@ -365,9 +414,96 @@ const server = http.createServer(async (request, response) => {
     }
 
     const sessionMatch = url.pathname.match(/^\/v1\/agents\/sessions\/([^/]+)$/);
-    if (request.method === "GET" && sessionMatch) {
-      const session = state.sessions.find((candidate) => candidate.id === decodeURIComponent(sessionMatch[1]));
-      return session ? sendJson(response, session) : sendError(response, 404, "Fixture Session not found.");
+    if (sessionMatch) {
+      const id = decodeURIComponent(sessionMatch[1]);
+      const session = state.sessions.find((candidate) => candidate.id === id);
+      if (!session) return sendError(response, 404, "Fixture Session not found.");
+
+      if (request.method === "GET") {
+        trackAbort(response, "sessionReads");
+        const delayMs = state.controls.sessionRetrieveDelayMs;
+        const status = state.controls.sessionRetrieveStatus;
+        const variant = state.controls.sessionRetrieveVariant;
+        state.controls.sessionRetrieveDelayMs = 0;
+        state.controls.sessionRetrieveStatus = 200;
+        state.controls.sessionRetrieveVariant = "valid";
+        const retrievedSession = variant === "wrong_id"
+          ? { ...session, id: "another_session" }
+          : variant === "malformed"
+            ? { id, object: "agent.session", metadata: session.metadata }
+            : variant === "deep_malformed"
+              ? { ...session, agent: { model: session.agent.model } }
+              : session;
+        if (delayMs && status === 200) {
+          const payload = JSON.stringify(retrievedSession);
+          response.writeHead(200, {
+            "content-type": "application/json; charset=utf-8",
+            "content-length": Buffer.byteLength(payload) + 1,
+            "cache-control": "no-store",
+          });
+          response.write(" ");
+          await wait(delayMs);
+          if (response.destroyed) return;
+          response.end(payload);
+          return;
+        }
+        if (delayMs) await wait(delayMs);
+        if (response.destroyed) return;
+        if (status !== 200) return sendError(response, status, "Fixture Session retrieve failed.");
+        return sendJson(response, retrievedSession);
+      }
+
+      if (request.method === "POST") {
+        const delayMs = state.controls.sessionUpdateDelayMs;
+        const status = state.controls.sessionUpdateStatus;
+        const responseLoss = state.controls.sessionUpdateResponseLoss;
+        state.controls.sessionUpdateDelayMs = 0;
+        state.controls.sessionUpdateStatus = 200;
+        state.controls.sessionUpdateResponseLoss = 0;
+        if (delayMs) await wait(delayMs);
+        if (status !== 200) return sendError(response, status, "Fixture Session update failed.");
+        session.metadata = body.metadata ?? session.metadata;
+        if (responseLoss) {
+          response.destroy();
+          return;
+        }
+        return sendJson(response, session);
+      }
+
+      if (request.method === "DELETE") {
+        const delayMs = state.controls.sessionDeleteDelayMs;
+        const status = state.controls.sessionDeleteStatus;
+        const responseLoss = state.controls.sessionDeleteResponseLoss;
+        state.controls.sessionDeleteDelayMs = 0;
+        state.controls.sessionDeleteStatus = 200;
+        state.controls.sessionDeleteResponseLoss = 0;
+        if (delayMs) await wait(delayMs);
+        if (status !== 200) return sendError(response, status, "Fixture Session delete failed.");
+        if (responseLoss === 2) {
+          response.destroy();
+          return;
+        }
+        state.sessions = state.sessions.filter((candidate) => candidate.id !== id);
+        state.turns = state.turns.filter((turn) => turn.session_id !== id);
+        const targetStreams = [...streamResponses]
+          .filter(([, streamSessionId]) => streamSessionId === id)
+          .map(([stream]) => stream);
+        const closeStreams = () => {
+          for (const stream of targetStreams) {
+            if (!stream.destroyed) stream.end();
+          }
+        };
+        if (state.controls.sessionDeleteStreamCloseDelayMs) {
+          setTimeout(closeStreams, state.controls.sessionDeleteStreamCloseDelayMs);
+        } else {
+          closeStreams();
+        }
+        if (responseLoss) {
+          response.destroy();
+          return;
+        }
+        return sendJson(response, { id, object: "agent.session.deleted", deleted: true });
+      }
     }
 
     const environmentMatch = url.pathname.match(/^\/v1\/agents\/environments\/([^/]+)$/);
@@ -398,7 +534,16 @@ const server = http.createServer(async (request, response) => {
 
     const itemsMatch = url.pathname.match(/^\/v1\/agents\/sessions\/([^/]+)\/items$/);
     if (request.method === "GET" && itemsMatch) {
+      trackAbort(response, "itemReads");
+      if (state.controls.itemsRetrieveDelayMs) await wait(state.controls.itemsRetrieveDelayMs);
+      if (response.destroyed) return;
+      if (state.controls.itemsRetrieveStatus !== 200) {
+        return sendError(response, state.controls.itemsRetrieveStatus, "Fixture Items retrieve failed.");
+      }
       const sessionId = decodeURIComponent(itemsMatch[1]);
+      if (!state.sessions.some((candidate) => candidate.id === sessionId)) {
+        return sendError(response, 404, "Fixture Session not found for Items.");
+      }
       const items = sessionId !== "session_snapshot"
         ? []
         : state.controls.itemsScenario
@@ -411,7 +556,9 @@ const server = http.createServer(async (request, response) => {
 
     const turnsMatch = url.pathname.match(/^\/v1\/agents\/sessions\/([^/]+)\/turns$/);
     if (request.method === "GET" && turnsMatch) {
+      trackAbort(response, "turnReads");
       if (state.controls.turnsRetrieveDelayMs) await wait(state.controls.turnsRetrieveDelayMs);
+      if (response.destroyed) return;
       if (state.controls.turnsRetrieveStatus !== 200) {
         return sendError(response, state.controls.turnsRetrieveStatus, "Fixture Turns retrieve failed.");
       }
@@ -449,6 +596,13 @@ const server = http.createServer(async (request, response) => {
       return;
     }
     if (request.method === "GET" && eventsMatch) {
+      trackAbort(response, "streams");
+      const sessionId = decodeURIComponent(eventsMatch[1]);
+      if (state.controls.streamOpenDelayMs) await wait(state.controls.streamOpenDelayMs);
+      if (response.destroyed) return;
+      if (!state.sessions.some((candidate) => candidate.id === sessionId)) {
+        return sendError(response, 404, "Fixture Session not found for stream.");
+      }
       if (state.controls.streamStatus !== 200) {
         return sendError(response, state.controls.streamStatus, "Fixture stream rejected.");
       }
@@ -457,7 +611,7 @@ const server = http.createServer(async (request, response) => {
         "cache-control": "no-cache, no-transform",
         connection: "keep-alive",
       });
-      streamResponses.add(response);
+      streamResponses.set(response, sessionId);
       response.write(": fixture stream open\n\n");
       const statuses = [null, "pending", "ready", "connected", "disconnected", "failed", "expired"];
       const environmentStatus = statuses[state.controls.environmentEventStatus] ?? null;
