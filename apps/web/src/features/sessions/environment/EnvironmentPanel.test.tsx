@@ -18,6 +18,7 @@ const selfHosted: AgentEnvironment = {
   workspace_directory: "/workspace/<script>alert(1)</script>/project",
   capability_directories: ["/capabilities/one", `/capabilities/${"long/".repeat(80)}`],
 };
+const canonicalEnvironmentUuid = "0f745b0d-b545-49cd-8d7e-4c31c80dc564";
 
 function observation(status: SessionEnvironmentStatus): LiveEnvironmentObservation {
   return {
@@ -34,9 +35,12 @@ function observation(status: SessionEnvironmentStatus): LiveEnvironmentObservati
   };
 }
 
-function durableObservation(status: EnvironmentResourceStatus): EnvironmentObservation {
+function durableObservation(
+  status: EnvironmentResourceStatus,
+  environmentId = "environment_01",
+): EnvironmentObservation {
   const resource: AgentEnvironmentResource = {
-    id: "environment_01",
+    id: environmentId,
     object: "agent.environment",
     type: "self_hosted",
     status,
@@ -46,7 +50,7 @@ function durableObservation(status: EnvironmentResourceStatus): EnvironmentObser
   };
   return {
     source: "durable",
-    environmentId: "environment_01",
+    environmentId,
     environmentType: "self_hosted",
     status,
     resource,
@@ -65,6 +69,14 @@ describe("EnvironmentPanel", () => {
     expect(html).toContain("Core-owned");
     expect(html).toContain("No Workspace");
     expect(html).not.toContain("file://");
+  });
+
+  it("renders a canonical durable UUID for an uppercase Session Environment identity", () => {
+    const environment = { ...selfHosted, id: canonicalEnvironmentUuid.toUpperCase() };
+    const html = render(environment, durableObservation("connected", canonicalEnvironmentUuid));
+    expect(html).toContain("Connected");
+    expect(html).toContain("Status comes from the durable Environment resource");
+    expect(html).not.toContain("Durable Environment status is unavailable");
   });
 
   it("sanitizes http(s) remote URLs and rejects other or malformed schemes", () => {
@@ -194,5 +206,14 @@ describe("EnvironmentPanel", () => {
     );
     expect(html).toContain("Connection required");
     expect(html).toContain("No executor availability is inferred");
+
+    const uuidHtml = renderToStaticMarkup(
+      <EnvironmentPanel
+        environment={{ ...selfHosted, id: canonicalEnvironmentUuid.toUpperCase() }}
+        observation={null}
+        connectionActions={[{ type: "environment_connection", environment_id: canonicalEnvironmentUuid }]}
+      />,
+    );
+    expect(uuidHtml).toContain("Connection required");
   });
 });

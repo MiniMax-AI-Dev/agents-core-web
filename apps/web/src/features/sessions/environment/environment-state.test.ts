@@ -8,6 +8,7 @@ import type {
 } from "@agents-core-web/agents-client";
 
 import {
+  environmentIdsMatch,
   environmentObservationFromEvent,
   environmentObservationFromResource,
   environmentReadIsCurrent,
@@ -17,6 +18,8 @@ import {
   unavailableEnvironmentObservation,
   visibleEnvironmentObservation,
 } from "./environment-state";
+
+const canonicalEnvironmentUuid = "0f745b0d-b545-49cd-8d7e-4c31c80dc564";
 
 function event(status: string, environment: Record<string, unknown> = {}): SessionEvent {
   return {
@@ -38,6 +41,15 @@ function session(environment: AgentSession["environment"]): AgentSession {
 }
 
 describe("Environment live state", () => {
+  it("matches UUID identities case-insensitively while keeping opaque IDs exact", () => {
+    expect(environmentIdsMatch(canonicalEnvironmentUuid, canonicalEnvironmentUuid.toUpperCase())).toBe(true);
+    expect(environmentIdsMatch(canonicalEnvironmentUuid, "1f745b0d-b545-49cd-8d7e-4c31c80dc564")).toBe(false);
+    expect(environmentIdsMatch("environment_1", "environment_1")).toBe(true);
+    expect(environmentIdsMatch("environment_1", "ENVIRONMENT_1")).toBe(false);
+    expect(environmentIdsMatch(null, null)).toBe(true);
+    expect(environmentIdsMatch(null, canonicalEnvironmentUuid)).toBe(false);
+  });
+
   it.each(["pending", "ready", "connected", "disconnected", "failed"])(
     "admits pinned %s events",
     (status) => {
@@ -87,6 +99,23 @@ describe("Environment live state", () => {
       expect(environmentObservationFromResource(resource, "another_environment")).toBeNull();
     },
   );
+
+  it("retains a canonical durable UUID returned for an uppercase Session Environment ID", () => {
+    const resource: AgentEnvironmentResource = {
+      id: canonicalEnvironmentUuid,
+      object: "agent.environment",
+      type: "self_hosted",
+      status: "connected",
+      files: [],
+      plugins: [],
+      skills: [],
+    };
+    expect(environmentObservationFromResource(resource, canonicalEnvironmentUuid.toUpperCase())).toMatchObject({
+      source: "durable",
+      environmentId: canonicalEnvironmentUuid,
+      status: "connected",
+    });
+  });
 
   it("clears a prior connected claim on expired, future, or malformed Environment events", () => {
     const connected = environmentObservationFromEvent(event("connected"));
@@ -164,6 +193,12 @@ describe("Environment live state", () => {
 
     // An A -> B -> A selection cannot revive the first A request.
     expect(environmentReadIsCurrent(read, { ...current, streamEpoch: 8 })).toBe(false);
+
+    const uppercaseUuidRead = { ...read, environmentId: canonicalEnvironmentUuid.toUpperCase() };
+    expect(environmentReadIsCurrent(uppercaseUuidRead, {
+      ...current,
+      environmentId: canonicalEnvironmentUuid,
+    })).toBe(true);
   });
 
   it("retains structured errors without treating malformed fields as trusted", () => {
@@ -199,6 +234,17 @@ describe("Environment live state", () => {
       id: "session_1",
       environment: null,
     } as unknown as AgentSession)).toBeNull();
+
+    const uuidObservation = environmentObservationFromEvent(event("connected", {
+      id: canonicalEnvironmentUuid,
+    }));
+    expect(reconcileEnvironmentObservation(uuidObservation, session({
+      type: "self_hosted",
+      id: canonicalEnvironmentUuid.toUpperCase(),
+      remote_url: "https://executor.example",
+      workspace_directory: "/workspace",
+      capability_directories: [],
+    }))).toBe(uuidObservation);
   });
 
   it("does not render a cached observation across an A to B to A stream epoch switch", () => {
