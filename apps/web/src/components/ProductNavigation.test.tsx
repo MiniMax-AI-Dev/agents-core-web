@@ -10,6 +10,8 @@ describe("Product navigation", () => {
     );
 
     expect(html).toContain('aria-label="Agents product"');
+    expect(html).toContain('class="main-nav product-navigation"');
+    expect(html).toContain("Workspace");
     expect(html).toContain("Agents");
     expect(html).toContain("Environments");
     expect(html).toContain("Sessions");

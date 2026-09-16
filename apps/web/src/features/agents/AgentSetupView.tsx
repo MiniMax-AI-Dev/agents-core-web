@@ -6,6 +6,7 @@ import type { CreateAgentInput, SavedAgent } from "@agents-core-web/agents-clien
 import { AgentForm } from "./AgentForm";
 import { buildAgentRequestPreview } from "./agent-preview";
 import { valuesFromAgent } from "./agent-form";
+import { knownSessionAdmissionBlocker } from "./session-admission";
 
 function AgentRequestPreview({
   baseUrl,
@@ -38,7 +39,7 @@ function AgentRequestPreview({
 
 function SetupGuide({ saved }: { saved: boolean }) {
   const steps = [
-    ["Define an Agent", "Choose a model, instructions, and supported generation settings.", true],
+    ["Define an Agent", "Choose a model and instructions; the Web keeps generation settings on the current Session-safe profile.", true],
     ["Save the definition", "Core becomes the durable source of truth for the saved Agent.", saved],
     ["Start a Session", "Create an idle environment:none Session and subscribe before sending input.", false],
     ["Exchange events", "A real Turn still requires a compatible worker, executor, model, and provider.", false],
@@ -78,6 +79,7 @@ export function AgentSetupView({
   const [draft, setDraft] = useState(() => valuesFromAgent());
   const [created, setCreated] = useState<SavedAgent | null>(null);
   const formId = "create-agent";
+  const sessionAdmissionBlocker = created ? knownSessionAdmissionBlocker(created) : null;
 
   const create = async (input: CreateAgentInput) => {
     const agent = await onCreate(input);
@@ -111,6 +113,11 @@ export function AgentSetupView({
               Agent definition saved as <code>{created.id}</code>. This does not prove execution readiness.
             </div>
           ) : null}
+          {sessionAdmissionBlocker ? (
+            <div className="notice warning" id="created-agent-session-blocker" role="note">
+              Saved successfully, but Start Session is unavailable. {sessionAdmissionBlocker}
+            </div>
+          ) : null}
           <AgentForm
             disabled={busy || Boolean(created)}
             formId={formId}
@@ -126,7 +133,8 @@ export function AgentSetupView({
             <button
               className="button primary agent-start-session"
               type="button"
-              disabled={busy || !created}
+              disabled={busy || !created || Boolean(sessionAdmissionBlocker)}
+              aria-describedby={sessionAdmissionBlocker ? "created-agent-session-blocker" : undefined}
               onClick={() => created && onStartSession(created.id)}
             >
               <MessageSquare size={14} strokeWidth={1.5} aria-hidden="true" />

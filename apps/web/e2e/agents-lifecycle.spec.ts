@@ -135,7 +135,7 @@ test("retrieves latest details and reuses a validated create/edit form", async (
   await expect(dialog).not.toContainText("stale list");
   await expect(dialog).toContainText("agent_a");
   await expect(dialog).toContainText("Advanced configuration · read only");
-  await expect(dialog).toContainText("does not prove the current executor");
+  await expect(dialog).toContainText("known Core Session profile cannot start it");
   await expect(dialog.locator("input, textarea, select")).toHaveCount(0);
   await attachScreenshot(page, testInfo, "desktop-light-agent-details");
 
@@ -149,6 +149,14 @@ test("retrieves latest details and reuses a validated create/edit form", async (
   await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.getByText("Every metadata value must be a string.")).toBeVisible();
   let requests = await fixtureRequests(request);
+  expect(requests.filter((entry) => entry.method === "POST" && entry.path === "/v1/agents/agent_a")).toHaveLength(0);
+
+  await page.getByLabel("Metadata").fill(JSON.stringify(Object.fromEntries(
+    Array.from({ length: 17 }, (_, index) => [`key-${index}`, "value"]),
+  )));
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByText("Agent metadata supports at most 16 pairs.")).toBeVisible();
+  requests = await fixtureRequests(request);
   expect(requests.filter((entry) => entry.method === "POST" && entry.path === "/v1/agents/agent_a")).toHaveLength(0);
 
   await name.fill("");
@@ -173,6 +181,11 @@ test("retrieves latest details and reuses a validated create/edit form", async (
 
 test("supports global Create keyboard navigation and consumes setup requests once", async ({ page, request }) => {
   await openAgents(page, request);
+  const sidebar = page.locator(".app-sidebar");
+  const productNavigation = sidebar.getByRole("navigation", { name: "Agents product" });
+  await expect(productNavigation).toBeVisible();
+  await expect(productNavigation.getByRole("button", { name: "Agents", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.locator(".product-header").getByRole("navigation", { name: "Agents product" })).toHaveCount(0);
   const createMenu = page.getByRole("button", { name: "Create", exact: true });
   await createMenu.focus();
   await page.keyboard.press("Enter");
@@ -207,8 +220,18 @@ test("supports global Create keyboard navigation and consumes setup requests onc
 
   await createMenu.click();
   await startSessionItem.click();
-  await expect(page.getByRole("dialog", { name: "Start an idle Session" })).toBeVisible();
-  await page.getByRole("dialog", { name: "Start an idle Session" }).getByRole("button", { name: "Cancel" }).click();
+  const sessionDialog = page.getByRole("dialog", { name: "Start an idle Session" });
+  await expect(sessionDialog).toBeVisible();
+  await expect(sessionDialog.getByLabel("Saved Agent")).toHaveValue("agent_b");
+  await expect(sessionDialog.locator('option[value="agent_a"]')).toHaveAttribute("disabled", "");
+  await expect(sessionDialog.locator('option[value="agent_tool_only"]')).toHaveAttribute("disabled", "");
+  const sessionPostsBeforeCancel = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions"
+  )).length;
+  await sessionDialog.getByRole("button", { name: "Cancel" }).click();
+  expect((await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions"
+  ))).toHaveLength(sessionPostsBeforeCancel);
   await expect(createMenu).toBeFocused();
   await page.getByRole("button", { name: "Agents", exact: true }).click();
   await page.getByRole("button", { name: "Sessions", exact: true }).click();
@@ -247,7 +270,132 @@ test("supports global Create keyboard navigation and consumes setup requests onc
     name: null,
     instructions: null,
     metadata: { owner: "local-test" },
+    service_tier: "auto",
+    text: { format: { type: "text" }, verbosity: "medium" },
   });
+  expect(creates[0]?.body).not.toHaveProperty("reasoning");
+});
+
+test("continues from a default Agent definition into an admitted idle Session", async ({ page, request }) => {
+  await openAgents(page, request);
+  await page.getByRole("button", { name: "New Agent" }).click();
+  await page.getByLabel("Name").fill("Session-safe Agent");
+  await page.getByRole("button", { name: "Save Agent definition" }).click();
+  await expect(page.getByRole("status")).toContainText("Agent definition saved as");
+
+  const requestsAfterSave = await fixtureRequests(request);
+  const create = requestsAfterSave.find((entry) => entry.method === "POST" && entry.path === "/v1/agents");
+  expect(create?.body).toMatchObject({
+    name: "Session-safe Agent",
+    service_tier: "auto",
+    text: { format: { type: "text" }, verbosity: "medium" },
+  });
+  expect(create?.body).not.toHaveProperty("reasoning");
+
+  await expect(page.getByRole("button", { name: "Start Session" })).toBeEnabled();
+  await page.getByRole("button", { name: "Start Session" }).click();
+  await expect(page.getByRole("button", { name: "Sessions", exact: true })).toHaveAttribute("aria-current", "page");
+
+  const sessionCreates = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions"
+  ));
+  expect(sessionCreates).toHaveLength(1);
+  expect(sessionCreates[0]?.body).toMatchObject({
+    agent_id: expect.stringMatching(/^agent_created_/),
+    environment: { type: "none" },
+    stream: false,
+  });
+});
+
+test("rechecks the saved response before offering the setup-page Session continuation", async ({ page, request }) => {
+  await openAgents(page, request);
+  await controlFixture(request, { createAgentResponseVariant: "reasoning" });
+  await page.getByRole("button", { name: "New Agent" }).click();
+  await page.getByLabel("Name").fill("Core-adjusted Agent");
+  await page.getByRole("button", { name: "Save Agent definition" }).click();
+
+  await expect(page.getByRole("status")).toContainText("Agent definition saved as");
+  await expect(page.locator("#created-agent-session-blocker")).toContainText("Start Session is unavailable");
+  const startSession = page.getByRole("button", { name: "Start Session" });
+  await expect(startSession).toBeDisabled();
+
+  // Bypass the setup view's disabled control to prove App's final admission
+  // guard independently blocks the write if a caller reaches it anyway.
+  await startSession.evaluate((button) => {
+    const propsKey = Object.getOwnPropertyNames(button).find((key) => key.startsWith("__reactProps$"));
+    if (!propsKey) throw new Error("React event props were not found on the Start Session button.");
+    const props = (button as unknown as Record<string, { onClick?: () => void }>)[propsKey];
+    if (!props?.onClick) throw new Error("Start Session does not have an onClick handler.");
+    props.onClick();
+  });
+  await expect(page.getByText(/Session was not created\./)).toBeVisible();
+  expect((await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions"
+  ))).toHaveLength(0);
+});
+
+test("starts only Agents that pass known Session admission", async ({ page, request }) => {
+  await openAgents(page, request);
+
+  const blockedStart = page.getByRole("button", { name: /Start a Session with Lifecycle Agent/ });
+  await expect(blockedStart).toHaveAttribute("aria-disabled", "true");
+  await blockedStart.focus();
+  await expect(blockedStart.locator("xpath=..").getByRole("tooltip")).toBeVisible();
+  const blockedSessionCount = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions"
+  )).length;
+  await page.keyboard.press("Enter");
+  expect((await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions"
+  ))).toHaveLength(blockedSessionCount);
+
+  const toolOnlyStart = page.getByRole("button", { name: "Start a Session with Saved-only Tool Agent" });
+  await expect(toolOnlyStart).toHaveAttribute("aria-disabled", "true");
+  await toolOnlyStart.focus();
+  await expect(toolOnlyStart.locator("xpath=..").getByRole("tooltip")).toContainText("tool_search is saved-only");
+  await page.keyboard.press("Enter");
+  expect((await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions"
+  ))).toHaveLength(blockedSessionCount);
+  await expect(page.getByRole("button", { name: "Start a Session with Second Agent" })).toBeEnabled();
+
+  const before = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions"
+  )).length;
+  await page.getByRole("button", { name: "Start a Session with Second Agent" }).click();
+  await expect(page.getByRole("button", { name: "Sessions", exact: true })).toHaveAttribute("aria-current", "page");
+
+  const sessionCreates = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions"
+  ));
+  expect(sessionCreates).toHaveLength(before + 1);
+  expect(sessionCreates.at(-1)?.body).toMatchObject({
+    agent_id: "agent_b",
+    environment: { type: "none" },
+    stream: false,
+  });
+});
+
+test("keeps the New Session reason keyboard-accessible when every loaded Agent is incompatible", async ({ page, request }) => {
+  await openAgents(page, request);
+  const deleted = await request.delete(`${fixtureBaseUrl}/v1/agents/agent_b`);
+  expect(deleted.ok()).toBe(true);
+  await page.getByRole("button", { name: "Refresh Agents" }).click();
+  await expect(page.getByRole("button", { name: "Open details for Second Agent" })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Sessions", exact: true }).click();
+  const newSession = page.getByRole("button", { name: "New Session" });
+  await expect(newSession).toHaveAttribute("aria-disabled", "true");
+  await newSession.focus();
+  await expect(newSession.locator("xpath=..").getByRole("tooltip")).toContainText("No loaded Agent matches");
+  const before = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions"
+  )).length;
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Start an idle Session" })).toHaveCount(0);
+  expect((await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions"
+  ))).toHaveLength(before);
 });
 
 test("keeps failures visible, rejects stale async continuations, and never retries writes", async ({ page, request }) => {

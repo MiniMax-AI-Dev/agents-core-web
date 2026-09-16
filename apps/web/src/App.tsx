@@ -21,6 +21,7 @@ import { StatusIcon } from "./components/StatusIcon";
 import { ThemeMenu } from "./components/ThemeMenu";
 import { useToast } from "./components/Toast";
 import { AgentsView } from "./features/agents/AgentsView";
+import { knownSessionAdmissionBlocker } from "./features/agents/session-admission";
 import {
   removeSavedAgent,
   replaceSavedAgent,
@@ -869,6 +870,13 @@ export function App() {
   };
 
   const createSession = async (agentId: string) => {
+    const savedAgent = agents.find((agent) => agent.id === agentId);
+    const admissionBlocker = savedAgent ? knownSessionAdmissionBlocker(savedAgent) : "The selected saved Agent is not loaded.";
+    if (admissionBlocker) {
+      const error = new Error(`Session was not created. ${admissionBlocker}`);
+      notify(error.message, "error");
+      throw error;
+    }
     const session = await run(
       () => core.createSession({ agent_id: agentId, environment: { type: "none" }, stream: false }),
       "Idle Session created. Opening live events…",
@@ -1152,6 +1160,11 @@ export function App() {
           <span className="brand-name">Agents Core Web</span>
         </div>
 
+        <ProductNavigation
+          active={view === "system" ? null : view}
+          onSelect={(nextView) => setView(nextView)}
+        />
+
         <nav className="main-nav" aria-label="System navigation">
           <p className="nav-label">System</p>
           <button
@@ -1189,13 +1202,9 @@ export function App() {
 
       <main className="app-main" id="main-content" tabIndex={-1}>
         <header className="product-header">
-          <ProductNavigation
-            active={view === "system" ? null : view}
-            onSelect={(nextView) => setView(nextView)}
-          />
           <CreateMenu
             canCreateAgent={agentCollectionState === "ready" && !busy}
-            canStartSession={sessionCollectionState === "ready" && agents.length > 0 && !busy}
+            canStartSession={sessionCollectionState === "ready" && agents.some((agent) => !knownSessionAdmissionBlocker(agent)) && !busy}
             onCreateAgent={openAgentSetup}
             onStartSession={openSessionSetup}
           />

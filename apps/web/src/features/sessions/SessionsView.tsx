@@ -31,6 +31,7 @@ import { Skeleton } from "../../components/Skeleton";
 import { StatusIcon, type StatusKind } from "../../components/StatusIcon";
 import type { CoreConnectionState } from "../../lib/connection";
 import { useThreadScroll } from "../../lib/use-thread-scroll";
+import { knownSessionAdmissionBlocker } from "../agents/session-admission";
 import {
   EnvironmentConnectionNotice,
   EnvironmentPanel,
@@ -299,9 +300,15 @@ export function SessionsView({
   onSend,
   onUpdateSession,
 }: SessionsViewProps) {
+  const firstStartableAgent = agents.find((agent) => !knownSessionAdmissionBlocker(agent));
+  const newSessionUnavailableReason = coreState === "ready" && !firstStartableAgent
+    ? agents.length
+      ? "No loaded Agent matches the known Core Session-admission profile."
+      : "Create or load a saved Agent before starting a Session."
+    : null;
   const [message, setMessage] = useState("");
   const [newSessionOpen, setNewSessionOpen] = useState(false);
-  const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
+  const [agentId, setAgentId] = useState(firstStartableAgent?.id ?? "");
   const [actionSession, setActionSession] = useState<AgentSession | null>(null);
   const [viewport, setViewport] = useState<HTMLDivElement | null>(null);
   const [threadContent, setThreadContent] = useState<HTMLDivElement | null>(null);
@@ -320,9 +327,14 @@ export function SessionsView({
     threadContent,
   );
 
+  const selectedAgent = agents.find((agent) => agent.id === agentId);
+  const selectedAgentBlocker = selectedAgent ? knownSessionAdmissionBlocker(selectedAgent) : null;
+
   useEffect(() => {
-    if (!agentId && agents[0]) setAgentId(agents[0].id);
-  }, [agentId, agents]);
+    if (selectedAgent && !selectedAgentBlocker) return;
+    const next = agents.find((agent) => !knownSessionAdmissionBlocker(agent));
+    if ((next?.id ?? "") !== agentId) setAgentId(next?.id ?? "");
+  }, [agentId, agents, selectedAgent, selectedAgentBlocker]);
 
   useEffect(() => {
     if (!createRequest || createRequest === lastCreateRequestRef.current) return;
@@ -401,7 +413,7 @@ export function SessionsView({
   };
 
   const createSession = async () => {
-    if (coreState !== "ready" || !agentId) return;
+    if (coreState !== "ready" || !agentId || selectedAgentBlocker) return;
     try {
       await onCreateSession(agentId);
     } catch {
@@ -432,9 +444,27 @@ export function SessionsView({
             <button className="icon-button ghost" type="button" onClick={onRefresh} disabled={coreState === "connecting"} aria-label="Recover durable state">
               <RefreshCw className={coreState === "connecting" ? "refresh-spinning" : undefined} size={14} strokeWidth={1.5} />
             </button>
-            <button ref={newSessionActionRef} className="icon-button primary" type="button" onClick={() => setNewSessionOpen(true)} disabled={coreState !== "ready" || !agents.length} aria-label="New Session">
-              <Plus size={14} strokeWidth={1.5} />
-            </button>
+            <span className="action-tooltip">
+              <button
+                ref={newSessionActionRef}
+                className="icon-button primary session-create-trigger"
+                type="button"
+                onClick={() => {
+                  if (!newSessionUnavailableReason) setNewSessionOpen(true);
+                }}
+                disabled={coreState !== "ready"}
+                aria-disabled={newSessionUnavailableReason ? true : undefined}
+                aria-describedby={newSessionUnavailableReason ? "new-session-unavailable-reason" : undefined}
+                aria-label="New Session"
+              >
+                <Plus size={14} strokeWidth={1.5} />
+              </button>
+              {newSessionUnavailableReason ? (
+                <span className="action-tooltip-content" role="tooltip" id="new-session-unavailable-reason">
+                  {newSessionUnavailableReason}
+                </span>
+              ) : null}
+            </span>
           </div>
         </header>
 
@@ -710,7 +740,7 @@ export function SessionsView({
         footer={
           <>
             <button className="button outline" type="button" onClick={() => setNewSessionOpen(false)}>Cancel</button>
-            <button className="button primary" type="button" onClick={() => void createSession()} disabled={busy || coreState !== "ready" || !agentId}>
+            <button className="button primary" type="button" onClick={() => void createSession()} disabled={busy || coreState !== "ready" || !agentId || Boolean(selectedAgentBlocker)}>
               {busy ? "Creating…" : "Create Session"}
             </button>
           </>
@@ -719,12 +749,23 @@ export function SessionsView({
         <label className="field">
           <span>Saved Agent</span>
           <select value={agentId} onChange={(event) => setAgentId(event.target.value)}>
-            {agents.map((agent) => (
-              <option value={agent.id} key={agent.id}>{agent.name || agent.id} · {agent.model}</option>
-            ))}
+            {!firstStartableAgent ? <option value="">No Session-compatible saved Agent</option> : null}
+            {agents.map((agent) => {
+              const blocker = knownSessionAdmissionBlocker(agent);
+              return (
+                <option value={agent.id} key={agent.id} disabled={Boolean(blocker)}>
+                  {agent.name || agent.id} · {agent.model}{blocker ? " · Session unavailable" : ""}
+                </option>
+              );
+            })}
           </select>
-          <small>The initial slice uses environment: none; runtime placement remains core-owned.</small>
+          <small>The initial slice uses environment: none. Saved-only reasoning, non-auto tiers, JSON schema, multi-agent settings, unsupported tool shapes, and attached MCP credentials cannot start this Web Session flow.</small>
         </label>
+        {!firstStartableAgent ? (
+          <div className="notice warning" role="note">
+            No loaded Agent matches the known Core Session-admission profile. Create an Agent with the Web defaults or update the saved configuration first.
+          </div>
+        ) : null}
         <div className="notice success">
           <StatusIcon status="completed" /> The Session starts idle so the UI can subscribe before the first Turn.
         </div>

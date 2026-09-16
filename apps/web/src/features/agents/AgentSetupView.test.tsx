@@ -23,9 +23,11 @@ describe("Agent setup page", () => {
     expect(html).toContain("${AGENTS_CORE_API_KEY}");
     expect(html).toContain("Get started creating an Agent");
     expect(html).toContain("Text format");
-    expect(html).toContain("This Web preserves JSON schemas but does not edit them yet");
+    expect(html).toContain("Existing JSON schemas are preserved read-only and block Session start");
     expect(html).toContain("Reasoning effort");
     expect(html).toContain("Text verbosity");
+    expect(html).toContain("current cross-engine Session profile");
+    expect(html).not.toContain("&quot;reasoning&quot;");
     expect(html.indexOf(">Name<")).toBeLessThan(html.indexOf(">Instructions<"));
     expect(html.indexOf(">Instructions<")).toBeLessThan(html.indexOf(">Model<"));
     expect(html).not.toContain("manual-token");

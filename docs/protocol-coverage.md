@@ -7,7 +7,7 @@ OpenAI-hosted service compatibility.
 
 - Parsar Core:
   [`0438880a`](https://github.com/MiniMax-AI-Dev/parsar/commit/0438880ab21aa16d05cb91a4c7f91cc0abc12358)
-- The product-navigation and Environment-unavailable boundaries were re-audited
+- The product-navigation, Agent execution-admission, and Environment-unavailable boundaries were re-audited
   against Parsar [`c15d42a2`](https://github.com/MiniMax-AI-Dev/parsar/commit/c15d42a270c0667bcaa83a6b9d01a9892ebf7edd).
   That revision still exposes only Environment retrieve plus Session-bound
   `self_hosted` creation; it adds no public Environment list, template, file, or
@@ -32,7 +32,7 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 
 | Resource / behavior | TypeScript client | Initial UI | Notes |
 | --- | --- | --- | --- |
-| Saved Agents create/list | Yes | Yes | Dedicated setup page covers model, name, instructions, metadata, read-only text-format projection, reasoning effort/summary, text verbosity, and service tier; saved settings do not prove runtime support |
+| Saved Agents create/list | Yes | Yes | Dedicated setup covers model, name, instructions, bounded metadata, and the Session-safe text/medium/implicit-reasoning/auto-tier profile; the broader Saved Agent contract is not execution proof |
 | Saved Agents retrieve/update/delete | Yes | Yes | Agent details support viewing, editing, and deleting saved Agents |
 | Sessions create/list/retrieve | Yes | Yes | UI creates idle `environment:none` Sessions; client types also cover the pinned `self_hosted` request and safe response projection |
 | Sessions update/delete | Yes | Yes | Title/string metadata editing and one-Session confirmed deletion; no bulk or Workspace deletion |
@@ -66,6 +66,20 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
   the sanitized Core base URL. Its authorization header always contains the literal
   `${AGENTS_CORE_API_KEY}` placeholder; it never reads or renders the connection's
   server-managed or current-tab bearer.
+- Saved Agent persistence and Session execution are separate contracts. Parsar
+  `c15d42a2` can store explicit reasoning, non-`auto` service tiers, and JSON-schema
+  text formats, but rejects each of them before creating a Session. Enabled
+  multi-agent configuration, saved-only tool types, deferred/invalid/duplicate
+  function or MCP identities, and MCP credentials without attached Vaults are
+  rejected at the same boundary. The Web never attaches Vaults in this flow, so it
+  treats a saved MCP `credential_id` as a deterministic blocker. The Web therefore
+  omits reasoning for new Agents, uses `service_tier:auto`, ordinary text, and
+  medium verbosity, and blocks every Session-start entry point for a loaded Agent
+  with a deterministic admission conflict. Existing saved-only values remain
+  inspectable; fields exposed for editing are never silently rewritten.
+- Saved Agent names are limited to 128 Unicode characters. Agent metadata is limited
+  to 16 string pairs, 64 Unicode characters per key, and 512 per value; the Web
+  enforces those limits before a write.
 - The Environments overview filters the currently loaded Session collection to exact
   `self_hosted` projections. A matching durable/live observation may annotate that
   row, but an absent row or observation remains unknown. The view does not derive a
@@ -143,7 +157,11 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 - `AGENTS_API_ENGINE` selects `codex` or an operator-enabled `claude_sdk` profile for
   new Sessions. The browser sends a model ID, not an executor selector.
 - Core has no standard model-catalog or capability-discovery route in this surface.
-  Web model presets are editable suggestions; the first real Turn is authoritative.
+  Web model presets are editable suggestions. Known reasoning, tier, format,
+  multi-agent, executable-tool-shape, and unattached-credential incompatibilities
+  are authoritative at Session creation; a real Turn remains necessary to prove
+  model/provider execution and conditional Codex `low`/`high` verbosity support.
+  Claude SDK accepts medium verbosity only.
 
 Environment creation and management beyond the narrow read, provider selection,
 Files, Plugins, Skills, Artifacts, Vault, hosted runtimes, and Workspace lifecycle

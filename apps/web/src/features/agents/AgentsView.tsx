@@ -10,6 +10,7 @@ import { AgentDialog } from "./AgentDialog";
 import { AgentForm } from "./AgentForm";
 import { AgentSetupView } from "./AgentSetupView";
 import { createRequestGate } from "./agent-form";
+import { knownSessionAdmissionBlocker } from "./session-admission";
 
 interface AgentsViewProps {
   agents: SavedAgent[];
@@ -67,7 +68,41 @@ function StructuredValue({ value }: { value: unknown }) {
   return <pre className="agent-structured-value">{JSON.stringify(value, null, 2)}</pre>;
 }
 
+function AgentSessionStartAction({
+  agent,
+  busy,
+  onStart,
+}: {
+  agent: SavedAgent;
+  busy: boolean;
+  onStart: (agentId: string) => void;
+}) {
+  const blocker = knownSessionAdmissionBlocker(agent);
+  const descriptionId = `start-session-${agent.id}`;
+  return (
+    <span className="action-tooltip">
+      <button
+        className="icon-button ghost agent-session-start"
+        type="button"
+        onClick={() => {
+          if (!blocker) onStart(agent.id);
+        }}
+        disabled={busy}
+        aria-disabled={blocker ? true : undefined}
+        aria-label={`Start a Session with ${agent.name || "this Agent"}`}
+        aria-describedby={descriptionId}
+      >
+        <MessageSquare size={14} strokeWidth={1.5} />
+      </button>
+      <span className="action-tooltip-content" role="tooltip" id={descriptionId}>
+        {blocker ? `Session unavailable: ${blocker}` : "Start Session"}
+      </span>
+    </span>
+  );
+}
+
 export function AgentDetails({ agent }: { agent: SavedAgent }) {
+  const blocker = knownSessionAdmissionBlocker(agent);
   return (
     <div className="agent-details">
       <div className="agent-detail-summary">
@@ -82,7 +117,9 @@ export function AgentDetails({ agent }: { agent: SavedAgent }) {
         </dl>
       </div>
       <div className="agent-capability-warning" role="note">
-        Saved advanced configuration is capability information only. It does not prove the current executor supports or can run tools, multi-agent, MCP, web search, plugins, reasoning, text, or service-tier settings.
+        {blocker
+          ? `This Agent can be saved, but the known Core Session profile cannot start it: ${blocker}`
+          : "Saved advanced configuration is not runtime proof. Model, provider, host, tools, and conditional verbosity still require executor validation."}
       </div>
       <section className="agent-capabilities" aria-labelledby="agent-capabilities-title">
         <h3 id="agent-capabilities-title">Advanced configuration · read only</h3>
@@ -351,19 +388,7 @@ export function AgentsView({
                 <span className="ledger-number" role="cell">{agent.tools.length}</span>
                 <span className="ledger-age" role="cell">{formatShortDate(agent.updated_at)}</span>
                 <span className="ledger-actions" role="cell">
-                  <span className="action-tooltip">
-                    <button
-                      className="icon-button ghost"
-                      type="button"
-                      onClick={() => startSession(agent.id)}
-                      disabled={busy}
-                      aria-label={`Start a Session with ${agent.name || "this Agent"}`}
-                      aria-describedby={`start-session-${agent.id}`}
-                    >
-                      <MessageSquare size={14} strokeWidth={1.5} />
-                    </button>
-                    <span className="action-tooltip-content" role="tooltip" id={`start-session-${agent.id}`}>Start Session</span>
-                  </span>
+                  <AgentSessionStartAction agent={agent} busy={busy} onStart={startSession} />
                 </span>
               </div>
             ))}

@@ -15,11 +15,23 @@ describe("Agent request preview", () => {
     expect(preview.curl).toContain(previewTokenPlaceholder);
     expect(preview.curl).toContain("@agent.json");
     expect(preview.curl).not.toContain("live-caller-secret");
-    expect(JSON.parse(preview.json)).toMatchObject({
+    const body = JSON.parse(preview.json);
+    expect(body).toMatchObject({
       model: "provider/model",
-      reasoning: { effort: "medium", summary: "auto" },
+      service_tier: "auto",
       text: { format: { type: "text" }, verbosity: "medium" },
     });
+    expect(body).not.toHaveProperty("reasoning");
+  });
+
+  it("shows an explicitly saved-only value instead of silently deleting it", () => {
+    const preview = buildAgentRequestPreview({
+      ...valuesFromAgent(),
+      model: "provider/model",
+      reasoningEffort: "high",
+    }, "/v1");
+
+    expect(JSON.parse(preview.json)).toMatchObject({ reasoning: { effort: "high" } });
   });
 
   it("does not echo unsafe URL credentials or query values", () => {

@@ -1,9 +1,11 @@
+import { Bot, Boxes, MessageSquare, type LucideIcon } from "lucide-react";
+
 export type ProductView = "agents" | "environments" | "sessions";
 
-const productViews: Array<{ id: ProductView; label: string }> = [
-  { id: "agents", label: "Agents" },
-  { id: "environments", label: "Environments" },
-  { id: "sessions", label: "Sessions" },
+const productViews: Array<{ id: ProductView; label: string; icon: LucideIcon }> = [
+  { id: "agents", label: "Agents", icon: Bot },
+  { id: "environments", label: "Environments", icon: Boxes },
+  { id: "sessions", label: "Sessions", icon: MessageSquare },
 ];
 
 export function ProductNavigation({
@@ -14,18 +16,24 @@ export function ProductNavigation({
   onSelect: (view: ProductView) => void;
 }) {
   return (
-    <nav className="product-navigation" aria-label="Agents product">
-      {productViews.map((item) => (
-        <button
-          type="button"
-          className={active === item.id ? "active" : ""}
-          key={item.id}
-          onClick={() => onSelect(item.id)}
-          aria-current={active === item.id ? "page" : undefined}
-        >
-          {item.label}
-        </button>
-      ))}
+    <nav className="main-nav product-navigation" aria-label="Agents product">
+      <p className="nav-label">Workspace</p>
+      {productViews.map((item) => {
+        const Icon = item.icon;
+        return (
+          <button
+            type="button"
+            className={active === item.id ? "active" : ""}
+            key={item.id}
+            onClick={() => onSelect(item.id)}
+            aria-label={item.label}
+            aria-current={active === item.id ? "page" : undefined}
+          >
+            <Icon size={15} strokeWidth={1.5} aria-hidden="true" />
+            <span>{item.label}</span>
+          </button>
+        );
+      })}
     </nav>
   );
 }

@@ -39,7 +39,7 @@ export function CreateMenuContent({
         <MessageSquare size={16} strokeWidth={1.5} aria-hidden="true" />
         <span>
           <strong>Start Session</strong>
-          <small>{canStartSession ? "Choose a saved Agent" : "Requires a loaded saved Agent"}</small>
+          <small>{canStartSession ? "Choose a Session-compatible saved Agent" : "Requires a loaded Session-compatible Agent"}</small>
         </span>
       </button>
     </div>

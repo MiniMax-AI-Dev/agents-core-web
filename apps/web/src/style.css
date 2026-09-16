@@ -3745,8 +3745,8 @@ button.trace-step-row:hover {
   color: var(--fg-muted);
 }
 
-/* Product navigation and global creation keep OpenAI's clear information
-   architecture inside Parsar's existing Issue Ledger visual system. */
+/* Sidebar product navigation and global creation keep OpenAI's clear
+   information architecture inside Parsar's Issue Ledger visual system. */
 
 .product-header {
   position: relative;
@@ -3761,43 +3761,10 @@ button.trace-step-row:hover {
   border-bottom: 1px solid var(--line);
 }
 
-.product-navigation {
-  display: flex;
-  min-width: 0;
-  align-self: stretch;
-  align-items: flex-end;
-  gap: 22px;
-  overflow-x: auto;
+.product-navigation + .main-nav {
+  margin-top: 4px;
 }
 
-.product-navigation button {
-  position: relative;
-  height: 38px;
-  flex: 0 0 auto;
-  padding: 0 1px;
-  color: var(--fg-muted);
-  font-size: 14px;
-  background: transparent;
-  border: 0;
-}
-
-.product-navigation button:hover,
-.product-navigation button.active {
-  color: var(--fg);
-}
-
-.product-navigation button.active::after {
-  position: absolute;
-  right: 0;
-  bottom: -1px;
-  left: 0;
-  height: 2px;
-  content: "";
-  background: var(--fg);
-  border-radius: 2px 2px 0 0;
-}
-
-.product-navigation button:focus-visible,
 .create-menu [role="menuitem"]:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
   outline-offset: 2px;
@@ -4045,6 +4012,16 @@ button.trace-step-row:hover {
 .agent-start-session {
   margin-left: auto;
   gap: 6px;
+}
+
+.agent-session-start[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.session-create-trigger[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .agent-created-notice {
@@ -4413,15 +4390,6 @@ button.trace-step-row:hover {
     flex-basis: 48px;
     padding: 0 10px;
     gap: 8px;
-  }
-
-  .product-navigation {
-    gap: 14px;
-  }
-
-  .product-navigation button {
-    height: 34px;
-    font-size: 12px;
   }
 
   .create-menu {

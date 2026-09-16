@@ -41,8 +41,10 @@ export function AgentForm({ agent, disabled = false, formId, knownModels, onDraf
   const [serviceTier, setServiceTier] = useState(initial.serviceTier);
   const [textFormat] = useState(initial.textFormat);
   const [textVerbosity, setTextVerbosity] = useState(initial.textVerbosity);
+  const [configurationError, setConfigurationError] = useState<string | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
   const [metadataError, setMetadataError] = useState<string | null>(null);
+  const [nameError, setNameError] = useState<string | null>(null);
   const model = modelChoice === CUSTOM_MODEL_OPTION ? customModel : modelIdFromOption(modelChoice) ?? "";
 
   useEffect(() => {
@@ -77,8 +79,10 @@ export function AgentForm({ agent, disabled = false, formId, knownModels, onDraf
       textFormat,
       textVerbosity,
     }, agent ? "update" : "create");
+    setConfigurationError(result.configurationError ?? null);
     setModelError(result.modelError ?? null);
     setMetadataError(result.metadataError ?? null);
+    setNameError(result.nameError ?? null);
     if (!result.input) return;
     await onSubmit(result.input);
   };
@@ -91,10 +95,17 @@ export function AgentForm({ agent, disabled = false, formId, knownModels, onDraf
         <input
           ref={nameRef}
           value={name}
-          onChange={(event) => setName(event.target.value)}
+          onChange={(event) => {
+            setName(event.target.value);
+            if (nameError) setNameError(null);
+          }}
           placeholder="Repository builder"
           data-agent-initial-focus="true"
+          aria-describedby={`${formId}-name-help${nameError ? ` ${formId}-name-error` : ""}`}
+          aria-invalid={Boolean(nameError)}
         />
+        <small id={`${formId}-name-help`}>Optional. Agent Core accepts at most 128 Unicode characters.</small>
+        {nameError ? <small className="field-error" id={`${formId}-name-error`} role="alert">{nameError}</small> : null}
       </label>
       <label className="field">
         <span>Instructions</span>
@@ -172,12 +183,17 @@ export function AgentForm({ agent, disabled = false, formId, knownModels, onDraf
               aria-describedby={`${formId}-text-format-help`}
             />
             <small id={`${formId}-text-format-help`}>
-              Displayed from the Agent contract. This Web preserves JSON schemas but does not edit them yet.
+              Current Web-created Sessions use text. Existing JSON schemas are preserved read-only and block Session start.
             </small>
           </label>
           <label className="field">
             <span>Reasoning effort</span>
-            <select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value as typeof reasoningEffort)}>
+            <select
+              value={reasoningEffort}
+              onChange={(event) => setReasoningEffort(event.target.value as typeof reasoningEffort)}
+              aria-describedby={`${formId}-generation-profile-help`}
+              disabled={!agent}
+            >
               <option value="">Core default</option>
               {(["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const).map((value) => (
                 <option value={value} key={value}>{value}</option>
@@ -186,7 +202,12 @@ export function AgentForm({ agent, disabled = false, formId, knownModels, onDraf
           </label>
           <label className="field">
             <span>Text verbosity</span>
-            <select value={textVerbosity} onChange={(event) => setTextVerbosity(event.target.value as typeof textVerbosity)}>
+            <select
+              value={textVerbosity}
+              onChange={(event) => setTextVerbosity(event.target.value as typeof textVerbosity)}
+              aria-describedby={`${formId}-generation-profile-help`}
+              disabled={!agent}
+            >
               {(["low", "medium", "high"] as const).map((value) => (
                 <option value={value} key={value}>{value}</option>
               ))}
@@ -194,7 +215,12 @@ export function AgentForm({ agent, disabled = false, formId, knownModels, onDraf
           </label>
           <label className="field">
             <span>Reasoning summary</span>
-            <select value={reasoningSummary} onChange={(event) => setReasoningSummary(event.target.value as typeof reasoningSummary)}>
+            <select
+              value={reasoningSummary}
+              onChange={(event) => setReasoningSummary(event.target.value as typeof reasoningSummary)}
+              aria-describedby={`${formId}-generation-profile-help`}
+              disabled={!agent}
+            >
               <option value="">Core default</option>
               {(["concise", "detailed", "auto"] as const).map((value) => (
                 <option value={value} key={value}>{value}</option>
@@ -203,29 +229,38 @@ export function AgentForm({ agent, disabled = false, formId, knownModels, onDraf
           </label>
           <label className="field">
             <span>Service tier</span>
-            <select value={serviceTier} onChange={(event) => setServiceTier(event.target.value as typeof serviceTier)}>
+            <select
+              value={serviceTier}
+              onChange={(event) => setServiceTier(event.target.value as typeof serviceTier)}
+              aria-describedby={`${formId}-generation-profile-help`}
+              disabled={!agent}
+            >
               {(["auto", "default", "flex", "priority", "fast"] as const).map((value) => (
                 <option value={value} key={value}>{value}</option>
               ))}
             </select>
           </label>
         </div>
-        <p className="agent-form-capability-note">
-          These fields are saved by Agent Core. The connected executor, model, and provider may support a narrower set; the first real Turn remains authoritative.
+        <p className="agent-form-capability-note" id={`${formId}-generation-profile-help`}>
+          New Agents use the current cross-engine Session profile: implicit reasoning, medium verbosity, service tier auto, and text format. Existing saved-only values remain visible; reasoning, verbosity, and tier stay editable, while known incompatible settings block Session start. Model and provider compatibility still require a real Turn.
         </p>
+        {configurationError ? <p className="field-error" role="alert">{configurationError}</p> : null}
       </section>
       <label className="field">
         <span>Metadata</span>
         <textarea
           className="agent-metadata-input"
           value={metadata}
-          onChange={(event) => setMetadata(event.target.value)}
+          onChange={(event) => {
+            setMetadata(event.target.value);
+            if (metadataError) setMetadataError(null);
+          }}
           rows={5}
           spellCheck={false}
           aria-describedby={`${formId}-metadata-help${metadataError ? ` ${formId}-metadata-error` : ""}`}
           aria-invalid={Boolean(metadataError)}
         />
-        <small id={`${formId}-metadata-help`}>JSON object with string values only. Never store secrets in Agent metadata.</small>
+        <small id={`${formId}-metadata-help`}>JSON object with at most 16 string pairs; keys are limited to 64 characters and values to 512. Never store secrets in Agent metadata.</small>
         {metadataError ? <small className="field-error" id={`${formId}-metadata-error`} role="alert">{metadataError}</small> : null}
       </label>
       </fieldset>
