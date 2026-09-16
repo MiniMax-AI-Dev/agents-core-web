@@ -134,7 +134,10 @@ handlers are not Web-supported merely because they exist upstream.
 ## Session metadata and deletion
 
 - The Session action surface retrieves the latest durable Session when it opens and
-  again immediately before an update. `metadata.title` supplies the optional display
+  again immediately before an update. Every action read must return a complete
+  canonical Session with the exact requested ID; a wrong-ID or malformed HTTP 200
+  response leaves the current view/draft unchanged and cannot authorize a write or
+  unlock an uncertain deletion retry. `metadata.title` supplies the optional display
   title; the remaining arbitrary metadata values must be strings. The Web enforces
   Parsar's pinned limit of 16 pairs, 64 Unicode characters per key, and 512 per value,
   and explicitly warns that metadata must never contain credentials or secrets.

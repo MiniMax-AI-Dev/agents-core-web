@@ -116,7 +116,7 @@ function metadataEquals(left: Record<string, string>, right: Record<string, stri
   return [...keys].every((key) => metadataValueEquals(left, right, key));
 }
 
-function isSessionUpdateConfirmation(value: unknown, sessionId: string): value is AgentSession {
+function isCanonicalSession(value: unknown, sessionId: string): value is AgentSession {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const session = value as Partial<AgentSession>;
   const metadata = session.metadata;
@@ -135,6 +135,17 @@ function isSessionUpdateConfirmation(value: unknown, sessionId: string): value i
     (session.usage === null || Boolean(session.usage) && typeof session.usage === "object") &&
     typeof session.created_at === "number" && Number.isFinite(session.created_at) &&
     typeof session.last_active_at === "number" && Number.isFinite(session.last_active_at);
+}
+
+async function retrieveCanonicalSession(core: AgentCore, sessionId: string): Promise<AgentSession> {
+  const session: unknown = await core.retrieveSession(sessionId);
+  if (!isCanonicalSession(session, sessionId)) {
+    throw new SessionActionError(
+      "Agent Core returned an invalid Session retrieval response. The Web kept its current durable view and did not send a write.",
+      "request_failed",
+    );
+  }
+  return session;
 }
 
 export function mergeSessionMetadata(
@@ -241,7 +252,7 @@ function normalizeSessionActionError(
 }
 
 export function requestSessionDetail(core: AgentCore, sessionId: string): Promise<AgentSession> {
-  return core.retrieveSession(sessionId);
+  return retrieveCanonicalSession(core, sessionId);
 }
 
 export async function requestSessionUpdate(
@@ -252,7 +263,7 @@ export async function requestSessionUpdate(
 ): Promise<AgentSession> {
   let latest: AgentSession;
   try {
-    latest = await core.retrieveSession(sessionId);
+    latest = await retrieveCanonicalSession(core, sessionId);
   } catch (error) {
     throw normalizeSessionActionError(error, "update", "read");
   }
@@ -268,7 +279,7 @@ export async function requestSessionUpdate(
   }
   try {
     const updated: unknown = await core.updateSession(sessionId, metadata);
-    if (!isSessionUpdateConfirmation(updated, sessionId) || !metadataEquals(updated.metadata, metadata)) {
+    if (!isCanonicalSession(updated, sessionId) || !metadataEquals(updated.metadata, metadata)) {
       throw new SessionActionError(
         "Agent Core returned an invalid Session update confirmation. The write result is unknown; the Web kept its current durable view and did not retry.",
         "unknown_write",
@@ -305,7 +316,7 @@ export async function reconcileUnknownSessionDelete(
   sessionId: string,
 ): Promise<SessionDeleteReconciliation> {
   try {
-    return { state: "present", session: await core.retrieveSession(sessionId) };
+    return { state: "present", session: await retrieveCanonicalSession(core, sessionId) };
   } catch (error) {
     if (error instanceof AgentCoreError && error.status === 404) return { state: "missing" };
     return { state: "unknown", error };

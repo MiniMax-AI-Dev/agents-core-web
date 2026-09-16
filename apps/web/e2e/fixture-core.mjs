@@ -116,6 +116,7 @@ function initialState() {
       streamCloseDelayMs: 30,
       sessionRetrieveDelayMs: 0,
       sessionRetrieveStatus: 200,
+      sessionRetrieveVariant: "valid",
       sessionUpdateDelayMs: 0,
       sessionUpdateStatus: 200,
       sessionUpdateResponseLoss: 0,
@@ -422,10 +423,17 @@ const server = http.createServer(async (request, response) => {
         trackAbort(response, "sessionReads");
         const delayMs = state.controls.sessionRetrieveDelayMs;
         const status = state.controls.sessionRetrieveStatus;
+        const variant = state.controls.sessionRetrieveVariant;
         state.controls.sessionRetrieveDelayMs = 0;
         state.controls.sessionRetrieveStatus = 200;
+        state.controls.sessionRetrieveVariant = "valid";
+        const retrievedSession = variant === "wrong_id"
+          ? { ...session, id: "another_session" }
+          : variant === "malformed"
+            ? { id, object: "agent.session", metadata: session.metadata }
+            : session;
         if (delayMs && status === 200) {
-          const payload = JSON.stringify(session);
+          const payload = JSON.stringify(retrievedSession);
           response.writeHead(200, {
             "content-type": "application/json; charset=utf-8",
             "content-length": Buffer.byteLength(payload) + 1,
@@ -440,7 +448,7 @@ const server = http.createServer(async (request, response) => {
         if (delayMs) await wait(delayMs);
         if (response.destroyed) return;
         if (status !== 200) return sendError(response, status, "Fixture Session retrieve failed.");
-        return sendJson(response, session);
+        return sendJson(response, retrievedSession);
       }
 
       if (request.method === "POST") {

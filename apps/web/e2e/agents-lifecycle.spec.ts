@@ -474,6 +474,46 @@ test("preserves and safely rebases a Session metadata draft after a same-key con
   });
 });
 
+test("rejects wrong-id and malformed Session reads before writes or delete retries", async ({ page, request }) => {
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+
+  await controlFixture(request, { sessionRetrieveVariant: "wrong_id" });
+  await page.locator(".conversation-session-action").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("alert")).toContainText("invalid Session retrieval response");
+  await expect(dialog).toContainText("session_snapshot");
+  await expect(dialog).not.toContainText("another_session");
+
+  await dialog.getByRole("button", { name: "Edit", exact: true }).click();
+  await dialog.getByLabel("Session title", { exact: true }).fill("Draft stays local");
+  await controlFixture(request, { sessionRetrieveVariant: "malformed" });
+  const writesBefore = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions/session_snapshot"
+  )).length;
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("invalid Session retrieval response");
+  await expect(dialog.getByLabel("Session title", { exact: true })).toHaveValue("Draft stays local");
+  expect((await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions/session_snapshot"
+  ))).toHaveLength(writesBefore);
+
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(dialog).toContainText("Exact Session: session_snapshot");
+  await controlFixture(request, {
+    sessionDeleteResponseLoss: 2,
+    sessionRetrieveVariant: "wrong_id",
+  });
+  const deletesBefore = (await fixtureRequests(request)).filter((entry) => entry.method === "DELETE").length;
+  await dialog.getByRole("button", { name: "Delete Session" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("follow-up durable Session refresh also failed");
+  await expect(dialog.getByRole("button", { name: "Delete Session" })).toBeDisabled();
+  expect((await fixtureRequests(request)).filter((entry) => entry.method === "DELETE"))
+    .toHaveLength(deletesBefore + 1);
+});
+
 test("requires confirmation and reconciles unknown Session deletes once without retrying the write", async ({ page, request }) => {
   await resetFixture(request);
   await page.goto("/");

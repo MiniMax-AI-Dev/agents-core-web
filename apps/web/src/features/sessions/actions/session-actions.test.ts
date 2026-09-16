@@ -10,6 +10,7 @@ import {
   mergeSessionMetadata,
   reconcileUnknownSessionDelete,
   requestSessionDelete,
+  requestSessionDetail,
   requestSessionUpdate,
   rebaseSessionMetadataDraft,
   replaceSessionMetadata,
@@ -79,6 +80,19 @@ describe("Session metadata form", () => {
 });
 
 describe("Session metadata reconciliation", () => {
+  it("rejects wrong-id and malformed Session detail responses", async () => {
+    for (const invalid of [
+      session("another-session"),
+      { id: "session-1", object: "agent.session", metadata: {} },
+    ]) {
+      const core = { retrieveSession: vi.fn().mockResolvedValue(invalid) } as unknown as AgentCore;
+      await expect(requestSessionDetail(core, "session-1")).rejects.toMatchObject({
+        kind: "request_failed",
+        message: expect.stringContaining("invalid Session retrieval response"),
+      });
+    }
+  });
+
   it("applies only user changes to the latest whole-map replacement", () => {
     expect(mergeSessionMetadata(
       { title: "Old", team: "web", remove: "yes" },
@@ -135,6 +149,22 @@ describe("Session metadata reconciliation", () => {
 
     await expect(requestSessionUpdate(core, "session-1", {}, { title: "Draft" }))
       .rejects.toMatchObject({ kind: "core_unavailable" });
+    expect(updateSession).not.toHaveBeenCalled();
+  });
+
+  it("does not write when the latest Session response has the wrong identity or shape", async () => {
+    const updateSession = vi.fn();
+    for (const invalid of [
+      session("another-session"),
+      { id: "session-1", object: "agent.session", metadata: {} },
+    ]) {
+      const core = {
+        retrieveSession: vi.fn().mockResolvedValue(invalid),
+        updateSession,
+      } as unknown as AgentCore;
+      await expect(requestSessionUpdate(core, "session-1", {}, { title: "Draft" }))
+        .rejects.toMatchObject({ kind: "request_failed" });
+    }
     expect(updateSession).not.toHaveBeenCalled();
   });
 
@@ -205,6 +235,8 @@ describe("Session deletion", () => {
   it("reconciles an unknown delete once without resending it", async () => {
     const retrieveSession = vi.fn()
       .mockResolvedValueOnce(session("session-1"))
+      .mockResolvedValueOnce(session("another-session"))
+      .mockResolvedValueOnce({ id: "session-1", object: "agent.session", metadata: {} })
       .mockRejectedValueOnce(new AgentCoreError("missing", 404))
       .mockRejectedValueOnce(new AgentCoreError("unavailable", 503));
     const core = { retrieveSession } as unknown as AgentCore;
@@ -213,12 +245,18 @@ describe("Session deletion", () => {
       state: "present",
       session: { id: "session-1" },
     });
+    for (let index = 0; index < 2; index += 1) {
+      await expect(reconcileUnknownSessionDelete(core, "session-1")).resolves.toMatchObject({
+        state: "unknown",
+        error: { kind: "request_failed" },
+      });
+    }
     await expect(reconcileUnknownSessionDelete(core, "session-1")).resolves.toEqual({ state: "missing" });
     await expect(reconcileUnknownSessionDelete(core, "session-1")).resolves.toMatchObject({
       state: "unknown",
       error: { status: 503 },
     });
-    expect(retrieveSession).toHaveBeenCalledTimes(3);
+    expect(retrieveSession).toHaveBeenCalledTimes(5);
   });
 
   it("selects next, then previous, then empty while leaving non-selected selection untouched", () => {
