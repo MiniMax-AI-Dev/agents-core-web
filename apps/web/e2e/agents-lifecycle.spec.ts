@@ -474,7 +474,7 @@ test("preserves and safely rebases a Session metadata draft after a same-key con
   });
 });
 
-test("rejects wrong-id and malformed Session reads before writes or delete retries", async ({ page, request }) => {
+test("rejects wrong-id and deep-malformed Session reads before writes or delete retries", async ({ page, request }) => {
   await resetFixture(request);
   await page.goto("/");
   await expect(page.getByText("listening", { exact: true })).toBeVisible();
@@ -488,7 +488,7 @@ test("rejects wrong-id and malformed Session reads before writes or delete retri
 
   await dialog.getByRole("button", { name: "Edit", exact: true }).click();
   await dialog.getByLabel("Session title", { exact: true }).fill("Draft stays local");
-  await controlFixture(request, { sessionRetrieveVariant: "malformed" });
+  await controlFixture(request, { sessionRetrieveVariant: "deep_malformed" });
   const writesBefore = (await fixtureRequests(request)).filter((entry) => (
     entry.method === "POST" && entry.path === "/v1/agents/sessions/session_snapshot"
   )).length;
@@ -504,7 +504,7 @@ test("rejects wrong-id and malformed Session reads before writes or delete retri
   await expect(dialog).toContainText("Exact Session: session_snapshot");
   await controlFixture(request, {
     sessionDeleteResponseLoss: 2,
-    sessionRetrieveVariant: "wrong_id",
+    sessionRetrieveVariant: "deep_malformed",
   });
   const deletesBefore = (await fixtureRequests(request)).filter((entry) => entry.method === "DELETE").length;
   await dialog.getByRole("button", { name: "Delete Session" }).click();

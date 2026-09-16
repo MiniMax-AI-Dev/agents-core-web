@@ -116,25 +116,113 @@ function metadataEquals(left: Record<string, string>, right: Record<string, stri
   return [...keys].every((key) => metadataValueEquals(left, right, key));
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isFiniteNonNegativeNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+
+const reasoningEfforts = new Set<string>(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const reasoningSummaries = new Set<string>(["concise", "detailed", "auto"]);
+const serviceTiers = new Set<string>(["auto", "default", "flex", "priority", "fast"]);
+const textVerbosities = new Set<string>(["low", "medium", "high"]);
+const sessionStatuses = new Set<string>(["idle", "in_progress", "requires_action", "failed"]);
+
+function isAgentReasoning(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (!Object.hasOwn(value, "effort") || value.effort === null || (
+    typeof value.effort === "string" && reasoningEfforts.has(value.effort)
+  )) && (!Object.hasOwn(value, "summary") || value.summary === null || (
+    typeof value.summary === "string" && reasoningSummaries.has(value.summary)
+  ));
+}
+
+function isAgentText(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    typeof value.verbosity !== "string" ||
+    !textVerbosities.has(value.verbosity) ||
+    !isRecord(value.format)
+  ) return false;
+  if (value.format.type === "text") return true;
+  return value.format.type === "json_schema" && isRecord(value.format.schema);
+}
+
+function isAgentSnapshot(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value.multi_agent)) return false;
+  const maxSubagents = value.multi_agent.max_concurrent_subagents;
+  return isNonEmptyString(value.id) &&
+    isNonEmptyString(value.model) &&
+    isNullableString(value.name) &&
+    isNullableString(value.instructions) &&
+    typeof value.multi_agent.enabled === "boolean" &&
+    (maxSubagents === null || isFiniteNonNegativeNumber(maxSubagents)) &&
+    isAgentReasoning(value.reasoning) &&
+    typeof value.service_tier === "string" && serviceTiers.has(value.service_tier) &&
+    isAgentText(value.text) &&
+    Array.isArray(value.tools);
+}
+
+function isAgentEnvironment(value: unknown): boolean {
+  if (!isRecord(value) || !isNonEmptyString(value.type)) return false;
+  if (value.type === "none") return true;
+  if (value.type !== "self_hosted") return true;
+  return isNonEmptyString(value.id) &&
+    typeof value.remote_url === "string" &&
+    typeof value.workspace_directory === "string" &&
+    Array.isArray(value.capability_directories) &&
+    value.capability_directories.every((directory) => typeof directory === "string");
+}
+
+function isRequiredAction(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.type === "environment_connection") return isNonEmptyString(value.environment_id);
+  if (value.type !== "function_call") return false;
+  return isNonEmptyString(value.call_id) &&
+    isNonEmptyString(value.turn_id) &&
+    isNonEmptyString(value.name) &&
+    Object.hasOwn(value, "arguments");
+}
+
+function isTokenUsage(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value.input_tokens_details) || !isRecord(value.output_tokens_details)) {
+    return false;
+  }
+  return isFiniteNonNegativeNumber(value.input_tokens) &&
+    isFiniteNonNegativeNumber(value.output_tokens) &&
+    isFiniteNonNegativeNumber(value.total_tokens) &&
+    isFiniteNonNegativeNumber(value.input_tokens_details.cached_tokens) &&
+    isFiniteNonNegativeNumber(value.output_tokens_details.reasoning_tokens);
+}
+
 function isCanonicalSession(value: unknown, sessionId: string): value is AgentSession {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const session = value as Partial<AgentSession>;
-  const metadata = session.metadata;
-  return session.id === sessionId &&
-    session.object === "agent.session" &&
-    Boolean(session.agent) && typeof session.agent === "object" &&
-    typeof session.agent.model === "string" &&
-    Boolean(session.environment) && typeof session.environment === "object" &&
-    typeof session.environment.type === "string" &&
-    ["idle", "in_progress", "requires_action", "failed"].includes(String(session.status)) &&
-    (session.error === null || typeof session.error === "string") &&
-    Boolean(metadata) && typeof metadata === "object" && !Array.isArray(metadata) &&
-    Object.values(metadata).every((entry) => typeof entry === "string") &&
-    Array.isArray(session.required_actions) &&
-    Array.isArray(session.vault_ids) && session.vault_ids.every((entry) => typeof entry === "string") &&
-    (session.usage === null || Boolean(session.usage) && typeof session.usage === "object") &&
-    typeof session.created_at === "number" && Number.isFinite(session.created_at) &&
-    typeof session.last_active_at === "number" && Number.isFinite(session.last_active_at);
+  if (!isRecord(value)) return false;
+  return value.id === sessionId &&
+    value.object === "agent.session" &&
+    isAgentSnapshot(value.agent) &&
+    isAgentEnvironment(value.environment) &&
+    typeof value.status === "string" && sessionStatuses.has(value.status) &&
+    isNullableString(value.error) &&
+    isStringRecord(value.metadata) &&
+    Array.isArray(value.required_actions) && value.required_actions.every(isRequiredAction) &&
+    Array.isArray(value.vault_ids) && value.vault_ids.every((entry) => typeof entry === "string") &&
+    (value.usage === null || isTokenUsage(value.usage)) &&
+    typeof value.created_at === "number" && Number.isFinite(value.created_at) &&
+    typeof value.last_active_at === "number" && Number.isFinite(value.last_active_at);
 }
 
 async function retrieveCanonicalSession(core: AgentCore, sessionId: string): Promise<AgentSession> {

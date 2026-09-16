@@ -431,7 +431,9 @@ const server = http.createServer(async (request, response) => {
           ? { ...session, id: "another_session" }
           : variant === "malformed"
             ? { id, object: "agent.session", metadata: session.metadata }
-            : session;
+            : variant === "deep_malformed"
+              ? { ...session, agent: { model: session.agent.model } }
+              : session;
         if (delayMs && status === 200) {
           const payload = JSON.stringify(retrievedSession);
           response.writeHead(200, {

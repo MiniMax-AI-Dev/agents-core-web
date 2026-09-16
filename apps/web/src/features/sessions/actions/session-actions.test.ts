@@ -48,6 +48,18 @@ function session(id: string, metadata: Record<string, string> = {}): AgentSessio
   };
 }
 
+function deepMalformedSessions(id: string): unknown[] {
+  const valid = session(id);
+  return [
+    { ...valid, agent: { model: valid.agent.model } },
+    { ...valid, agent: { ...valid.agent, service_tier: "unbounded" } },
+    { ...valid, environment: { type: "self_hosted", id: "environment-1", remote_url: "https://executor.test", workspace_directory: "/workspace" } },
+    { ...valid, required_actions: [{}] },
+    { ...valid, required_actions: [{ type: "function_call", call_id: "call-1", turn_id: "turn-1", name: "confirm" }] },
+    { ...valid, usage: {} },
+  ];
+}
+
 describe("Session metadata form", () => {
   it("separates title from arbitrary string metadata and removes a blank title", () => {
     const current = session("session-1", { title: "Current", team: "web" });
@@ -84,12 +96,45 @@ describe("Session metadata reconciliation", () => {
     for (const invalid of [
       session("another-session"),
       { id: "session-1", object: "agent.session", metadata: {} },
+      ...deepMalformedSessions("session-1"),
     ]) {
       const core = { retrieveSession: vi.fn().mockResolvedValue(invalid) } as unknown as AgentCore;
       await expect(requestSessionDetail(core, "session-1")).rejects.toMatchObject({
         kind: "request_failed",
         message: expect.stringContaining("invalid Session retrieval response"),
       });
+    }
+  });
+
+  it("accepts complete known variants and preserves a safe unknown Environment type", async () => {
+    const complete = {
+      ...session("session-1"),
+      environment: {
+        type: "self_hosted",
+        id: "environment-1",
+        remote_url: "https://executor.test",
+        workspace_directory: "/workspace",
+        capability_directories: ["/capabilities"],
+      },
+      required_actions: [
+        { type: "function_call", call_id: "call-1", turn_id: "turn-1", name: "confirm", arguments: { safe: true } },
+        { type: "environment_connection", environment_id: "environment-1" },
+      ],
+      usage: {
+        input_tokens: 10,
+        output_tokens: 2,
+        total_tokens: 12,
+        input_tokens_details: { cached_tokens: 3 },
+        output_tokens_details: { reasoning_tokens: 1 },
+      },
+    };
+    const unknownEnvironment = {
+      ...complete,
+      environment: { type: "future_remote", region: "test-region", contract_marker: "preserved" },
+    };
+    for (const current of [complete, unknownEnvironment]) {
+      const core = { retrieveSession: vi.fn().mockResolvedValue(current) } as unknown as AgentCore;
+      await expect(requestSessionDetail(core, "session-1")).resolves.toEqual(current);
     }
   });
 
@@ -157,6 +202,7 @@ describe("Session metadata reconciliation", () => {
     for (const invalid of [
       session("another-session"),
       { id: "session-1", object: "agent.session", metadata: {} },
+      ...deepMalformedSessions("session-1"),
     ]) {
       const core = {
         retrieveSession: vi.fn().mockResolvedValue(invalid),
@@ -257,6 +303,16 @@ describe("Session deletion", () => {
       error: { status: 503 },
     });
     expect(retrieveSession).toHaveBeenCalledTimes(5);
+  });
+
+  it("keeps exact-ID deep-malformed Session reconciliation unknown", async () => {
+    for (const invalid of deepMalformedSessions("session-1")) {
+      const core = { retrieveSession: vi.fn().mockResolvedValue(invalid) } as unknown as AgentCore;
+      await expect(reconcileUnknownSessionDelete(core, "session-1")).resolves.toMatchObject({
+        state: "unknown",
+        error: { kind: "request_failed" },
+      });
+    }
   });
 
   it("selects next, then previous, then empty while leaving non-selected selection untouched", () => {
