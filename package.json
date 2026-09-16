@@ -19,13 +19,14 @@
     "dev": "pnpm --filter @agents-core-web/web dev",
     "build": "pnpm -r --filter \"@agents-core-web/*\" --if-present build",
     "typecheck": "pnpm -r --filter \"@agents-core-web/*\" --if-present typecheck",
-    "test:root": "node --test scripts/agent-issue-intake.test.mjs",
+    "test:root": "node --test scripts/agent-issue-intake.test.mjs scripts/core-doctor.test.mjs",
     "test": "pnpm test:root && pnpm -r --filter \"@agents-core-web/*\" --if-present test",
     "test:acceptance": "playwright test",
-    "check:root": "node --check scripts/init-agent-workspace.mjs && node --check scripts/agent-issue-intake.mjs && node --check scripts/agent-issue-intake.test.mjs",
+    "check:root": "node --check scripts/init-agent-workspace.mjs && node --check scripts/agent-issue-intake.mjs && node --check scripts/agent-issue-intake.test.mjs && node --check scripts/core-doctor.mjs && node --check scripts/core-doctor.test.mjs",
     "check": "pnpm check:root && pnpm typecheck && pnpm test && pnpm build",
     "agent:workspace": "node scripts/init-agent-workspace.mjs",
-    "agent:issue:intake": "node scripts/agent-issue-intake.mjs"
+    "agent:issue:intake": "node scripts/agent-issue-intake.mjs",
+    "core:doctor": "node scripts/core-doctor.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
