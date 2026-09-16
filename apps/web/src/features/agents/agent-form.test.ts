@@ -5,6 +5,7 @@ import { createRequestGate, validateAgentForm, valuesFromAgent } from "./agent-f
 describe("Agent form contract", () => {
   it("uses explicit nulls for blank nullable fields and preserves string metadata", () => {
     const result = validateAgentForm({
+      ...valuesFromAgent(),
       model: "  provider/model  ",
       name: "   ",
       instructions: "",
@@ -17,6 +18,9 @@ describe("Agent form contract", () => {
         name: null,
         instructions: null,
         metadata: { team: "web", owner: "sam" },
+        reasoning: { effort: "medium", summary: "auto" },
+        service_tier: "auto",
+        text: { format: { type: "text" }, verbosity: "medium" },
       },
     });
   });
@@ -27,7 +31,7 @@ describe("Agent form contract", () => {
     ['{"retries":3}', "Every metadata value must be a string."],
     ['{"enabled":true}', "Every metadata value must be a string."],
   ])("rejects unsafe or unsupported metadata %s", (metadata, message) => {
-    expect(validateAgentForm({ model: "model", name: "", instructions: "", metadata })).toEqual({
+    expect(validateAgentForm({ ...valuesFromAgent(), model: "model", name: "", instructions: "", metadata })).toEqual({
       metadataError: message,
     });
   });
@@ -52,7 +56,23 @@ describe("Agent form contract", () => {
       model: "model",
       instructions: "",
       metadata: '{\n  "scope": "test"\n}',
+      reasoningEffort: "",
+      reasoningSummary: "",
+      serviceTier: "auto",
+      textFormat: { type: "text" },
+      textVerbosity: "medium",
     });
+  });
+
+  it("explicitly clears reasoning defaults during an update instead of preserving stale values", () => {
+    const result = validateAgentForm({
+      ...valuesFromAgent(),
+      model: "provider/model",
+      reasoningEffort: "",
+      reasoningSummary: "",
+    }, "update");
+
+    expect(result.input?.reasoning).toEqual({ effort: null, summary: null });
   });
 
   it("rejects an older detail response after a newer request or dialog close", () => {

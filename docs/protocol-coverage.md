@@ -7,6 +7,11 @@ OpenAI-hosted service compatibility.
 
 - Parsar Core:
   [`0438880a`](https://github.com/MiniMax-AI-Dev/parsar/commit/0438880ab21aa16d05cb91a4c7f91cc0abc12358)
+- The product-navigation and Environment-unavailable boundaries were re-audited
+  against Parsar [`c15d42a2`](https://github.com/MiniMax-AI-Dev/parsar/commit/c15d42a270c0667bcaa83a6b9d01a9892ebf7edd).
+  That revision still exposes only Environment retrieve plus Session-bound
+  `self_hosted` creation; it adds no public Environment list, template, file, or
+  browser-facing key management route.
 - Upstream resource source: `openai-python` 3.13.0 beta Agents resources at
   [`d7c41efe`](https://github.com/openai/openai-python/tree/d7c41efee1b0802b79f3f88a678ef2052b06e9ce/src/openai/resources/beta/agents)
 - Required beta header: `OpenAI-Beta: agents=v1`
@@ -27,7 +32,7 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 
 | Resource / behavior | TypeScript client | Initial UI | Notes |
 | --- | --- | --- | --- |
-| Saved Agents create/list | Yes | Yes | Model, name, instructions; many saved Agents per project |
+| Saved Agents create/list | Yes | Yes | Dedicated setup page covers model, name, instructions, metadata, read-only text-format projection, reasoning effort/summary, text verbosity, and service tier; saved settings do not prove runtime support |
 | Saved Agents retrieve/update/delete | Yes | Yes | Agent details support viewing, editing, and deleting saved Agents |
 | Sessions create/list/retrieve | Yes | Yes | UI creates idle `environment:none` Sessions; client types also cover the pinned `self_hosted` request and safe response projection |
 | Sessions update/delete | Yes | Yes | Title/string metadata editing and one-Session confirmed deletion; no bulk or Workspace deletion |
@@ -44,6 +49,9 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 | Environment connection action | Yes | Render-only | `environment_connection` is distinct from a function call; Web shows an operator-owned, non-actionable state and sends no result |
 | Environment lifecycle events | Yes | Read-only | UI projects pinned pending, ready, connected, disconnected, and failed live snapshots; unknown/malformed status events clear prior live claims and render as unavailable |
 | Environment retrieve | Yes | Yes, read-only | For a valid `self_hosted` Session Environment ID, reads the exact public resource fields and durable status; no create/list/update/delete support |
+| Environment overview | Session-derived only | Yes, read-only | Shows only `self_hosted` projections in currently loaded Sessions and their already-observed matching status; explicitly not a Core Environment catalog |
+| Environment templates | No | Explicitly unavailable | The navigation/Create surface does not simulate template reads or writes |
+| Environment keys | No public browser API | Explicitly unavailable | Operator-issued executor credentials never enter browser state or request previews |
 | Vaults | Later | No | Credentials must never be stored in browser metadata |
 | Protocol Subagents / enabled multi-agent | Later | No | Distinct from storing multiple Agent configurations |
 | Usage/observability | Response types | Yes, scoped | Session aggregate and per-Turn token Usage are labelled separately; unavailable measurements remain unknown, not zero |
@@ -51,6 +59,17 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 ## Runtime boundary
 
 - The Web currently creates only `environment: {"type":"none"}` Sessions.
+- Product navigation and the global Create menu do not widen the protocol. Agent
+  and idle Session creation call the existing client methods. Environment template
+  and Environment key entries are non-actionable unavailable states.
+- The Agent setup request preview is derived entirely from editable Agent fields and
+  the sanitized Core base URL. Its authorization header always contains the literal
+  `${AGENTS_CORE_API_KEY}` placeholder; it never reads or renders the connection's
+  server-managed or current-tab bearer.
+- The Environments overview filters the currently loaded Session collection to exact
+  `self_hosted` projections. A matching durable/live observation may annotate that
+  row, but an absent row or observation remains unknown. The view does not derive a
+  list from database state, Environment IDs, executor registrations, or operator keys.
 - Parsar Core at the pinned revision has a narrow `self_hosted` profile for empty
   Session creation followed by constrained idle text input. The Web does not create
   that profile, but it safely renders selected Sessions that already carry one. This

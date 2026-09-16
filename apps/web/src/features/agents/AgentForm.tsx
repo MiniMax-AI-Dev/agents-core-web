@@ -13,12 +13,14 @@ import { validateAgentForm, valuesFromAgent } from "./agent-form";
 
 interface AgentFormProps {
   agent?: SavedAgent;
+  disabled?: boolean;
   formId: string;
   knownModels: string[];
-  onSubmit: (input: CreateAgentInput) => Promise<void>;
+  onDraftChange?: (values: ReturnType<typeof valuesFromAgent>) => void;
+  onSubmit: (input: CreateAgentInput) => Promise<unknown>;
 }
 
-export function AgentForm({ agent, formId, knownModels, onSubmit }: AgentFormProps) {
+export function AgentForm({ agent, disabled = false, formId, knownModels, onDraftChange, onSubmit }: AgentFormProps) {
   const nameRef = useRef<HTMLInputElement>(null);
   const options = buildModelOptionGroups(
     knownModels,
@@ -34,6 +36,11 @@ export function AgentForm({ agent, formId, knownModels, onSubmit }: AgentFormPro
   const [customModel, setCustomModel] = useState(initialIsSuggested ? "" : initial.model);
   const [instructions, setInstructions] = useState(initial.instructions);
   const [metadata, setMetadata] = useState(initial.metadata);
+  const [reasoningEffort, setReasoningEffort] = useState(initial.reasoningEffort);
+  const [reasoningSummary, setReasoningSummary] = useState(initial.reasoningSummary);
+  const [serviceTier, setServiceTier] = useState(initial.serviceTier);
+  const [textFormat] = useState(initial.textFormat);
+  const [textVerbosity, setTextVerbosity] = useState(initial.textVerbosity);
   const [modelError, setModelError] = useState<string | null>(null);
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const model = modelChoice === CUSTOM_MODEL_OPTION ? customModel : modelIdFromOption(modelChoice) ?? "";
@@ -43,9 +50,33 @@ export function AgentForm({ agent, formId, knownModels, onSubmit }: AgentFormPro
     return () => window.cancelAnimationFrame(frame);
   }, []);
 
+  useEffect(() => {
+    onDraftChange?.({
+      name,
+      model,
+      instructions,
+      metadata,
+      reasoningEffort,
+      reasoningSummary,
+      serviceTier,
+      textFormat,
+      textVerbosity,
+    });
+  }, [instructions, metadata, model, name, onDraftChange, reasoningEffort, reasoningSummary, serviceTier, textFormat, textVerbosity]);
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    const result = validateAgentForm({ name, model, instructions, metadata });
+    const result = validateAgentForm({
+      name,
+      model,
+      instructions,
+      metadata,
+      reasoningEffort,
+      reasoningSummary,
+      serviceTier,
+      textFormat,
+      textVerbosity,
+    }, agent ? "update" : "create");
     setModelError(result.modelError ?? null);
     setMetadataError(result.metadataError ?? null);
     if (!result.input) return;
@@ -54,6 +85,7 @@ export function AgentForm({ agent, formId, knownModels, onSubmit }: AgentFormPro
 
   return (
     <form id={formId} className="form-stack" onSubmit={(event) => void submit(event)} noValidate>
+      <fieldset className="agent-form-fields" disabled={disabled}>
       <label className="field">
         <span>Name</span>
         <input
@@ -62,6 +94,15 @@ export function AgentForm({ agent, formId, knownModels, onSubmit }: AgentFormPro
           onChange={(event) => setName(event.target.value)}
           placeholder="Repository builder"
           data-agent-initial-focus="true"
+        />
+      </label>
+      <label className="field">
+        <span>Instructions</span>
+        <textarea
+          value={instructions}
+          onChange={(event) => setInstructions(event.target.value)}
+          placeholder="Describe how this Agent should work…"
+          rows={5}
         />
       </label>
       <div className="field">
@@ -117,15 +158,62 @@ export function AgentForm({ agent, formId, knownModels, onSubmit }: AgentFormPro
           Model choices are editable Web-side suggestions, not a discovered Core catalog. Saving <code>{model || "a model ID"}</code> does not prove the current executor can run it.
         </span>
       </div>
-      <label className="field">
-        <span>Instructions</span>
-        <textarea
-          value={instructions}
-          onChange={(event) => setInstructions(event.target.value)}
-          placeholder="Describe how this Agent should work…"
-          rows={5}
-        />
-      </label>
+      <section className="agent-form-section" aria-labelledby={`${formId}-generation-title`}>
+        <div className="agent-form-section-heading">
+          <h3 id={`${formId}-generation-title`}>Generation</h3>
+          <span>Saved configuration, not runtime discovery</span>
+        </div>
+        <div className="agent-form-grid">
+          <label className="field">
+            <span>Text format</span>
+            <input
+              value={textFormat.type === "text" ? "Text" : "JSON schema · preserved"}
+              readOnly
+              aria-describedby={`${formId}-text-format-help`}
+            />
+            <small id={`${formId}-text-format-help`}>
+              Displayed from the Agent contract. This Web preserves JSON schemas but does not edit them yet.
+            </small>
+          </label>
+          <label className="field">
+            <span>Reasoning effort</span>
+            <select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value as typeof reasoningEffort)}>
+              <option value="">Core default</option>
+              {(["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const).map((value) => (
+                <option value={value} key={value}>{value}</option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Text verbosity</span>
+            <select value={textVerbosity} onChange={(event) => setTextVerbosity(event.target.value as typeof textVerbosity)}>
+              {(["low", "medium", "high"] as const).map((value) => (
+                <option value={value} key={value}>{value}</option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Reasoning summary</span>
+            <select value={reasoningSummary} onChange={(event) => setReasoningSummary(event.target.value as typeof reasoningSummary)}>
+              <option value="">Core default</option>
+              {(["concise", "detailed", "auto"] as const).map((value) => (
+                <option value={value} key={value}>{value}</option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Service tier</span>
+            <select value={serviceTier} onChange={(event) => setServiceTier(event.target.value as typeof serviceTier)}>
+              {(["auto", "default", "flex", "priority", "fast"] as const).map((value) => (
+                <option value={value} key={value}>{value}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <p className="agent-form-capability-note">
+          These fields are saved by Agent Core. The connected executor, model, and provider may support a narrower set; the first real Turn remains authoritative.
+        </p>
+      </section>
       <label className="field">
         <span>Metadata</span>
         <textarea
@@ -140,6 +228,7 @@ export function AgentForm({ agent, formId, knownModels, onSubmit }: AgentFormPro
         <small id={`${formId}-metadata-help`}>JSON object with string values only. Never store secrets in Agent metadata.</small>
         {metadataError ? <small className="field-error" id={`${formId}-metadata-error`} role="alert">{metadataError}</small> : null}
       </label>
+      </fieldset>
     </form>
   );
 }

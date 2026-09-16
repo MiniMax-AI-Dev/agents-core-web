@@ -1,10 +1,24 @@
-import type { CreateAgentInput, SavedAgent } from "@agents-core-web/agents-client";
+import type {
+  AgentReasoningEffort,
+  AgentReasoningSummary,
+  AgentServiceTier,
+  AgentTextFormat,
+  CreateAgentInput,
+  SavedAgent,
+} from "@agents-core-web/agents-client";
+
+export type TextVerbosity = "low" | "medium" | "high";
 
 export interface AgentFormValues {
   name: string;
   model: string;
   instructions: string;
   metadata: string;
+  reasoningEffort: AgentReasoningEffort | "";
+  reasoningSummary: AgentReasoningSummary | "";
+  serviceTier: AgentServiceTier;
+  textFormat: AgentTextFormat;
+  textVerbosity: TextVerbosity;
 }
 
 export interface AgentFormValidation {
@@ -13,16 +27,26 @@ export interface AgentFormValidation {
   modelError?: string;
 }
 
+export type AgentFormIntent = "create" | "update";
+
 export function valuesFromAgent(agent?: SavedAgent): AgentFormValues {
   return {
     name: agent?.name ?? "",
     model: agent?.model ?? "",
     instructions: agent?.instructions ?? "",
     metadata: JSON.stringify(agent?.metadata ?? {}, null, 2),
+    reasoningEffort: agent ? agent.reasoning.effort ?? "" : "medium",
+    reasoningSummary: agent ? agent.reasoning.summary ?? "" : "auto",
+    serviceTier: agent?.service_tier ?? "auto",
+    textFormat: agent?.text.format ?? { type: "text" },
+    textVerbosity: agent?.text.verbosity ?? "medium",
   };
 }
 
-export function validateAgentForm(values: AgentFormValues): AgentFormValidation {
+export function validateAgentForm(
+  values: AgentFormValues,
+  intent: AgentFormIntent = "create",
+): AgentFormValidation {
   const model = values.model.trim();
   if (!model) return { modelError: "Enter a model ID." };
 
@@ -42,14 +66,30 @@ export function validateAgentForm(values: AgentFormValues): AgentFormValidation 
     return { metadataError: "Every metadata value must be a string." };
   }
 
-  return {
-    input: {
-      model,
-      name: values.name.trim() || null,
-      instructions: values.instructions.trim() || null,
-      metadata: metadata as Record<string, string>,
+  const input: CreateAgentInput = {
+    model,
+    name: values.name.trim() || null,
+    instructions: values.instructions.trim() || null,
+    metadata: metadata as Record<string, string>,
+    service_tier: values.serviceTier,
+    text: {
+      format: values.textFormat,
+      verbosity: values.textVerbosity,
     },
   };
+  if (intent === "update") {
+    input.reasoning = {
+      effort: values.reasoningEffort || null,
+      summary: values.reasoningSummary || null,
+    };
+  } else if (values.reasoningEffort || values.reasoningSummary) {
+    input.reasoning = {
+      ...(values.reasoningEffort ? { effort: values.reasoningEffort } : {}),
+      ...(values.reasoningSummary ? { summary: values.reasoningSummary } : {}),
+    };
+  }
+
+  return { input };
 }
 
 export interface RequestGate {

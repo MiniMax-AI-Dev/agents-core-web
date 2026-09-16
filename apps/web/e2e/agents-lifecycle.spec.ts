@@ -154,6 +154,8 @@ test("retrieves latest details and reuses a validated create/edit form", async (
   await name.fill("");
   await page.getByLabel("Instructions").fill("");
   await page.getByLabel("Metadata").fill('{"team":"acceptance"}');
+  await page.getByLabel("Reasoning effort").selectOption("");
+  await page.getByLabel("Reasoning summary").selectOption("");
   await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.getByRole("button", { name: "Edit" })).toBeFocused();
 
@@ -164,34 +166,57 @@ test("retrieves latest details and reuses a validated create/edit form", async (
     name: null,
     instructions: null,
     metadata: { team: "acceptance" },
+    reasoning: { effort: null, summary: null },
   });
   expect(browserErrors).toEqual([]);
 });
 
-test("supports keyboard creation, traps focus, and returns focus on Escape", async ({ page, request }) => {
+test("supports global Create keyboard navigation and consumes setup requests once", async ({ page, request }) => {
   await openAgents(page, request);
-  const trigger = page.getByRole("button", { name: "New Agent" });
-  await trigger.click();
-  await expect(page.getByLabel("Name")).toBeFocused();
-
-  const close = page.getByRole("button", { name: "Close dialog" });
-  await close.focus();
-  await page.keyboard.press("Shift+Tab");
-  await expect(page.getByRole("button", { name: "Create Agent" })).toBeFocused();
-
-  await page.getByLabel("Name").focus();
+  const createMenu = page.getByRole("button", { name: "Create", exact: true });
+  await createMenu.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("menuitem", { name: /^Agent\b/ })).toBeFocused();
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(trigger).toBeFocused();
+  await expect(createMenu).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  const createAgentItem = page.getByRole("menuitem", { name: /^Agent\b/ });
+  const startSessionItem = page.getByRole("menuitem", { name: /^Start Session\b/ });
+  await expect(createAgentItem).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(startSessionItem).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(createAgentItem).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByLabel("Name")).toBeFocused();
+  await expect(page.getByRole("heading", { name: "Request preview" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Sessions", exact: true }).click();
+  await page.getByRole("button", { name: "Agents", exact: true }).click();
+  await expect(page.getByRole("table", { name: "Agents" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "New Agent" })).toHaveCount(0);
+
   const detailTrigger = page.getByRole("button", { name: /Open details for Lifecycle Agent/ });
   await detailTrigger.focus();
   await detailTrigger.evaluate((button) => button.click());
   await expect(page.getByRole("dialog").getByRole("heading", { name: "Lifecycle Agent", exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(detailTrigger).toBeFocused();
   await expect(page.locator(".modal-backdrop")).toHaveCount(0);
 
-  await trigger.click();
+  await createMenu.click();
+  await startSessionItem.click();
+  await expect(page.getByRole("dialog", { name: "Start an idle Session" })).toBeVisible();
+  await page.getByRole("dialog", { name: "Start an idle Session" }).getByRole("button", { name: "Cancel" }).click();
+  await expect(createMenu).toBeFocused();
+  await page.getByRole("button", { name: "Agents", exact: true }).click();
+  await page.getByRole("button", { name: "Sessions", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Start an idle Session" })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Agents", exact: true }).click();
+  await createMenu.click();
+  await createAgentItem.click();
   const createMetadata = page.locator(".agent-metadata-input");
   const createName = page.locator('input[data-agent-initial-focus="true"]');
   await expect(createName).toBeFocused();
@@ -200,7 +225,20 @@ test("supports keyboard creation, traps focus, and returns focus on Escape", asy
   await expect(createName).toHaveValue("");
   await createName.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("status")).toContainText("Agent definition saved as");
+
+  await createMenu.click();
+  await createAgentItem.click();
+  await expect(page.getByLabel("Name")).toHaveValue("");
+  await expect(page.getByLabel("Name")).toBeEnabled();
+  await expect(page.getByRole("status")).toHaveCount(0);
+  await page.getByRole("button", { name: "Back to Agents" }).click();
+  await expect(createMenu).toBeFocused();
+
+  const ledgerCreate = page.getByRole("button", { name: "New Agent" });
+  await ledgerCreate.click();
+  await page.getByRole("button", { name: "Back to Agents" }).click();
+  await expect(ledgerCreate).toBeFocused();
 
   const requests = await fixtureRequests(request);
   const creates = requests.filter((entry) => entry.method === "POST" && entry.path === "/v1/agents");
@@ -317,17 +355,37 @@ test("keeps the Agent ledger and dialogs usable at 390 px in light and dark mode
   expect(metrics.ledger?.right).toBeLessThanOrEqual(390);
   await attachScreenshot(page, testInfo, "narrow-light-agent-ledger");
 
-  await page.getByRole("button", { name: "New Agent" }).click();
-  const dialog = page.getByRole("dialog");
-  const box = await dialog.boundingBox();
+  await page.getByRole("button", { name: "Environments", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Environments Observed" })).toBeVisible();
+  const sessionsNavigation = page.getByRole("button", { name: "Sessions", exact: true });
+  await sessionsNavigation.click();
+  await expect(sessionsNavigation).toHaveAttribute("aria-current", "page");
+  await expect(page.locator(".session-page")).toBeVisible();
+  await page.getByRole("button", { name: "Agents", exact: true }).click();
+
+  const globalCreate = page.getByRole("button", { name: "Create", exact: true });
+  await globalCreate.click();
+  const createPanel = page.getByRole("menu", { name: "Create" });
+  await expect(createPanel).toBeVisible();
+  const createPanelBox = await createPanel.boundingBox();
+  expect(createPanelBox).not.toBeNull();
+  expect(createPanelBox?.x ?? -1).toBeGreaterThanOrEqual(0);
+  expect((createPanelBox?.x ?? 0) + (createPanelBox?.width ?? 0)).toBeLessThanOrEqual(390);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await createPanel.getByRole("menuitem", { name: /^Agent\b/ }).click();
+  const setup = page.locator(".agent-setup-page");
+  const box = await setup.boundingBox();
   expect(box).not.toBeNull();
   expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
   expect(box?.y ?? -1).toBeGreaterThanOrEqual(0);
-  expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
-  expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(844);
-  await expect(page.getByRole("button", { name: "Create Agent" })).toBeInViewport();
-  await attachScreenshot(page, testInfo, "narrow-light-create-dialog");
-  await page.keyboard.press("Escape");
+  expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390.5);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await expect(page.getByRole("button", { name: "Save Agent definition" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Request preview" })).toBeVisible();
+  await expect(page.getByLabel("Text format")).toHaveValue("Text");
+  await attachScreenshot(page, testInfo, "narrow-light-agent-setup");
+  await page.getByRole("button", { name: "Back to Agents" }).click();
+  await expect(globalCreate).toBeFocused();
 
   await page.getByRole("button", { name: "Dark theme" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");

@@ -52,6 +52,8 @@ interface SessionsViewProps {
   busy: boolean;
   coreError: string | null;
   coreState: CoreConnectionState;
+  createRequest?: number;
+  onCreateRequestConsumed?: (request: number) => void;
   detailError: string | null;
   detailState: SessionDetailState;
   turnError?: string | null;
@@ -275,6 +277,8 @@ export function SessionsView({
   busy,
   coreError,
   coreState,
+  createRequest = 0,
+  onCreateRequestConsumed,
   detailError,
   detailState,
   turnError = null,
@@ -304,6 +308,7 @@ export function SessionsView({
   const sendingRef = useRef(false);
   const pageRef = useRef<HTMLElement>(null);
   const newSessionActionRef = useRef<HTMLButtonElement>(null);
+  const lastCreateRequestRef = useRef(0);
   const conversationActionRef = useRef<HTMLButtonElement>(null);
   const restoreFocusAfterDeleteRef = useRef(false);
   const draftsBySessionRef = useRef(new Map<string, string>());
@@ -318,6 +323,13 @@ export function SessionsView({
   useEffect(() => {
     if (!agentId && agents[0]) setAgentId(agents[0].id);
   }, [agentId, agents]);
+
+  useEffect(() => {
+    if (!createRequest || createRequest === lastCreateRequestRef.current) return;
+    lastCreateRequestRef.current = createRequest;
+    setNewSessionOpen(true);
+    onCreateRequestConsumed?.(createRequest);
+  }, [createRequest, onCreateRequestConsumed]);
 
   useEffect(() => {
     if (actionSession && !sessions.some((session) => session.id === actionSession.id)) {
