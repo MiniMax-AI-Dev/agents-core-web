@@ -28,7 +28,7 @@ export type ConnectionProbeState =
   | { status: "loading" }
   | { status: "complete"; result: CoreProbeResult };
 
-const webBaseline = "f7cdf591396529880d80f8211fc7a0f4768fdf46";
+const webBaseline = "98c5b3312ad33e1fae8b94283a011eb3e5f4ee2c";
 const parsarBaseline = "0438880ab21aa16d05cb91a4c7f91cc0abc12358";
 const operatorGuideUrl = `https://github.com/MiniMax-AI-Dev/agents-core-web/blob/${webBaseline}/docs/core-connection.md`;
 const troubleshootingUrl = `${operatorGuideUrl}#troubleshooting`;

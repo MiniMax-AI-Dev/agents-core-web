@@ -92,8 +92,13 @@ describe("Agent Core connection modes", () => {
     expect(markup).toContain("Connection guide");
     expect(markup).toContain("Troubleshooting");
     expect(markup).toContain("Parsar Core setup");
+    expect(markup).toContain("98c5b3312ad33e1fae8b94283a011eb3e5f4ee2c");
     expect(markup).toContain("0438880ab21aa16d05cb91a4c7f91cc0abc12358");
+    expect(markup).not.toContain("f7cdf591396529880d80f8211fc7a0f4768fdf46");
     expect(markup).not.toContain("8cc2898ca42b272cb3771234ee6a0ad0d2e932ba");
+    expect(markup).not.toContain("7409e00ca25311805a9f8f0d03614f820e407642");
+    expect(markup).not.toContain("6345391");
+    expect(markup).not.toContain("bac551c");
     expect(markup).not.toContain("openssl rand");
     expect(markup).not.toContain("AGENTS_API_KEYS_FILE");
     expect(markup).not.toContain("AGENTS_API_DAEMON_WS_URL");

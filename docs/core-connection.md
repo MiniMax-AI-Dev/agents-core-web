@@ -1,10 +1,11 @@
 # Connecting Agents Core Web to Agent Core
 
 > Snapshot baseline: Parsar
-> [`8cc2898ca42b272cb3771234ee6a0ad0d2e932ba`](https://github.com/MiniMax-AI-Dev/parsar/tree/8cc2898ca42b272cb3771234ee6a0ad0d2e932ba).
+> [`0438880ab21aa16d05cb91a4c7f91cc0abc12358`](https://github.com/MiniMax-AI-Dev/parsar/tree/0438880ab21aa16d05cb91a4c7f91cc0abc12358).
 > This guide describes that exact upstream snapshot. Re-check the pinned
-> [standalone service guide](https://github.com/MiniMax-AI-Dev/parsar/blob/8cc2898ca42b272cb3771234ee6a0ad0d2e932ba/services/agents-api/README.md)
-> and [contract coverage](https://github.com/MiniMax-AI-Dev/parsar/blob/8cc2898ca42b272cb3771234ee6a0ad0d2e932ba/contracts/agents-api/README.md)
+> [standalone service guide](https://github.com/MiniMax-AI-Dev/parsar/blob/0438880ab21aa16d05cb91a4c7f91cc0abc12358/services/agents-api/README.md),
+> [contract coverage](https://github.com/MiniMax-AI-Dev/parsar/blob/0438880ab21aa16d05cb91a4c7f91cc0abc12358/contracts/agents-api/README.md),
+> and [Environment contract](https://github.com/MiniMax-AI-Dev/parsar/blob/0438880ab21aa16d05cb91a4c7f91cc0abc12358/contracts/agents-api/environments.md)
 > before upgrading.
 
 Agents Core Web does not implement, copy, or embed Agent Core. It connects to the
@@ -413,11 +414,11 @@ Agent CRUD and idle Session/history operations work. Chat input intentionally re
 
 This exact response occurs before the event body is admitted, so after an intentional
 HTTP-only start it is safe to enable execution and submit the message. A timeout or
-disconnected write is different. The client never retries automatically, but the
-current UI does not retain the generated idempotency key across a manual resend.
-Refresh the durable Session and Items, and use the client's Turn reads or Core logs
-for diagnosis before deciding whether another submission is safe. A caller that
-implements a retry must explicitly reuse the original key.
+disconnected write is different. The client never retries automatically. The current
+UI retains the original payload and idempotency key in memory only for an explicit,
+byte-for-byte unchanged manual resend; editing the payload creates a new operation.
+Refresh the durable Session, Items, and Turn timeline, and use Core logs when the
+public resources are insufficient before deciding whether another submission is safe.
 
 ## Credential ownership
 
@@ -475,6 +476,23 @@ unset agent_core_token
 
 Do not enable shell tracing while handling secrets.
 
+### Read-only self-hosted Environment status
+
+At this pinned revision, an existing `self_hosted` Session exposes an Environment ID.
+Agents Core Web first retrieves the current Session and then makes one authenticated
+`GET /v1/agents/environments/{environment_id}`. The response is accepted only when it
+contains exactly `id`, `object`, `type`, `status`, `files`, `plugins`, and `skills`
+with the expected ID, `agent.environment` / `self_hosted` discriminants, a supported
+durable status, and arrays for installation metadata.
+
+Durable status is `pending`, `connected`, `disconnected`, `expired`, or `failed`.
+`ready` exists only in Session Environment SSE events. An empty installation array
+means no API-managed installations; it is not proof of an empty Workspace or host.
+A 401, 404, 5xx, network error, or malformed response makes only Environment status
+unavailable; Session history and chat remain usable, and the Web performs no write or
+automatic retry. This read does not prove executor, native runtime, model, or provider
+readiness.
+
 ### End-to-end chat
 
 In Agents Core Web:
@@ -483,9 +501,11 @@ In Agents Core Web:
 2. Create an Agent using a model known to the selected native runtime.
 3. Create an `environment:none` Session and send one text message.
 4. Confirm the events POST returns `204` and live lifecycle/output events arrive.
-5. Confirm Items contain the user and assistant messages. For independent terminal
-   Turn proof, use the client's Turn read or the corresponding authenticated API read;
-   the current UI does not yet display the durable Turn resource.
+5. Confirm Items contain the user and assistant messages, then confirm the Turn
+   timeline shows the terminal Turn snapshot, server wall-clock timestamps, and
+   reported Usage. The timeline may also advance from an exact live lifecycle event;
+   reload or use the corresponding authenticated API read for independent durable
+   proof.
 6. Reload and confirm the completed state is recovered from resource reads.
 
 A completed Turn plus durable Item readback is execution evidence. Successful Agent
@@ -570,11 +590,14 @@ those settings.
 
 SSE is live-only and does not replay missed history, including with `Last-Event-ID`.
 The current UI reconnects for future events, buffers them, then retrieves Session and
-Items and merges by stable Item ID. Turn list/retrieve methods exist in the client for
-diagnostics but are not part of the current UI recovery path. Same-ID durable/live
-terminal precedence and cross-manual-retry idempotency-key persistence remain M1
-hardening work. Inspect durable state before resending an input whose acceptance is
-uncertain.
+Items and, for a current valid `self_hosted` ID, the durable Environment. It also
+starts an independent all-pages Turn read so a slow Turn endpoint cannot delay
+conversation recovery. It applies the Session/Items/Environment snapshot before newer
+buffered events, merges Items by stable Item ID, and reconciles the eventual Turn list
+with newer exact lifecycle snapshots. Late reads/events are fenced across Core,
+Session, Environment, request/event revision, stream epoch, selection, and abort
+boundaries.
+Inspect durable state before resending an input whose acceptance is uncertain.
 
 ## Stop safely
 
