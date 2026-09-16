@@ -110,7 +110,8 @@ describe("Agent Core connection modes", () => {
     expect(markup).toContain("Test connection");
     expect(markup).toContain("with one GET");
     expect(markup).toContain("never creates an Agent, Session, Turn, or Item");
-    expect(markup).toContain("Execution readiness remains Unknown / not verified");
+    expect(markup).toContain("Execution compatibility remains Unknown / not publicly proven");
+    expect(markup).toContain("Turn-driving writes stay disabled");
     expect(markup).toContain("does not prove a daemon, model, or provider is ready");
   });
 });
@@ -172,8 +173,9 @@ describe("Connection probe status", () => {
     const markup = renderToStaticMarkup(<ConnectionProbeStatus state={state} />);
 
     expect(markup).toContain(expected);
-    expect(markup).toContain("Execution readiness: Unknown / not verified");
-    expect(markup).not.toContain("Execution readiness: Ready");
+    expect(markup).toContain("Execution compatibility: Unknown / not publicly proven");
+    expect(markup).toContain("Turn-driving writes remain disabled");
+    expect(markup).not.toContain("Execution compatibility: Ready");
   });
 
   it("uses an alert for failures and a polite status for authenticated access", () => {

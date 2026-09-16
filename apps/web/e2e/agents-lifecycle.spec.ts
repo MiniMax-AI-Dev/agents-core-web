@@ -817,7 +817,7 @@ test("keeps a stale Session row and surfaces each explicit repeated 404 deletion
   }
 });
 
-test("deletes an inactive Session without disturbing the active composer or listening stream", async ({ page, request }) => {
+test("deletes an inactive Session without disturbing the active read-only workspace or listening stream", async ({ page, request }) => {
   await resetFixture(request);
   await page.goto("/");
   await expect(page.getByText("listening", { exact: true })).toBeVisible();
@@ -826,7 +826,8 @@ test("deletes an inactive Session without disturbing the active composer or list
   await expect(page.locator(".conversation-header h2")).toHaveText("Second Agent");
   await expect(page.getByText("listening", { exact: true })).toBeVisible();
   const composer = page.getByLabel("Message the Agent");
-  await composer.fill("active draft must survive");
+  await expect(composer).toBeDisabled();
+  await expect(composer).toHaveAttribute("placeholder", "Execution compatibility is not publicly proven");
   const before = await fixtureState(request);
   const activeId = before.sessions.find((session) => session.id !== "session_snapshot")?.id;
   expect(activeId).toBeTruthy();
@@ -850,7 +851,8 @@ test("deletes an inactive Session without disturbing the active composer or list
   await deleteClick;
   await expect(dialog).toHaveCount(0);
   await expect(inactiveRow).toHaveCount(0);
-  await expect(composer).toHaveValue("active draft must survive");
+  await expect(composer).toBeDisabled();
+  await expect(page.getByRole("note", { name: "Execution writes unavailable" })).toBeVisible();
   await expect(page.getByText("listening", { exact: true })).toBeVisible();
   await expect(page.locator(".conversation-session-action")).toBeFocused();
 
@@ -1043,7 +1045,11 @@ test("renders self-hosted Environment and Workspace state safely across reconnec
   await expect(panel.getByRole("link", { name: "Launcher setup" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Environment connection required" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Function result required" })).toBeVisible();
-  await expect(page.getByLabel("Function result or error")).toBeVisible();
+  await expect(page.getByRole("note", { name: "Execution writes unavailable" })).toContainText("not publicly proven");
+  await expect(page.getByLabel("Function result or error")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Return error" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Submit result" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Cancel active Turn" })).toBeEnabled();
   await expect(page.locator("body")).not.toContainText("launcher:private");
   await expect(page.locator("body")).not.toContainText("executor_token=secret");
   await expect(page.locator('a[href^="file:"]')).toHaveCount(0);
@@ -1357,50 +1363,98 @@ test("renders Parsar patches as accessible read-only diffs in desktop and narrow
   await attachScreenshot(page, testInfo, "narrow-dark-parsar-diff");
 });
 
-test("manually retries uncertain sends with the original key only while the payload is unchanged", async ({ page, request }, testInfo) => {
+test("keeps unproven message and function-result writes blocked at desktop and narrow widths", async ({ page, request }, testInfo) => {
   await resetFixture(request);
   await page.goto("/");
   await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  const notice = page.getByRole("note", { name: "Execution writes unavailable" });
   const composer = page.getByLabel("Message the Agent");
+  const send = page.getByRole("button", { name: "Send message" });
 
-  await controlFixture(request, { sendResponseLoss: 1 });
-  await composer.fill("uncertain payload");
-  await page.getByRole("button", { name: "Send message" }).click();
-  await expect(page.locator(".session-send-error")).toContainText("may have accepted this message");
-  await expect(composer).toHaveValue("uncertain payload");
-  await attachScreenshot(page, testInfo, "desktop-uncertain-send");
-  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(notice).toContainText("Execution compatibility is not publicly proven by the connected Core");
+  await expect(notice).toContainText("keeps the Session read-only");
+  await expect(composer).toBeDisabled();
+  await expect(send).toBeDisabled();
+  const writesBefore = (await fixtureRequests(request)).filter(
+    (entry) => entry.method === "POST" && entry.path.endsWith("/events"),
+  ).length;
 
-  let sends = (await fixtureRequests(request)).filter(
+  await composer.evaluate((element) => element.removeAttribute("disabled"));
+  await composer.fill("must remain local");
+  await send.evaluate((element) => element.removeAttribute("disabled"));
+  await send.click();
+  await page.waitForTimeout(250);
+  await expect(composer).toHaveValue("must remain local");
+  expect((await fixtureRequests(request)).filter(
+    (entry) => entry.method === "POST" && entry.path.endsWith("/events"),
+  )).toHaveLength(writesBefore);
+  await attachScreenshot(page, testInfo, "desktop-execution-read-only");
+
+  await controlFixture(request, { environmentScenario: 7 });
+  await page.reload();
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  const steering = page.getByLabel("Message the Agent");
+  await expect(steering).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Cancel active Turn" })).toBeEnabled();
+  await steering.evaluate((element) => element.removeAttribute("disabled"));
+  await steering.fill("must not steer");
+  await steering.evaluate((element) => element.removeAttribute("disabled"));
+  await steering.press("Enter");
+  await page.waitForTimeout(250);
+  await expect(steering).toHaveValue("must not steer");
+  expect((await fixtureRequests(request)).filter(
+    (entry) => entry.method === "POST" && entry.path.endsWith("/events"),
+  )).toHaveLength(writesBefore);
+
+  await controlFixture(request, { environmentScenario: 6 });
+  await page.reload();
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Environment connection required" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Function result required" })).toHaveCount(0);
+  const cancel = page.getByRole("button", { name: "Cancel active Turn" });
+  await expect(cancel).toBeEnabled();
+  await cancel.click();
+  await expect.poll(async () => (await fixtureRequests(request)).filter(
+    (entry) => entry.method === "POST" && entry.path.endsWith("/events"),
+  ).length).toBe(writesBefore + 1);
+  const writesAfterCancel = (await fixtureRequests(request)).filter(
     (entry) => entry.method === "POST" && entry.path.endsWith("/events"),
   );
-  expect(sends).toHaveLength(2);
-  expect(sends[0]?.idempotencyKey).toBeTruthy();
-  expect(sends[1]?.idempotencyKey).toBe(sends[0]?.idempotencyKey);
+  expect(writesAfterCancel).toHaveLength(writesBefore + 1);
+  expect(writesAfterCancel.at(-1)?.body).toEqual({
+    events: [{ type: "agent.session.input.cancel" }],
+  });
 
-  await controlFixture(request, { sendResponseLoss: 1 });
-  await composer.fill("original before edit");
-  await page.getByRole("button", { name: "Send message" }).click();
-  await expect(composer).toHaveValue("original before edit");
-  await composer.fill("edited payload");
-  await page.getByRole("button", { name: "Send message" }).click();
+  await controlFixture(request, { environmentScenario: 1 });
+  await page.reload();
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Function result required" })).toBeVisible();
+  const returnError = page.getByRole("button", { name: "Return error" });
+  await expect(page.getByLabel("Function result or error")).toBeDisabled();
+  await expect(returnError).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Submit result" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Cancel active Turn" })).toBeEnabled();
 
-  sends = (await fixtureRequests(request)).filter(
+  await returnError.evaluate((element) => element.removeAttribute("disabled"));
+  await returnError.click();
+  await page.waitForTimeout(250);
+  expect((await fixtureRequests(request)).filter(
     (entry) => entry.method === "POST" && entry.path.endsWith("/events"),
-  );
-  expect(sends).toHaveLength(4);
-  expect(sends[3]?.idempotencyKey).not.toBe(sends[2]?.idempotencyKey);
+  )).toHaveLength(writesBefore + 1);
 
-  await controlFixture(request, { sendStatus: 422 });
-  await composer.fill("permanently rejected");
-  await page.getByRole("button", { name: "Send message" }).click();
-  await expect(page.locator(".session-send-error")).toContainText("Agent Core rejected the message");
-  await page.getByRole("button", { name: "Send message" }).click();
-
-  sends = (await fixtureRequests(request)).filter(
-    (entry) => entry.method === "POST" && entry.path.endsWith("/events"),
-  );
-  expect(sends).toHaveLength(6);
-  expect(sends[5]?.idempotencyKey).not.toBe(sends[4]?.idempotencyKey);
-  await attachScreenshot(page, testInfo, "desktop-send-recovery");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Dark theme" }).click();
+  const bounds = await page.getByRole("note", { name: "Execution writes unavailable" }).evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return {
+      viewport: innerWidth,
+      document: document.documentElement.scrollWidth,
+      left: box.left,
+      right: box.right,
+    };
+  });
+  expect(bounds.document).toBeLessThanOrEqual(bounds.viewport);
+  expect(bounds.left).toBeGreaterThanOrEqual(0);
+  expect(bounds.right).toBeLessThanOrEqual(bounds.viewport);
+  await attachScreenshot(page, testInfo, "narrow-dark-execution-read-only");
 });

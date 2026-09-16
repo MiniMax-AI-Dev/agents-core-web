@@ -2792,12 +2792,36 @@ button.trace-step-row:hover {
   color: var(--fg-muted);
 }
 
+.approval-input:disabled,
+.composer textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
 .approval-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   margin-top: 12px;
   gap: 8px;
+}
+
+.active-turn-cancel-bar {
+  display: flex;
+  width: 100%;
+  max-width: 736px;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 auto;
+  gap: 12px;
+}
+
+.active-turn-cancel-bar > p {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 17px;
 }
 
 .composer {

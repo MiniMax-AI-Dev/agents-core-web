@@ -12,6 +12,14 @@ OpenAI-hosted service compatibility.
   That revision still exposes only Environment retrieve plus Session-bound
   `self_hosted` creation; it adds no public Environment list, template, file, or
   browser-facing key management route.
+- The execution-compatibility boundary was re-audited against Parsar
+  [`d91ba48a`](https://github.com/MiniMax-AI-Dev/parsar/commit/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee).
+  Its public Agents API exposes no versioned execution-readiness resource or
+  Core/daemon/native-harness fingerprint. The default sandbox still installs
+  Codex `0.141.0` while the pinned native Environment reference is `0.153.4`,
+  and `environment:none` preparation still calls `environment/status`. Web
+  therefore treats current execution compatibility as unknown; it does not
+  sniff those versions or use a failed Turn as discovery.
 - Upstream resource source: `openai-python` 3.13.0 beta Agents resources at
   [`d7c41efe`](https://github.com/openai/openai-python/tree/d7c41efee1b0802b79f3f88a678ef2052b06e9ce/src/openai/resources/beta/agents)
 - Required beta header: `OpenAI-Beta: agents=v1`
@@ -37,13 +45,13 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 | Sessions create/list/retrieve | Yes | Yes | UI creates idle `environment:none` Sessions; client types also cover the pinned `self_hosted` request and safe response projection |
 | Sessions update/delete | Yes | Yes | Title/string metadata editing and one-Session confirmed deletion; no bulk or Workspace deletion |
 | Session live events | Yes | Yes | Authenticated `fetch` stream, not `EventSource` |
-| Input message | Yes | Yes | Opens SSE before submission; uncertain failures retain the in-memory payload/key for an explicit unchanged manual retry only |
+| Input message / steering | Yes | Read-only until proven | Unknown or unsupported execution compatibility blocks the control and final App write boundary; no input event is submitted |
 | Active Turn cancel | Yes | Yes | Submitted as a Session event, not a Turn-create endpoint |
 | Turn list | Yes | Yes, read-only | Selected Sessions load every page in ascending creation order; no Turn mutation UI |
 | Turn retrieve | Yes | No | Reusable client diagnostic method; timeline recovery uses the all-pages list |
 | Item list/recovery | Yes | Yes | Authoritative recovery after stream loss |
 | Parsar `apply_patch` Item presentation | Existing function Item fields | Yes, read-only | Parsar extension recognized only for the pinned `changes[].{path,kind,diff}` shape; not an OpenAI standard Item type |
-| Function result/error | Yes | Yes | Initial UI supports text result/error handoff only for `function_call` actions |
+| Function result/error | Yes | Read-only until proven | The form remains inspectable for `function_call` actions, but unknown or unsupported compatibility disables result/error submission |
 | Initial-input creation stream | Later | No | Idle-create flow avoids the early-event race |
 | Artifacts/files | Later | No | Required Core resources are not implemented |
 | Environment connection action | Yes | Render-only | `environment_connection` is distinct from a function call; Web shows an operator-owned, non-actionable state and sends no result |
@@ -59,6 +67,24 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 ## Runtime boundary
 
 - The Web currently creates only `environment: {"type":"none"}` Sessions.
+- Execution compatibility has one Web-owned normalized state:
+  `supported`, `unsupported`, or `unknown`, defaulting to `unknown`. The current
+  Core surface cannot promote it to `supported`; the supported variant is sealed
+  inside the future contract adapter, so structurally similar untrusted data stays
+  `unknown`. While it is `unknown` or
+  `unsupported`, message, active-Turn steering, and function-result/error writes
+  are blocked both in Session controls and at the final App operation boundary.
+  Agent CRUD, idle Session management, Session/Item/Turn/Usage/Environment/SSE
+  reads, recovery, metadata/deletion flows, and cancellation of already-active
+  work remain available.
+- A future `supported` state requires an authenticated, public, versioned,
+  tenant- and Session-scoped execution profile. Its proof must bind the exact
+  engine and Environment mode, derive readiness from native method probing, and
+  include freshness/scope semantics. The normalized Web proof is additionally
+  bound to the current connection generation and exact Session ID before every
+  write. Missing, malformed, stale, wrong-connection, wrong-Session, or unknown
+  data remains `unknown`. A revision string or private daemon heartbeat is
+  insufficient.
 - Product navigation and the global Create menu do not widen the protocol. Agent
   and idle Session creation call the existing client methods. Environment template
   and Environment key entries are non-actionable unavailable states.
@@ -159,9 +185,10 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 - Core has no standard model-catalog or capability-discovery route in this surface.
   Web model presets are editable suggestions. Known reasoning, tier, format,
   multi-agent, executable-tool-shape, and unattached-credential incompatibilities
-  are authoritative at Session creation; a real Turn remains necessary to prove
-  model/provider execution and conditional Codex `low`/`high` verbosity support.
-  Claude SDK accepts medium verbosity only.
+  are authoritative at Session creation. A prior successful or failed Turn is
+  historical observation, not a versioned readiness contract, and cannot promote
+  the Web state to `supported`; this Web does not send a paid Turn as a capability
+  probe. Claude SDK accepts medium verbosity only.
 
 Environment creation and management beyond the narrow read, provider selection,
 Files, Plugins, Skills, Artifacts, Vault, hosted runtimes, and Workspace lifecycle
@@ -297,18 +324,18 @@ read keeps the existing conversation usable.
   observability. They are not per-Item timing, monetary cost, provider attribution,
   or a complete OpenAI Trace waterfall.
 
-The client never retries a write automatically. For an input message that fails with
-a network/response-loss error, HTTP 5xx, or transient 408/409/425/429, the Web keeps
-the original payload and idempotency key in memory. Only a later user-initiated Send
-of the byte-for-byte unchanged payload reuses that key. Editing the payload, changing
-Session/Core, a successful response, or a permanent 4xx starts a new operation with a
-new key. This state is intentionally not stored in browser persistence, and the UI
-cannot prove whether an uncertain request was accepted until durable Core state
-reconciles.
+The client never retries a write automatically. If a future proven compatibility
+contract enables input, a message that fails with a network/response-loss error,
+HTTP 5xx, or transient 408/409/425/429 keeps the original payload and idempotency key
+in memory. Only a later user-initiated Send of the byte-for-byte unchanged payload
+reuses that key. Editing the payload, changing Session/Core, a successful response,
+or a permanent 4xx starts a new operation with a new key. This state is intentionally
+not stored in browser persistence, and the UI cannot prove whether an uncertain
+request was accepted until durable Core state reconciles.
 
 HTTP acceptance, `/healthz`, an open SSE connection, and successful Agent creation
 do not prove that a daemon, native harness, model ID, or provider credential can
-complete a Turn.
+complete a Turn and never upgrade execution compatibility.
 
 ## Terminology
 

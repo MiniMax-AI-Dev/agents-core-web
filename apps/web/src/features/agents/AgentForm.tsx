@@ -242,7 +242,7 @@ export function AgentForm({ agent, disabled = false, formId, knownModels, onDraf
           </label>
         </div>
         <p className="agent-form-capability-note" id={`${formId}-generation-profile-help`}>
-          New Agents use the current cross-engine Session profile: implicit reasoning, medium verbosity, service tier auto, and text format. Existing saved-only values remain visible; reasoning, verbosity, and tier stay editable, while known incompatible settings block Session start. Model and provider compatibility still require a real Turn.
+          New Agents use the current cross-engine Session profile: implicit reasoning, medium verbosity, service tier auto, and text format. Existing saved-only values remain visible; reasoning, verbosity, and tier stay editable, while known incompatible settings block Session start. Saved configuration is not execution proof, and Turn-driving writes remain disabled until Core exposes a versioned compatibility contract.
         </p>
         {configurationError ? <p className="field-error" role="alert">{configurationError}</p> : null}
       </section>

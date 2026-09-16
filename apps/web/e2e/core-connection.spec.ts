@@ -333,7 +333,8 @@ test("announces loading, authenticated access, and each safe failure state from 
     await expect(loading).toContainText("Testing Core connection…");
     const terminal = dialog.getByRole(expected.role);
     await expect(terminal).toContainText(expected.text);
-    await expect(terminal).toContainText("Execution readiness: Unknown / not verified");
+    await expect(terminal).toContainText("Execution compatibility: Unknown / not publicly proven");
+    await expect(terminal).toContainText("Turn-driving writes remain disabled");
     if (expected.absentText) await expect(terminal).not.toContainText(expected.absentText);
   }
 
@@ -373,7 +374,8 @@ test("turns a stalled probe into one bounded unreachable result", async ({ page,
     (window as ProbeInstrumentationWindow).__stalledProbeCallCount ?? 0
   ))).toBe(1);
   await expect(dialog.getByRole("alert")).toContainText("Core unreachable", { timeout: 7_500 });
-  await expect(dialog.getByRole("alert")).toContainText("Execution readiness: Unknown / not verified");
+  await expect(dialog.getByRole("alert")).toContainText("Execution compatibility: Unknown / not publicly proven");
+  await expect(dialog.getByRole("alert")).toContainText("Turn-driving writes remain disabled");
   expect(await page.evaluate(() => (window as ProbeInstrumentationWindow).__stalledProbeCallCount)).toBe(1);
 });
 

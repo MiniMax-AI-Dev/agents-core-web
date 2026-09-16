@@ -11,7 +11,7 @@ import {
   RefreshCw,
   Square,
 } from "lucide-react";
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import type {
   AgentSession,
@@ -30,6 +30,10 @@ import { Modal } from "../../components/Modal";
 import { Skeleton } from "../../components/Skeleton";
 import { StatusIcon, type StatusKind } from "../../components/StatusIcon";
 import type { CoreConnectionState } from "../../lib/connection";
+import {
+  executionWriteBlocker,
+  type ExecutionCompatibility,
+} from "../../lib/execution-compatibility";
 import { useThreadScroll } from "../../lib/use-thread-scroll";
 import { knownSessionAdmissionBlocker } from "../agents/session-admission";
 import {
@@ -57,6 +61,8 @@ interface SessionsViewProps {
   onCreateRequestConsumed?: (request: number) => void;
   detailError: string | null;
   detailState: SessionDetailState;
+  executionCompatibility: ExecutionCompatibility;
+  executionConnectionGeneration: number;
   turnError?: string | null;
   turnState?: TurnTimelineLoadState;
   environmentObservation?: EnvironmentObservation | null;
@@ -192,11 +198,54 @@ function UnsupportedActionNotice() {
   );
 }
 
+function ExecutionCompatibilityNotice({ id, blocker }: { id: string; blocker: string }) {
+  return (
+    <section
+      className="environment-connection-notice execution-compatibility-notice"
+      id={id}
+      role="note"
+      aria-label="Execution writes unavailable"
+    >
+      <div className="environment-connection-notice-heading">
+        <StatusIcon status="interrupted" />
+        <strong>Session is read-only</strong>
+      </div>
+      <p>{blocker}</p>
+    </section>
+  );
+}
+
+function CancelActiveTurnButton({ busy, onCancel }: { busy: boolean; onCancel: () => void }) {
+  return (
+    <button
+      className="composer-action"
+      type="button"
+      onClick={onCancel}
+      disabled={busy}
+      aria-label="Cancel active Turn"
+      title="Cancel active Turn"
+    >
+      <Square size={13} fill="currentColor" strokeWidth={1.5} />
+    </button>
+  );
+}
+
+function CancelOnlyBar({ busy, onCancel }: { busy: boolean; onCancel: () => void }) {
+  return (
+    <section className="active-turn-cancel-bar" aria-label="Active Turn controls">
+      <p>Turn continuation is unavailable, but cancellation remains available.</p>
+      <CancelActiveTurnButton busy={busy} onCancel={onCancel} />
+    </section>
+  );
+}
+
 function FunctionActionBar({
   actions,
   agentName,
   autoFocus,
   busy,
+  executionBlocker,
+  executionDescriptionId,
   onCancel,
   onSubmit,
 }: {
@@ -204,6 +253,8 @@ function FunctionActionBar({
   agentName: string;
   autoFocus: boolean;
   busy: boolean;
+  executionBlocker: string | null;
+  executionDescriptionId?: string;
   onCancel: () => void;
   onSubmit: (input: FunctionResultInput) => Promise<void>;
 }) {
@@ -241,14 +292,16 @@ function FunctionActionBar({
         onChange={(event) => setResult(event.target.value)}
         placeholder="Return a result or describe the error…"
         aria-label="Function result or error"
+        aria-describedby={executionDescriptionId}
         rows={3}
-        disabled={busy}
+        disabled={busy || Boolean(executionBlocker)}
       />
       <div className="approval-actions">
         <button
           className="button outline"
           type="button"
-          disabled={busy}
+          disabled={busy || Boolean(executionBlocker)}
+          aria-describedby={executionDescriptionId}
           onClick={() => submit(false)}
         >
           Return error
@@ -256,14 +309,13 @@ function FunctionActionBar({
         <button
           className="button primary"
           type="button"
-          disabled={busy || !result.trim()}
+          disabled={busy || Boolean(executionBlocker) || !result.trim()}
+          aria-describedby={executionDescriptionId}
           onClick={() => submit(true)}
         >
           Submit result
         </button>
-        <button className="composer-action" type="button" onClick={onCancel} disabled={busy} aria-label="Cancel active Turn" title="Cancel active Turn">
-          <Square size={13} fill="currentColor" strokeWidth={1.5} />
-        </button>
+        <CancelActiveTurnButton busy={busy} onCancel={onCancel} />
       </div>
     </section>
   );
@@ -282,6 +334,8 @@ export function SessionsView({
   onCreateRequestConsumed,
   detailError,
   detailState,
+  executionCompatibility,
+  executionConnectionGeneration,
   turnError = null,
   turnState = "idle",
   environmentObservation = null,
@@ -312,6 +366,7 @@ export function SessionsView({
   const [actionSession, setActionSession] = useState<AgentSession | null>(null);
   const [viewport, setViewport] = useState<HTMLDivElement | null>(null);
   const [threadContent, setThreadContent] = useState<HTMLDivElement | null>(null);
+  const executionNoticeId = useId();
   const sendingRef = useRef(false);
   const pageRef = useRef<HTMLElement>(null);
   const newSessionActionRef = useRef<HTMLButtonElement>(null);
@@ -329,6 +384,10 @@ export function SessionsView({
 
   const selectedAgent = agents.find((agent) => agent.id === agentId);
   const selectedAgentBlocker = selectedAgent ? knownSessionAdmissionBlocker(selectedAgent) : null;
+  const executionBlocker = executionWriteBlocker(executionCompatibility, {
+    connectionGeneration: executionConnectionGeneration,
+    sessionId: selected?.id ?? "",
+  });
 
   useEffect(() => {
     if (selectedAgent && !selectedAgentBlocker) return;
@@ -433,6 +492,10 @@ export function SessionsView({
   const functionActions = requiredActions.filter(isFunctionCallAction);
   const unsupportedActionCount = requiredActions.length - environmentConnections.length - functionActions.length + (
     !requiredActionsAreValid || selected?.status === "requires_action" && !requiredActions.length ? 1 : 0
+  );
+  const showCancelOnly = Boolean(
+    (selected?.status === "in_progress" || selected?.status === "requires_action") &&
+    (unsupportedActionCount > 0 || environmentConnections.length > 0 && functionActions.length === 0),
   );
 
   return (
@@ -650,9 +713,11 @@ export function SessionsView({
                 {detailState === "ready" && streamState !== "failed" && selected.status !== "failed" && !items.length ? (
                   <div className="conversation-empty">
                     <Bot size={24} strokeWidth={1.5} />
-                    <h3>Session is ready</h3>
+                    <h3>{executionBlocker ? "Session is read-only" : "Session is ready"}</h3>
                     <p>
-                      {streamState === "listening"
+                      {executionBlocker
+                        ? "You can inspect durable state and live events, but this Web will not submit execution writes."
+                        : streamState === "listening"
                         ? "Live events are connected. Message execution also requires a Core worker and executor."
                         : "Opening the event stream before enabling the composer."}
                     </p>
@@ -669,16 +734,24 @@ export function SessionsView({
           </div>
 
           <footer className="composer-footer">
+            {executionBlocker ? (
+              <ExecutionCompatibilityNotice id={executionNoticeId} blocker={executionBlocker} />
+            ) : null}
             {environmentConnections.map((action, index) => (
               <EnvironmentConnectionNotice action={action} key={`${action.environment_id}:${index}`} />
             ))}
             {unsupportedActionCount ? <UnsupportedActionNotice /> : null}
+            {showCancelOnly ? (
+              <CancelOnlyBar busy={busy} onCancel={cancel} />
+            ) : null}
             {!unsupportedActionCount && functionActions.length ? (
                 <FunctionActionBar
                   actions={functionActions}
                   agentName={selected.agent.name || "Agent"}
                   autoFocus={!environmentConnections.length && !unsupportedActionCount}
                   busy={busy || detailState !== "ready"}
+                  executionBlocker={executionBlocker}
+                  executionDescriptionId={executionBlocker ? executionNoticeId : undefined}
                   onCancel={cancel}
                   onSubmit={onFunctionResult}
                 />
@@ -695,10 +768,15 @@ export function SessionsView({
                   element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
                 }}
                 onKeyDown={onComposerKeyDown}
-                placeholder={selected.status === "failed" ? "This Session has failed" : `Message ${selected.agent.name || "the Agent"}…`}
+                placeholder={selected.status === "failed"
+                  ? "This Session has failed"
+                  : executionBlocker
+                    ? "Execution compatibility is not publicly proven"
+                    : `Message ${selected.agent.name || "the Agent"}…`}
                 aria-label="Message the Agent"
+                aria-describedby={executionBlocker ? executionNoticeId : undefined}
                 rows={1}
-                disabled={detailState !== "ready" || selected.status === "failed"}
+                disabled={Boolean(executionBlocker) || detailState !== "ready" || selected.status === "failed"}
               />
               <div className="composer-bar">
                 <span className="composer-context">
@@ -706,16 +784,15 @@ export function SessionsView({
                   <span>{selected.agent.name || "Untitled Agent"}</span>
                 </span>
                 {selected.status === "in_progress" || selected.status === "requires_action" ? (
-                  <button className="composer-action" type="button" onClick={cancel} disabled={busy} aria-label="Cancel active Turn" title="Cancel active Turn">
-                    <Square size={13} fill="currentColor" strokeWidth={1.5} />
-                  </button>
+                  <CancelActiveTurnButton busy={busy} onCancel={cancel} />
                 ) : (
                   <button
                     className="composer-action send"
                     type="submit"
                     aria-label="Send message"
                     title="Send message"
-                    disabled={busy || detailState !== "ready" || !message.trim() || selected.status === "failed" || streamState !== "listening"}
+                    disabled={Boolean(executionBlocker) || busy || detailState !== "ready" || !message.trim() || selected.status === "failed" || streamState !== "listening"}
+                    aria-describedby={executionBlocker ? executionNoticeId : undefined}
                   >
                     <ArrowUp size={16} strokeWidth={2} />
                   </button>

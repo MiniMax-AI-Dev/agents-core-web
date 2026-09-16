@@ -41,8 +41,8 @@ function SetupGuide({ saved }: { saved: boolean }) {
   const steps = [
     ["Define an Agent", "Choose a model and instructions; the Web keeps generation settings on the current Session-safe profile.", true],
     ["Save the definition", "Core becomes the durable source of truth for the saved Agent.", saved],
-    ["Start a Session", "Create an idle environment:none Session and subscribe before sending input.", false],
-    ["Exchange events", "A real Turn still requires a compatible worker, executor, model, and provider.", false],
+    ["Start a Session", "Create an idle environment:none Session for durable, read-only inspection.", false],
+    ["Enable execution", "Turn-driving writes stay disabled until Core publishes versioned compatibility proof.", false],
   ] as const;
   return (
     <section className="agent-setup-guide" aria-labelledby="agent-setup-guide-title">

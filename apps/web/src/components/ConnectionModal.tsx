@@ -102,7 +102,7 @@ export function ConnectionProbeStatus({ state }: { state: ConnectionProbeState }
     >
       <strong>{copy.title}</strong>
       <p>{copy.detail}</p>
-      <small>Execution readiness: Unknown / not verified.</small>
+      <small>Execution compatibility: Unknown / not publicly proven. Turn-driving writes remain disabled.</small>
     </div>
   );
 }
@@ -331,7 +331,7 @@ export function ConnectionModal({
       </section>
       <div className="notice neutral">
         <Info size={14} strokeWidth={1.5} aria-hidden="true" />
-        Execution readiness remains Unknown / not verified. HTTP access does not prove a daemon, model, or provider is ready.
+        Execution compatibility remains Unknown / not publicly proven, so Turn-driving writes stay disabled. HTTP access does not prove a daemon, model, or provider is ready.
       </div>
     </Modal>
   );
