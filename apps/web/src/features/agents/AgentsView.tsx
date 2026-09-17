@@ -82,7 +82,7 @@ function AgentSessionStartAction({
   return (
     <span className="action-tooltip">
       <button
-        className="icon-button ghost agent-session-start"
+        className="button outline agent-session-start"
         type="button"
         onClick={() => {
           if (!blocker) onStart(agent.id);
@@ -90,13 +90,16 @@ function AgentSessionStartAction({
         disabled={busy}
         aria-disabled={blocker ? true : undefined}
         aria-label={`Start a Session with ${agent.name || "this Agent"}`}
-        aria-describedby={descriptionId}
+        aria-describedby={blocker ? descriptionId : undefined}
       >
-        <MessageSquare size={14} strokeWidth={1.5} />
+        <MessageSquare size={14} strokeWidth={1.5} aria-hidden="true" />
+        <span>{blocker ? "Unavailable" : "Start Session"}</span>
       </button>
-      <span className="action-tooltip-content" role="tooltip" id={descriptionId}>
-        {blocker ? `Session unavailable: ${blocker}` : "Start Session"}
-      </span>
+      {blocker ? (
+        <span className="action-tooltip-content" role="tooltip" id={descriptionId}>
+          Session unavailable: {blocker}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -372,7 +375,7 @@ export function AgentsView({
             <span role="columnheader">Model</span>
             <span role="columnheader">Tools</span>
             <span role="columnheader">Updated</span>
-            <span role="columnheader" aria-label="Actions" />
+            <span className="ledger-session-header" role="columnheader">Session</span>
           </div>
           <div className="ledger-body" role="rowgroup">
             {filteredAgents.map((agent) => (

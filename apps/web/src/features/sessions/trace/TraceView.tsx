@@ -30,7 +30,7 @@ import { StatusIcon, type StatusKind } from "../../../components/StatusIcon";
 import { ApplyPatchDiffViewer } from "../items/ApplyPatchDiffViewer";
 import { parseParsarApplyPatch } from "../items/apply-patch";
 import type { SessionDetailState } from "../SessionsView";
-import type { TurnTimelineLoadState } from "../turns/TurnTimeline";
+import { TurnTimeline, type TurnTimelineLoadState } from "../turns/TurnTimeline";
 import {
   buildTraceModel,
   filterTraceModel,
@@ -120,6 +120,43 @@ function valueLabel<T>(value: TraceValue<T>, format: (available: T) => string = 
   return value.state === "unknown" ? "Unknown" : "Unavailable";
 }
 
+function rowDurationPresentation(value: TraceValue<number>): {
+  visible: string;
+  assistive: string;
+  title: string;
+} {
+  if (value.state === "available" && value.value !== null) {
+    const duration = formatDuration(value.value);
+    return {
+      visible: duration,
+      assistive: `Tool-reported duration: ${duration}.`,
+      title: `Tool-reported duration: ${duration}`,
+    };
+  }
+  if (value.state === "unknown") {
+    return {
+      visible: "Unknown",
+      assistive: "Reported duration is unknown.",
+      title: "The reported duration could not be interpreted.",
+    };
+  }
+  return {
+    visible: "—",
+    assistive: "Per-item timing not provided by Core.",
+    title: "Core does not provide per-item timing.",
+  };
+}
+
+function durationDetailLabel(value: TraceValue<number>): string {
+  if (value.state === "available" && value.value !== null) return formatDuration(value.value);
+  return value.state === "unknown" ? "Unknown" : "Not provided by Core";
+}
+
+function turnDurationLabel(value: TraceValue<number>): string {
+  if (value.state === "available" && value.value !== null) return `Turn ${formatDuration(value.value)}`;
+  return value.state === "unknown" ? "Turn time unknown" : "Turn time not provided";
+}
+
 function rowExcerpt(row: TraceRow): string {
   if (row.text.state === "available" && row.text.value) return row.text.value;
   if (row.tool?.payload.state === "available") return "Payload available";
@@ -186,7 +223,7 @@ function TraceSummaryPanel({ row, group, session }: { row: TraceRow; group: Trac
         <div><dt>Status</dt><dd>{row.status ? titleCase(row.status) : "Not applicable"}</dd></div>
         <div><dt>Group</dt><dd>{group.title}</dd></div>
         <div><dt>Configured model</dt><dd><code>{configuredModel}</code></dd></div>
-        <div><dt>Item timing</dt><dd>Unavailable</dd></div>
+        <div><dt>Item timing</dt><dd>Not provided by Core</dd></div>
         {row.durationMs.state === "available" && row.durationMs.value !== null ? (
           <div><dt>Tool-reported duration</dt><dd>{formatDuration(row.durationMs.value)}</dd></div>
         ) : null}
@@ -220,9 +257,9 @@ function TraceTimingPanel({ row, group }: { row: TraceRow; group: TraceGroup }) 
         <div><dt>Turn started</dt><dd>{formatTimestamp(group.turn?.started_at)}</dd></div>
         <div><dt>Turn completed</dt><dd>{formatTimestamp(group.turn?.completed_at)}</dd></div>
         <div><dt>Turn wall clock</dt><dd>{valueLabel(group.turnWallClockDurationMs, formatDuration)}</dd></div>
-        <div><dt>Item started</dt><dd>Unavailable</dd></div>
-        <div><dt>Item completed</dt><dd>Unavailable</dd></div>
-        <div><dt>Tool-reported duration</dt><dd>{valueLabel(row.durationMs, formatDuration)}</dd></div>
+        <div><dt>Item started</dt><dd>Not provided by Core</dd></div>
+        <div><dt>Item completed</dt><dd>Not provided by Core</dd></div>
+        <div><dt>Tool-reported duration</dt><dd>{durationDetailLabel(row.durationMs)}</dd></div>
       </dl>
       <p>Turn timestamps are server resources. Tool duration has no public absolute start, so it is not positioned on a time-scaled waterfall.</p>
     </div>
@@ -387,8 +424,22 @@ export function TraceView({
 
       <div className="trace-contract-note" role="note">
         <Clock3 size={14} strokeWidth={1.5} aria-hidden="true" />
-        <span>Per-item timing is unavailable. The overview preserves Core order and does not imply model, tool, or first-token timing.</span>
+        <span>Core reports Turn wall-clock time, but not per-item timing. Rows preserve durable order and are not time-scaled.</span>
       </div>
+
+      <details className="trace-turn-diagnostics">
+        <summary>
+          <span><strong>Turn diagnostics</strong><small>Usage, timestamps, errors, and live elapsed</small></span>
+          <span>{turns.length} observed {turns.length === 1 ? "Turn" : "Turns"}</span>
+        </summary>
+        <TurnTimeline
+          turns={turns}
+          items={items}
+          sessionUsage={session.usage}
+          loadState={turnState}
+          error={turnError}
+        />
+      </details>
 
       {turnState === "loading" || detailState === "loading" ? (
         <p className="trace-load-state" role="status">Loading complete durable Turn and Item history…</p>
@@ -410,11 +461,15 @@ export function TraceView({
                 <strong id={`${group.id}-title`}>{group.title}</strong>
                 {group.turn && groupStatusKind ? <StatusIcon status={groupStatusKind} title={`Turn status: ${titleCase(group.turn.status)}`} /> : null}
                 {group.turn ? <span>{titleCase(group.turn.status)}</span> : null}
-                <span className="trace-group-duration">{valueLabel(group.turnWallClockDurationMs, formatDuration)}</span>
+                {group.turn ? (
+                  <span className="trace-group-duration" title="Turn wall-clock duration">{turnDurationLabel(group.turnWallClockDurationMs)}</span>
+                ) : null}
               </header>
               {group.rows.length ? (
                 <ol>
-                  {group.rows.map((row) => (
+                  {group.rows.map((row) => {
+                    const duration = rowDurationPresentation(row.durationMs);
+                    return (
                     <li key={row.id}>
                       <button
                         type="button"
@@ -431,10 +486,14 @@ export function TraceView({
                           <small>{rowExcerpt(row)}</small>
                         </span>
                         {row.status ? <StatusIcon status={itemStatusKind(row.status)} title={`Item status: ${titleCase(row.status)}`} /> : null}
-                        <span className="trace-row-duration">{valueLabel(row.durationMs, formatDuration)}</span>
+                        <span className="trace-row-duration" data-duration-state={row.durationMs.state} title={duration.title}>
+                          <span aria-hidden="true">{duration.visible}</span>
+                          <span className="trace-visually-hidden">{duration.assistive}</span>
+                        </span>
                       </button>
                     </li>
-                  ))}
+                    );
+                  })}
                 </ol>
               ) : <p className="trace-group-empty">No durable Items reported for this Turn.</p>}
             </section>

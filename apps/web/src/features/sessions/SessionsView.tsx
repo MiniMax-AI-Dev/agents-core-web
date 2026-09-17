@@ -39,7 +39,7 @@ import {
 import type { EnvironmentObservation } from "./environment/environment-state";
 import { ThreadItems } from "./items/ItemRenderers";
 import { TraceView } from "./trace/TraceView";
-import { TurnTimeline, type TurnTimelineLoadState } from "./turns/TurnTimeline";
+import type { TurnTimelineLoadState } from "./turns/TurnTimeline";
 import { SessionActionsDialog } from "./actions/SessionActionsDialog";
 
 export type StreamState = "idle" | "connecting" | "listening" | "recovering" | "failed";
@@ -215,6 +215,15 @@ function CancelOnlyBar({ busy, onCancel }: { busy: boolean; onCancel: () => void
       <p>Turn continuation is unavailable, but cancellation remains available.</p>
       <CancelActiveTurnButton busy={busy} onCancel={onCancel} />
     </section>
+  );
+}
+
+function ConversationActivity({ agentName }: { agentName: string }) {
+  return (
+    <div className="conversation-activity" role="status" aria-live="polite" aria-atomic="true">
+      <StatusIcon status="running" />
+      <span>{agentName} is working…</span>
+    </div>
   );
 }
 
@@ -660,14 +669,6 @@ export function SessionsView({
                   connectionActions={environmentConnections}
                 />
 
-                <TurnTimeline
-                  turns={turns}
-                  items={items}
-                  sessionUsage={selected.usage}
-                  loadState={turnState}
-                  error={turnError}
-                />
-
                 <div className="message-stack">
                   <ThreadItems items={items} agentName={selected.agent.name || "Agent"} />
                 </div>
@@ -755,6 +756,9 @@ export function SessionsView({
               <EnvironmentConnectionNotice action={action} key={`${action.environment_id}:${index}`} />
             ))}
             {unsupportedActionCount ? <UnsupportedActionNotice /> : null}
+            {selected.status === "in_progress" ? (
+              <ConversationActivity agentName={selected.agent.name || "Agent"} />
+            ) : null}
             {showCancelOnly ? (
               <CancelOnlyBar busy={busy} onCancel={cancel} />
             ) : null}

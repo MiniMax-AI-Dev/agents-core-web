@@ -54,6 +54,11 @@ async function emitTurnFixture(request: APIRequestContext, status: "completed" |
   expect(response.ok()).toBe(true);
 }
 
+async function emitSessionFixture(request: APIRequestContext, status: "in_progress" | "idle") {
+  const response = await request.post(`${fixtureBaseUrl}/__fixture/emit-session`, { data: { status } });
+  expect(response.ok()).toBe(true);
+}
+
 async function fixtureRequests(request: APIRequestContext): Promise<FixtureRequest[]> {
   const response = await request.get(`${fixtureBaseUrl}/__fixture/requests`);
   expect(response.ok()).toBe(true);
@@ -295,6 +300,7 @@ test("continues from a default Agent definition into an admitted idle Session", 
   await expect(page.getByRole("button", { name: "Start Session" })).toBeEnabled();
   await page.getByRole("button", { name: "Start Session" }).click();
   await expect(page.getByRole("button", { name: "Sessions", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("region", { name: "Environment and Workspace status" })).toHaveCount(0);
 
   const sessionCreates = (await fixtureRequests(request)).filter((entry) => (
     entry.method === "POST" && entry.path === "/v1/agents/sessions"
@@ -336,8 +342,10 @@ test("rechecks the saved response before offering the setup-page Session continu
 
 test("starts only Agents that pass known Session admission", async ({ page, request }) => {
   await openAgents(page, request);
+  await expect(page.getByRole("columnheader", { name: "Session" })).toBeVisible();
 
   const blockedStart = page.getByRole("button", { name: /Start a Session with Lifecycle Agent/ });
+  await expect(blockedStart).toContainText("Unavailable");
   await expect(blockedStart).toHaveAttribute("aria-disabled", "true");
   await blockedStart.focus();
   await expect(blockedStart.locator("xpath=..").getByRole("tooltip")).toBeVisible();
@@ -358,6 +366,7 @@ test("starts only Agents that pass known Session admission", async ({ page, requ
     entry.method === "POST" && entry.path === "/v1/agents/sessions"
   ))).toHaveLength(blockedSessionCount);
   await expect(page.getByRole("button", { name: "Start a Session with Second Agent" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Start a Session with Second Agent" })).toContainText("Start Session");
 
   const before = (await fixtureRequests(request)).filter((entry) => (
     entry.method === "POST" && entry.path === "/v1/agents/sessions"
@@ -484,6 +493,7 @@ test("keeps the Agent ledger and dialogs usable at 390 px in light and dark mode
     const main = document.querySelector(".app-main")?.getBoundingClientRect();
     const trigger = Array.from(document.querySelectorAll("button")).find((button) => button.textContent?.includes("New Agent"))?.getBoundingClientRect();
     const ledger = document.querySelector(".agent-ledger")?.getBoundingClientRect();
+    const sessionTrigger = document.querySelector('button[aria-label="Start a Session with Second Agent"]')?.getBoundingClientRect();
     return {
       innerWidth,
       documentScrollWidth: document.documentElement.scrollWidth,
@@ -491,6 +501,7 @@ test("keeps the Agent ledger and dialogs usable at 390 px in light and dark mode
       main: main && { left: main.left, right: main.right, width: main.width },
       trigger: trigger && { left: trigger.left, right: trigger.right, width: trigger.width },
       ledger: ledger && { left: ledger.left, right: ledger.right, width: ledger.width },
+      sessionTrigger: sessionTrigger && { left: sessionTrigger.left, right: sessionTrigger.right, width: sessionTrigger.width },
     };
   });
   expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.innerWidth);
@@ -501,6 +512,9 @@ test("keeps the Agent ledger and dialogs usable at 390 px in light and dark mode
   expect(metrics.trigger?.right).toBeLessThanOrEqual(390);
   expect(metrics.ledger?.left).toBeGreaterThanOrEqual(0);
   expect(metrics.ledger?.right).toBeLessThanOrEqual(390);
+  expect(metrics.sessionTrigger?.left).toBeGreaterThanOrEqual(metrics.ledger?.left ?? 0);
+  expect(metrics.sessionTrigger?.right).toBeLessThanOrEqual(metrics.ledger?.right ?? 390);
+  await expect(page.getByRole("button", { name: "Start a Session with Second Agent" })).toContainText("Start Session");
   await attachScreenshot(page, testInfo, "narrow-light-agent-ledger");
 
   await expect(page.getByRole("button", { name: "Environments", exact: true })).toHaveCount(0);
@@ -583,6 +597,27 @@ test("starts one Session with an idempotency key and without browser authorizati
     expect(entry.beta).toBe("agents=v1");
     expect(entry.authorizationPresent).toBe(false);
   }
+});
+
+test("shows composer activity only for a Core-reported in-progress Session", async ({ page, request }, testInfo) => {
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+
+  const activity = page.locator(".conversation-activity");
+  await expect(activity).toHaveCount(0);
+  await emitSessionFixture(request, "in_progress");
+  await expect(activity).toBeVisible();
+  await expect(activity).toContainText("Lifecycle Agent is working…");
+  await expect(activity).toHaveAttribute("aria-live", "polite");
+  await expect(activity).toHaveAttribute("aria-atomic", "true");
+  await expect(activity.locator(".status-running")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Cancel active Turn" })).toBeVisible();
+  await attachElementScreenshot(activity, testInfo, "conversation-activity");
+
+  await emitSessionFixture(request, "idle");
+  await expect(activity).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Send message" })).toBeVisible();
 });
 
 test("updates Session title and metadata after a latest read while preserving failed and unknown drafts", async ({ page, request }) => {
@@ -1218,7 +1253,7 @@ test("applies a buffered live Environment event after an earlier durable snapsho
   await expect(panel).not.toContainText("Pending");
 });
 
-test("loads every Turn page, reconciles terminal events, and keeps failures beside conversation Items", async ({ page, request }, testInfo) => {
+test("loads every Turn page, reconciles terminal events, and keeps diagnostics out of Conversation", async ({ page, request }, testInfo) => {
   await resetFixture(request);
   await controlFixture(request, {
     turnsScenario: 1,
@@ -1227,7 +1262,18 @@ test("loads every Turn page, reconciles terminal events, and keeps failures besi
   await page.goto("/");
   await expect(page.getByText("listening", { exact: true })).toBeVisible();
 
-  const timeline = page.getByRole("region", { name: "Turn timeline" });
+  const conversationTab = page.getByRole("tab", { name: "Conversation" });
+  const conversation = page.getByRole("tabpanel", { name: "Conversation" });
+  await expect(conversation.getByRole("region", { name: "Turn timeline" })).toHaveCount(0);
+
+  await page.getByRole("tab", { name: "Trace" }).click();
+  const trace = page.getByRole("tabpanel", { name: "Trace" });
+  const diagnostics = trace.locator("details.trace-turn-diagnostics");
+  await expect(diagnostics).not.toHaveAttribute("open", "");
+  await diagnostics.locator("summary").click();
+  await expect(diagnostics).toHaveAttribute("open", "");
+
+  const timeline = diagnostics.getByRole("region", { name: "Turn timeline" });
   await expect(timeline).toContainText("7 observed Turns");
   for (const status of ["Queued", "In progress", "Waiting", "Completed", "Failed", "Cancelled"]) {
     await expect(timeline.getByRole("img", { name: `Turn status: ${status}` }).first()).toBeVisible();
@@ -1239,7 +1285,7 @@ test("loads every Turn page, reconciles terminal events, and keeps failures besi
   const failed = timeline.locator('[data-turn-id="turn_failed"]');
   await expect(failed).toContainText("The execution could not complete.");
   await expect(failed).toContainText("1 linked Item");
-  await expect(page.getByText("Persisted input before the Turn failed.")).toBeVisible();
+  await expect(trace.getByText("Persisted input before the Turn failed.")).toBeVisible();
   await expect(timeline).toContainText("1 Item is not associated with an observed Turn yet.");
 
   const readsBeforeTerminal = (await fixtureRequests(request)).filter((entry) => (
@@ -1261,14 +1307,14 @@ test("loads every Turn page, reconciles terminal events, and keeps failures besi
 
   await controlFixture(request, { turnsRetrieveStatus: 503 });
   await page.getByRole("button", { name: "Recover durable state" }).click();
+  await expect(trace.locator(".trace-load-error").filter({ hasText: "Turn history is incomplete" })).toBeVisible();
   await expect(timeline.locator(".turn-timeline-failure")).toContainText("Couldn’t load Turn history");
   await expect(timeline).toContainText("last observed Turn timeline remains visible");
-  await expect(page.getByText("Completed Turn output remains in the conversation.")).toBeVisible();
-  await expect(page.getByLabel("Message the Agent")).toBeVisible();
+  await expect(trace.getByText("Completed Turn output remains in the conversation.")).toBeVisible();
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await timeline.evaluate((element) => element.scrollIntoView({ block: "start" }));
-  const widths = await timeline.evaluate((element) => {
+  await diagnostics.evaluate((element) => element.scrollIntoView({ block: "start" }));
+  const diagnosticsLayout = await diagnostics.evaluate((element) => {
     const box = element.getBoundingClientRect();
     return {
       viewport: innerWidth,
@@ -1276,13 +1322,25 @@ test("loads every Turn page, reconciles terminal events, and keeps failures besi
       body: document.body.scrollWidth,
       left: box.left,
       right: box.right,
+      overflowY: getComputedStyle(element).overflowY,
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
     };
   });
-  expect(widths.document).toBeLessThanOrEqual(widths.viewport);
-  expect(widths.body).toBeLessThanOrEqual(widths.viewport);
-  expect(widths.left).toBeGreaterThanOrEqual(0);
-  expect(widths.right).toBeLessThanOrEqual(widths.viewport);
-  await attachElementScreenshot(timeline, testInfo, "narrow-turn-timeline");
+  expect(diagnosticsLayout.document).toBeLessThanOrEqual(diagnosticsLayout.viewport);
+  expect(diagnosticsLayout.body).toBeLessThanOrEqual(diagnosticsLayout.viewport);
+  expect(diagnosticsLayout.left).toBeGreaterThanOrEqual(0);
+  expect(diagnosticsLayout.right).toBeLessThanOrEqual(diagnosticsLayout.viewport);
+  expect(diagnosticsLayout.overflowY).toBe("auto");
+  expect(diagnosticsLayout.scrollHeight).toBeGreaterThan(diagnosticsLayout.clientHeight);
+  await diagnostics.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await expect(timeline.locator(".turn-card").last()).toBeVisible();
+  await attachElementScreenshot(diagnostics, testInfo, "narrow-turn-diagnostics");
+
+  await conversationTab.click();
+  await expect(conversation.getByRole("region", { name: "Turn timeline" })).toHaveCount(0);
+  await expect(conversation.getByText("Completed Turn output remains in the conversation.")).toBeVisible();
+  await expect(page.getByLabel("Message the Agent")).toBeVisible();
 });
 
 test("presents an honest searchable Trace workbench without changing the conversation draft", async ({ page, request }, testInfo) => {
@@ -1311,12 +1369,14 @@ test("presents an honest searchable Trace workbench without changing the convers
   const trace = page.getByRole("tabpanel", { name: "Trace" });
   await expect(trace).toBeVisible();
   await expect(trace).toContainText("Known Turn time");
-  await expect(trace.getByText("7 observed Turns")).toHaveCount(0);
+  const diagnostics = trace.locator("details.trace-turn-diagnostics");
+  await expect(diagnostics).not.toHaveAttribute("open", "");
+  await expect(diagnostics.locator("summary")).toContainText("Turn diagnostics");
   await expect(trace).toContainText("Turns");
   await expect(trace).toContainText("Tool calls");
   await expect(trace).toContainText("Equal-width sequence · not time-scaled");
   await expect(trace.locator(".trace-order-scroll")).toHaveCount(1);
-  await expect(trace).toContainText("Per-item timing is unavailable");
+  await expect(trace).toContainText("Core reports Turn wall-clock time, but not per-item timing");
   await expect(trace).toContainText("Configured instructions");
   await expect(trace).toContainText("Completed Turn output remains in the conversation.");
   await expect(trace).not.toContainText("TTFT");
@@ -1326,9 +1386,14 @@ test("presents an honest searchable Trace workbench without changing the convers
   await search.fill("Persisted input failed");
   await expect(trace.locator(".trace-ledger-row")).toHaveCount(1);
   await expect(trace).toContainText("Persisted input before the Turn failed.");
+  const messageDuration = trace.locator(".trace-ledger-row").filter({ hasText: "Persisted input before the Turn failed." }).locator(".trace-row-duration");
+  await expect(messageDuration.locator('[aria-hidden="true"]')).toHaveText("—");
+  await expect(messageDuration).toHaveAttribute("title", "Core does not provide per-item timing.");
+  await expect(messageDuration.locator(".trace-visually-hidden")).toHaveText("Per-item timing not provided by Core.");
   await search.fill("");
 
   const patchRow = trace.locator(".trace-ledger-row-tools").filter({ hasText: "apply_patch" }).first();
+  await expect(patchRow.locator('.trace-row-duration [aria-hidden="true"]')).toHaveText("41 ms");
   await patchRow.click();
   const detail = page.getByRole("complementary", { name: "Trace item details" });
   await expect(detail).toBeVisible();
@@ -1400,16 +1465,23 @@ test("drops a delayed Turn page after switching Sessions", async ({ page, reques
     turnsPageSize: 2,
   });
   await page.goto("/");
-  const timeline = page.getByRole("region", { name: "Turn timeline" });
   await expect(page.getByText("Completed Turn output remains in the conversation.")).toBeVisible({ timeout: 1_500 });
+  await page.getByRole("tab", { name: "Trace" }).click();
+  const diagnostics = page.locator("details.trace-turn-diagnostics");
+  await diagnostics.locator("summary").click();
+  const timeline = diagnostics.getByRole("region", { name: "Turn timeline" });
   await expect(timeline).toContainText("Loading every Turn page");
   await page.getByRole("button", { name: "Agents" }).click();
   await expect(page.getByRole("table", { name: "Agents" })).toBeVisible();
   await page.getByRole("button", { name: /Start a Session with Second Agent/ }).click();
 
-  await expect(timeline).toContainText("No Turns reported yet.");
+  await page.getByRole("tab", { name: "Trace" }).click();
+  const nextDiagnostics = page.locator("details.trace-turn-diagnostics");
+  await nextDiagnostics.locator("summary").click();
+  const nextTimeline = nextDiagnostics.getByRole("region", { name: "Turn timeline" });
+  await expect(nextTimeline).toContainText("No Turns reported yet.");
   await page.waitForTimeout(3_000);
-  await expect(timeline).not.toContainText("turn_queued");
+  await expect(nextTimeline).not.toContainText("turn_queued");
   await expect(page.getByText("Completed Turn output remains in the conversation.")).toHaveCount(0);
 
   const turnReads = (await fixtureRequests(request)).filter((entry) => (

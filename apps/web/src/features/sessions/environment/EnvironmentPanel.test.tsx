@@ -64,11 +64,9 @@ function render(environment: AgentEnvironment, live: EnvironmentObservation | nu
 }
 
 describe("EnvironmentPanel", () => {
-  it("renders environment:none as Core-owned with no Workspace", () => {
+  it("does not render Environment or Workspace UI for environment:none", () => {
     const html = render({ type: "none" });
-    expect(html).toContain("Core-owned");
-    expect(html).toContain("No Workspace");
-    expect(html).not.toContain("file://");
+    expect(html).toBe("");
   });
 
   it("renders a canonical durable UUID for an uppercase Session Environment identity", () => {

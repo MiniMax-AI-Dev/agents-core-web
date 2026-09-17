@@ -144,7 +144,7 @@ function TurnCard({ turn, itemCount, now }: { turn: AgentTurn; itemCount: number
           <strong>Turn error</strong>
           <code>{error.code}</code>
           <p>{error.message}</p>
-          <small>Conversation Items remain visible below.</small>
+          <small>Durable conversation Items remain available in the Conversation tab.</small>
         </div>
       ) : null}
 

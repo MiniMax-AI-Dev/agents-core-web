@@ -102,7 +102,7 @@ describe("Turn timeline presentation", () => {
 
     expect(html).toContain("2 linked Items");
     expect(html).toContain("Safe durable failure");
-    expect(html).toContain("Conversation Items remain visible below.");
+    expect(html).toContain("Durable conversation Items remain available in the Conversation tab.");
     expect(html).toContain("1 Item is not associated with an observed Turn yet.");
   });
 

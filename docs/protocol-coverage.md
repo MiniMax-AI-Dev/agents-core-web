@@ -88,6 +88,10 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 - Saved Agent names are limited to 128 Unicode characters. Agent metadata is limited
   to 16 string pairs, 64 Unicode characters per key, and 512 per value; the Web
   enforces those limits before a write.
+- A selected `environment:none` Session renders no Environment or Workspace panel;
+  absence of that optional UI is not an error and does not block conversation use.
+  Read-only Environment status is shown only for a real `self_hosted` projection or
+  for an unsupported Environment variant that must fail closed.
 - Parsar Core at the audited revision supports Session-bound `self_hosted` data and
   its documented event inputs. This Web does not create or connect that profile; it
   safely renders selected Sessions that already carry one. That read-only projection
@@ -274,7 +278,9 @@ read keeps the existing conversation usable.
   `limit=100&order=asc`, follows `has_more` using the last returned Turn ID when the
   optional list cursors are absent, and rejects a repeated/cyclic cursor or a Turn
   scoped to another Session. Reads are abortable and never retried automatically.
-- The timeline presents observed Core snapshots for `queued`, `in_progress`,
+- Trace keeps the complete Turn timeline in a collapsed **Turn diagnostics**
+  disclosure so Conversation remains focused on messages and composing. The
+  diagnostics present observed Core snapshots for `queued`, `in_progress`,
   `waiting`, `completed`, `failed`, and `cancelled`. Its all-pages read supplies the
   authoritative creation order, while a newer exact lifecycle SSE snapshot may
   advance a Turn before that read settles. Live projection is limited to exact
