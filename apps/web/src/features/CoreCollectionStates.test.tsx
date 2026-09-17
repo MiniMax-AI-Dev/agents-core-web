@@ -197,7 +197,7 @@ describe("Agent Core collection states", () => {
     expect(failed).toContain("Couldn’t refresh Sessions");
     expect(failed).toContain("sessions refresh failed");
     expect(failed).toContain("Existing durable item");
-    expect(failed).toContain("listening");
+    expect(failed).toContain("Live events");
     expect(composer).not.toContain("disabled");
   });
 
@@ -335,7 +335,7 @@ describe("Agent Core collection states", () => {
     expect(failed).toContain("Your draft was restored and was not retried.");
     expect(failed).toContain("operator runtime configuration");
     expect(failed).toContain("Core runtime setup");
-    expect(failed).toContain("d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee");
+    expect(failed).toContain("2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e");
     expect(failed).not.toContain("AGENTS_API_DAEMON_WS_URL");
   });
 
@@ -378,6 +378,10 @@ describe("Agent Core collection states", () => {
     );
 
     expect(waiting).toContain('aria-label="Environment connection required"');
+    expect(waiting).toContain('aria-haspopup="dialog"');
+    expect(waiting).toContain('aria-label="Connect environment"');
+    expect(waiting).toContain("Live events");
+    expect(waiting).not.toContain('aria-label="Environment and Workspace status"');
     expect(waiting).toContain("environment_01");
     expect(waiting).toContain("must be connected by the Core operator");
     expect(waiting).toContain('aria-label="Function result required"');

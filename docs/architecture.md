@@ -18,7 +18,7 @@ This boundary is intentional:
   simulated in Web.
 
 The current compatibility audit baseline is Parsar
-[`d91ba48a`](https://github.com/MiniMax-AI-Dev/parsar/commit/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee),
+[`2b34ea46`](https://github.com/MiniMax-AI-Dev/parsar/commit/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e),
 whose contract is pinned to `openai-python` 3.13.0 commit
 [`d7c41efe`](https://github.com/openai/openai-python/tree/d7c41efee1b0802b79f3f88a678ef2052b06e9ce/src/openai/resources/beta/agents).
 This is a fixed beta subset, not a claim that every current OpenAI Agents API
@@ -52,10 +52,14 @@ flowchart LR
   end
 
   compatible["Alternative compatible Core"]
+  executor["Caller-managed Linux executor<br/>agents-api-codex-executor"]
+  workspace["Executor-host Workspace"]
   native["Model provider / MCP / tools"]
   user --> ui
   boundary -->|"HTTP JSON + SSE stream<br/>Bearer + agents=v1"| core
   client -. "direct CORS URL<br/>tab-scoped bearer" .-> compatible
+  executor -->|"native registration + opaque relay<br/>separate executor credential"| core
+  executor --> workspace
   adapter --> native
 ```
 
@@ -73,6 +77,7 @@ that is a separate product layer.
 | Agent Core | principal authentication, validation, idempotency, durable Agent/Session/Turn/Item state, live events, scheduling | product organization UI or Web user sessions |
 | `parsar-daemon` | device connection, host capability advertisement, native process lifecycle and translation | public Agents HTTP semantics or product policy |
 | Native adapter | Codex app-server or Claude Agent SDK integration | public API and Web deployment policy |
+| Self-hosted executor | native Codex command/file execution inside its process-user and sandbox boundary | browser UI, Core caller authentication, provider/model credentials |
 | Runtime/environment provider | allocation, attach, lease, recovery, cancellation, cleanup | conversation-resource semantics |
 
 Docker, E2B, and AWS Bedrock AgentCore Runtime are possible core/runtime
@@ -87,15 +92,18 @@ capability and its lifecycle behavior is verified.
 | Browser → proxy/BFF | Same-origin HTTP under `/v1` | Web deployment policy; local proxy holds a Core bearer | Agents Core Web deployment |
 | Proxy/BFF → Core | HTTP JSON and SSE passthrough under `/v1/agents/**` | `Authorization: Bearer …`; `OpenAI-Beta: agents=v1` | Pinned Agents API subset |
 | Core ↔ daemon | Private reverse WebSocket, Parsar JSON envelope protocol | Separate device credential | Parsar internal protocol |
+| Core ↔ self-hosted executor | Native registration plus opaque relay outside `/v1/agents/**` | Operator-issued executor principal credential | Parsar native executor contract |
 | Daemon ↔ Codex | `codex app-server --stdio`; JSON-RPC 2.0 over newline-delimited JSON | Native host configuration | Codex adapter |
 | Daemon ↔ Claude | Packaged Claude Agent SDK bridge | Native host configuration | Claude adapter |
-| Harness ↔ model/tools | Provider-native APIs, MCP, and tool protocols | Provider credential on executor host | Selected harness/provider |
+| Harness ↔ model/tools | Provider-native APIs, MCP, and tool protocols | Provider credential on native harness host | Selected harness/provider |
 
 These interfaces are not interchangeable. In particular:
 
 - the daemon WebSocket URL is not an Agents API base URL;
 - OpenAI Agents API is not the same thing as OpenAI Agents SDK or Responses API;
 - saving a model ID does not select an executor or prove provider availability;
+- a Session Environment ID, connection state, or copied launcher command does not
+  prove native readiness, isolation, or completed execution;
 - multiple saved Agents do not imply protocol multi-agent/Subagent support.
 
 OpenAI's official [Agents guide](https://developers.openai.com/api/docs/guides/agents)
@@ -132,6 +140,22 @@ Creating an idle Session before sending the first message lets the browser open 
 live stream before work starts. A successful submission means Core admitted the
 event; it is not by itself proof that a native Turn completed.
 
+The default Session uses `environment:none`. With the default-off
+`AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS=1` operator flag, the same create boundary can
+instead request a Codex `self_hosted` Environment with an absolute executor-host
+Workspace and empty capability directories. Core returns its Session-scoped
+Environment ID and executor origin. Web may render a launcher template from those
+validated public fields, but an operator starts `agents-api-codex-executor` separately
+on Linux with a private executor credential file. There is no browser-to-executor
+connection.
+
+An optional local-only Docker guide can format that same validated projection with
+an operator-configured, non-secret Docker profile. It remains copy-only: the browser
+has no Docker socket, never reads the credential path, and never starts or observes
+the container. The generated block binds an operator-selected host directory to the
+exact executor Workspace path and keeps state under an Environment-specific host
+directory. Core Environment reads and events remain the only connection truth.
+
 Core persists the authoritative Session, Turn, Item, and supported Environment views.
 Reconnecting SSE does not replay missed events, including when `Last-Event-ID` is
 sent. The current UI therefore reconnects, buffers newly arriving events, retrieves
@@ -149,22 +173,37 @@ successful exact HTTP 204, or receiving a permanent rejection creates a new
 operation. Any other 2xx fails closed and remains uncertain because the documented
 Session events contract admits writes only with 204.
 
+Idle Session creation follows the same no-automatic-retry boundary. Its modal keeps
+the exact Agent/Environment request and idempotency key after failure; only an
+explicit unchanged resubmission reuses the key. Editing the draft creates a new key,
+and a missing response or Core-generation switch never closes the modal as success.
+
 ## Runtime profiles
 
-The Web currently creates `environment: {"type":"none"}` Sessions. Parsar
-`d91ba48a` also exposes Session-bound `self_hosted` data and documented event inputs.
-The Web does not create or connect that profile, but for an already selected
-self-hosted Session it reads the durable
-Environment's exact safe projection and status. Durable `expired` and live-only
-`ready` remain separate states; empty installation arrays do not describe a host or
-Workspace. This profile is not equivalent to the internal daemon socket, Docker,
-E2B, or AWS Bedrock AgentCore Runtime.
+The Web creates `environment: {"type":"none"}` Sessions by default. Parsar
+`2b34ea46` also admits a Codex-only, Session-scoped `self_hosted` profile. Web exposes
+that choice only when the non-secret operator flag is exactly `1`; the absence or any
+other value keeps it hidden. The flag is compiled into presentation and is not a
+capability probe. The request carries only an absolute executor-host
+`workspace_directory` and empty `capability_directories`, creates an idle Session,
+and remains subject to Core's configured execution and executor-registry checks.
+
+For a selected self-hosted Session, Web reads the Environment's exact safe projection
+and status. Durable `expired` and live-only `ready` remain separate states; empty
+installation arrays do not describe a host or Workspace. Connection and status are
+not executor, native-runtime, model, provider, or Turn readiness. The operator-issued
+key stays outside Web, and the Linux launcher—not the browser, Web server, or daemon
+container—owns access to the Workspace. This profile is not a top-level Environment
+catalog, standalone CRUD API, OpenAI-hosted sandbox, Environment template, Files API,
+or automatic Docker/E2B/AWS Bedrock AgentCore provisioning flow; those surfaces stay
+hidden.
 
 `AGENTS_API_ENGINE` selects `codex` by default or the operator-enabled `claude_sdk`
 profile for new Sessions. The request's model is passed to that engine; it is not an
-engine selector. The engine is fixed at Session creation. Core selects and stores a
-device binding on first dispatch; subsequent Turns retain that binding and are not
-transparently migrated to a replacement device.
+engine selector. `self_hosted` requires Codex and must remain disabled in Web for a
+Claude-only deployment. The engine is fixed at Session creation. Core selects and
+stores a device binding on first dispatch; subsequent Turns retain that binding and
+are not transparently migrated to a replacement device.
 
 ## Authentication and deployment
 
@@ -173,12 +212,14 @@ product user. Its key binding includes tenant, organization, project, subject ki
 subject ID, and the digest of a caller bearer. These are explicit operator-assigned
 execution identities; they do not acquire product-user rights.
 
-The local deployment uses four distinct secret boundaries:
+The local deployment uses five distinct secret boundaries:
 
 1. the Vite proxy reads a plaintext `web-token` and injects the Core bearer;
 2. Core reads `keys.json`, which contains principal metadata and only the token digest;
 3. `parsar-daemon` reads an independently generated device `auth.json`;
-4. Codex, Claude, or a provider reads its own credential on the execution host.
+4. a self-hosted Linux executor reads an operator-issued connect-only credential
+   file that Web never receives;
+5. Codex, Claude, or a provider reads its own credential on the native harness host.
 
 The browser defaults to same-origin `/v1`. A manual token for a direct Core URL is a
 development fallback held only in the current tab's `sessionStorage`. The pinned
@@ -196,7 +237,7 @@ workaround.
 The development proxy is loopback-only convenience, not a production security
 boundary. Production must terminate TLS, authenticate Web users, authorize requests,
 and hold the Core bearer in a reverse proxy/BFF. Use the immutable
-[current Parsar setup guide](https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/services/agents-api/README.md#standalone-http-service)
+[current Parsar setup guide](https://github.com/MiniMax-AI-Dev/parsar/blob/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e/services/agents-api/README.md#standalone-http-service)
 for Core lifecycle and treat [Connecting Agent Core](core-connection.md) as a legacy
 Web runbook pinned to the older revision stated at its top.
 
@@ -206,6 +247,7 @@ Web runbook pinned to the older revision stated at its top.
 - [Official OpenAI Agents API overview](https://developers.openai.com/api/docs/guides/agents-api/overview)
 - [Official OpenAI Session lifecycle](https://developers.openai.com/api/docs/guides/agents-api/sessions)
 - [Pinned `openai-python` Agents resources](https://github.com/openai/openai-python/tree/d7c41efee1b0802b79f3f88a678ef2052b06e9ce/src/openai/resources/beta/agents)
-- [Parsar Agents API contract at `d91ba48a`](https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/contracts/agents-api/README.md)
-- [Parsar Environment contract at `d91ba48a`](https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/contracts/agents-api/environments.md)
-- [Parsar standalone service guide at `d91ba48a`](https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/services/agents-api/README.md)
+- [Parsar Agents API contract at `2b34ea46`](https://github.com/MiniMax-AI-Dev/parsar/blob/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e/contracts/agents-api/README.md)
+- [Parsar Environment contract at `2b34ea46`](https://github.com/MiniMax-AI-Dev/parsar/blob/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e/contracts/agents-api/environments.md)
+- [Parsar standalone service guide at `2b34ea46`](https://github.com/MiniMax-AI-Dev/parsar/blob/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e/services/agents-api/README.md)
+- [Parsar native Codex executor at `2b34ea46`](https://github.com/MiniMax-AI-Dev/parsar/blob/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e/packages/codex-executor/README.md)

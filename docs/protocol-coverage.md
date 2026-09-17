@@ -6,14 +6,15 @@ OpenAI-hosted service compatibility.
 ## Compatibility baseline
 
 - Current immutable Parsar Core capability baseline:
-  [`d91ba48a`](https://github.com/MiniMax-AI-Dev/parsar/commit/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee).
+  [`2b34ea46`](https://github.com/MiniMax-AI-Dev/parsar/commit/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e).
   This immutable revision re-confirms the Web-used Agent admission, chat, and
   Environment and trace-observability boundaries. `OpenAI-Beta: agents=v1` plus the
   `/v1/agents/**` resources and Session events endpoint are the versioned Web/Core
   contract. Core exposes no additional public execution-readiness, capability, or
   build-version resource; Web does not require one before using the documented chat
-  events. It exposes Environment retrieve plus Session-bound `self_hosted` data, but
-  no public Environment list, template, file-management, or browser-facing key route.
+  events. It exposes Codex-only, Session-scoped `self_hosted` creation and Environment
+  retrieval, but no public Environment list or standalone CRUD, hosted Environment,
+  template, file-management, or browser-facing key route.
 - Upstream resource source: `openai-python` 3.13.0 beta Agents resources at
   [`d7c41efe`](https://github.com/openai/openai-python/tree/d7c41efee1b0802b79f3f88a678ef2052b06e9ce/src/openai/resources/beta/agents)
 - Required beta header: `OpenAI-Beta: agents=v1`
@@ -35,7 +36,7 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 | --- | --- | --- | --- |
 | Saved Agents create/list | Yes | Yes | Dedicated setup covers model, name, instructions, bounded metadata, and the Session-safe text/medium/implicit-reasoning/auto-tier profile; the broader Saved Agent contract is not execution proof |
 | Saved Agents retrieve/update/delete | Yes | Yes | Agent details support viewing, editing, and deleting saved Agents |
-| Sessions create/list/retrieve | Yes | Yes | UI creates idle `environment:none` Sessions; client types also cover the pinned `self_hosted` request and safe response projection |
+| Sessions create/list/retrieve | Yes | Yes | UI creates idle `environment:none` Sessions by default; the default-off operator flag can expose the pinned Codex-only, Session-scoped `self_hosted` request and safe response projection |
 | Sessions update/delete | Yes | Yes | Title/string metadata editing and one-Session confirmed deletion; no bulk or Workspace deletion |
 | Session live events | Yes | Yes | Authenticated `fetch` stream, not `EventSource` |
 | Input message / steering | Yes | Yes | Opens SSE before submitting `agent.session.input.message`; only HTTP 204 is durable admission, while Core errors or an unexpected 2xx remain visible and uncertain failures retain the in-memory payload/key for an explicit unchanged manual retry only |
@@ -47,19 +48,25 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 | Function result/error | Yes | Yes | Supports text `agent.session.input.tool_result` success/error handoff for exact `function_call` actions |
 | Initial-input creation stream | Later | No | Idle-create flow avoids the early-event race |
 | Artifacts/files | Later | No | Required Core resources are not implemented |
-| Environment connection action | Yes | Render-only | `environment_connection` is distinct from a function call; Web shows an operator-owned, non-actionable state and sends no result |
+| Environment connection action | Yes | Guided, not submitted | `environment_connection` is distinct from a function call; Web can show an operator-run launcher template but sends no result and never opens the native transport |
 | Environment lifecycle events | Yes | Read-only | UI projects pinned pending, ready, connected, disconnected, and failed live snapshots; unknown/malformed status events clear prior live claims and render as unavailable |
-| Environment retrieve | Yes | Yes, read-only | For a valid `self_hosted` Session Environment ID, reads the exact public resource fields and durable status; no create/list/update/delete support |
+| Environment retrieve | Yes | Yes, read-only | For a valid `self_hosted` Session Environment ID, reads the exact public resource fields and durable status; there is no standalone Environment create/list/update/delete resource |
 | Environment overview | No public list API | No top-level UI | Web does not turn loaded Session projections into a catalog; a selected Session may still show its exact Environment data |
 | Environment templates | No | Hidden | No navigation or Create entry is shown without a Core contract |
-| Environment keys | No public browser API | Hidden | Operator-issued executor credentials never enter browser state, request previews, navigation, or Create actions |
+| Environment keys | No public browser API | Hidden | Operator-issued executor credentials stay on executor compute and never enter browser state, request previews, navigation, or Create actions |
 | Vaults | Later | No | Credentials must never be stored in browser metadata |
 | Protocol Subagents / enabled multi-agent | Later | No | Distinct from storing multiple Agent configurations |
 | Usage/observability | Response types | Yes, scoped | Session aggregate and per-Turn token Usage are labelled separately; unavailable measurements remain unknown, not zero |
 
 ## Runtime boundary
 
-- The Web currently creates only `environment: {"type":"none"}` Sessions.
+- The Web creates `environment: {"type":"none"}` Sessions by default. The
+  non-secret `AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS=1` build/dev-server flag exposes
+  a second, Codex-only `self_hosted` choice for an operator-reviewed Core deployment.
+  The flag is off by default because Core has no public capability-discovery route.
+  It changes Web presentation only; it is not evidence that the connected Core has
+  configured execution, an executor registry, a reachable executor origin, or a
+  ready native runtime, model, or provider.
 - Message, active-Turn steering, cancel, and function-result/error writes use the
   current `agents=v1` Session events contract. Web does not add a separate private
   runtime-readiness gate. Only exact HTTP 204 denotes durable event admission;
@@ -75,7 +82,7 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
   `${AGENTS_CORE_API_KEY}` placeholder; it never reads or renders the connection's
   server-managed or current-tab bearer.
 - Saved Agent persistence and Session execution are separate contracts. Parsar
-  `d91ba48a` can store explicit reasoning, non-`auto` service tiers, and JSON-schema
+  `2b34ea46` can store explicit reasoning, non-`auto` service tiers, and JSON-schema
   text formats, but rejects each of them before creating a Session. Enabled
   multi-agent configuration, saved-only tool types, deferred/invalid/duplicate
   function or MCP identities, and MCP credentials without attached Vaults are
@@ -92,16 +99,38 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
   absence of that optional UI is not an error and does not block conversation use.
   Read-only Environment status is shown only for a real `self_hosted` projection or
   for an unsupported Environment variant that must fail closed.
-- Parsar Core at the audited revision supports Session-bound `self_hosted` data and
-  its documented event inputs. This Web does not create or connect that profile; it
-  safely renders selected Sessions that already carry one. That read-only projection
-  does not expand the missing Environment create/list/update/delete, template, or
-  file-operation surface.
+- Parsar Core at the audited revision supports creating a `self_hosted` Environment
+  only as part of a Codex Session. When the operator flag is enabled, Web can create
+  an idle Session with an absolute executor-host `workspace_directory` and exactly
+  empty `capability_directories`. It does not accept initial input in this setup flow,
+  create an Environment independently, choose an executor, or claim the requested
+  Workspace exists. A Core rejection leaves the setup visible and is never retried
+  automatically. The exact failed draft retains its in-memory idempotency key for an
+  explicit unchanged manual retry; changing its Agent or Environment fields creates
+  a new key and operation.
 - The reusable client distinguishes the admitted `self_hosted` request fields
   (`workspace_directory` and optional `capability_directories`) from the safe Session
   response projection (`id`, `remote_url`, `workspace_directory`, and normalized
   `capability_directories`). Unknown Environment variants remain opaque, inspectable
   records and are not eligible creation inputs.
+- A successful self-hosted Session response supplies the Environment ID and
+  `remote_url` used by the connection guide. A runnable launcher template is shown
+  only for a complete known projection with a canonical Environment UUID and a
+  strictly valid HTTPS executor origin or loopback HTTP development origin. The
+  template uses static `$REMOTE_URL` and
+  `$ENVIRONMENT_ID` variables plus credential-file and Codex-binary path placeholders;
+  it never embeds an executor token, caller bearer, provider credential, URL userinfo,
+  query, or fragment. Copying the template does not start an executor.
+- An optional, default-off local Docker guide is presentation policy layered on
+  that same strict projection; it is not an Agents API resource or executor
+  capability. It is rendered only for a loopback HTTP origin and a complete
+  operator build profile containing non-secret image, API-container, numeric-user,
+  credential-path, and runtime-root strings. The copied block uses an exact
+  Environment UUID, a stable per-Environment container/state directory, and an
+  explicit host-to-Environment Workspace bind. Web never reads the credential,
+  opens Docker, executes the block, retries it, or treats copying/running it as
+  connection or runtime readiness. Existing queued input may execute when the
+  operator connects the Environment.
 - `required_actions` is a discriminated union. `function_call` carries call, Turn,
   function-name, and argument fields; `environment_connection` carries only
   `environment_id`. The initial Web renders the latter as an operator-owned wait and
@@ -144,8 +173,12 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
   `function_call` result form and has no result submission control.
 - Workspace means the execution directory within this Environment. It is not a
   top-level workspaces API, file browser, editor, or artifact capability. The UI
-  links to the immutable pinned Core and caller-started launcher setup documentation;
-  it does not connect to daemon/executor transports or mutate Environments.
+  links to the immutable pinned Core and caller-started launcher setup documentation.
+  The path must be absolute and already meaningful on the caller-managed Linux
+  executor; it is not a browser, Web-server, or daemon-container path. The operator
+  issues the executor credential outside Web, stores it in a private file on that
+  compute, and starts `agents-api-codex-executor` there. Web never reads the file,
+  starts a process or container, or connects to daemon/executor transports.
 - Known Item and Session-event discriminants remain typed. Unknown variants retain
   their raw fields for inspection, but consumers must treat them as unavailable
   rather than infer a known rendering or action.
@@ -163,7 +196,8 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 - Docker, E2B, and AWS Bedrock AgentCore Runtime each need an upstream lifecycle and
   capability contract before the Web can advertise them.
 - `AGENTS_API_ENGINE` selects `codex` or an operator-enabled `claude_sdk` profile for
-  new Sessions. The browser sends a model ID, not an executor selector.
+  new Sessions. The pinned `self_hosted` profile is Codex-only; the browser sends a
+  model ID and Workspace path, not an engine or executor selector.
 - Core has no standard model-catalog or capability-discovery route in this surface.
   Web model presets are editable suggestions. Known reasoning, tier, format,
   multi-agent, executable-tool-shape, and unattached-credential incompatibilities
@@ -172,10 +206,11 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
   Web never sends a paid Turn merely as a capability probe. Claude SDK accepts
   medium verbosity only.
 
-Environment creation and management beyond the narrow read, provider selection,
-Files, Plugins, Skills, Artifacts, Vault, hosted runtimes, and Workspace lifecycle
-controls remain unsupported by this Web or out of scope. Parsar's additional pinned
-handlers are not Web-supported merely because they exist upstream.
+Environment creation and management beyond the narrow Session-scoped `self_hosted`
+creation flow, top-level list/CRUD, provider selection, Files, Plugins, Skills,
+Artifacts, Vault, hosted runtimes, templates, key management, and Workspace lifecycle
+controls remain unsupported or hidden. Parsar's additional pinned handlers are not
+Web-supported merely because they exist upstream.
 
 ## Session metadata and deletion
 
@@ -310,7 +345,7 @@ read keeps the existing conversation usable.
 
 ## Trace workbench boundary
 
-- Against the immutable Parsar `d91ba48a` capability baseline, the trace workbench
+- Against the immutable Parsar `2b34ea46` capability baseline, the trace workbench
   is a read-only projection of the selected Session's Agent snapshot, all loaded
   Turn and Item snapshots, and accepted newer lifecycle events. A Turn can contribute
   its exact status, start/completion timestamps, and available token totals. An Item

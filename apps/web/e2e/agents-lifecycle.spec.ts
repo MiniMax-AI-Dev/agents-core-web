@@ -108,6 +108,37 @@ async function openAgents(page: Page, request: APIRequestContext) {
   await expect(page.getByRole("table", { name: "Agents" })).toBeVisible();
 }
 
+async function startSessionWithSecondAgent(page: Page) {
+  await page.getByRole("button", { name: /Start a Session with Second Agent/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Start an idle Session" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Create Session" }).click();
+}
+
+function environmentTrigger(page: Page) {
+  return page.getByRole("button", { name: /Environment|Connect environment/i });
+}
+
+function connectedLiveEvents(page: Page) {
+  return page.getByRole("status", { name: "Session live events: connected" });
+}
+
+async function openEnvironmentDialog(page: Page) {
+  const conversation = page.getByRole("tabpanel", { name: "Conversation" });
+  await expect(conversation.getByRole("region", { name: "Environment and Workspace status" })).toHaveCount(0);
+
+  const trigger = environmentTrigger(page);
+  await expect(trigger).toBeVisible();
+  await expect(trigger).toHaveAttribute("aria-haspopup", "dialog");
+  await trigger.click();
+
+  const dialog = page.getByRole("dialog", { name: "Environment" });
+  await expect(dialog).toBeVisible();
+  const panel = dialog.getByRole("region", { name: "Environment and Workspace status" });
+  await expect(panel).toBeVisible();
+  return { dialog, panel, trigger };
+}
+
 async function attachScreenshot(page: Page, testInfo: TestInfo, name: string) {
   await testInfo.attach(name, {
     body: await page.screenshot({ fullPage: true, animations: "disabled" }),
@@ -299,8 +330,17 @@ test("continues from a default Agent definition into an admitted idle Session", 
 
   await expect(page.getByRole("button", { name: "Start Session" })).toBeEnabled();
   await page.getByRole("button", { name: "Start Session" }).click();
+  const sessionDialog = page.getByRole("dialog", { name: "Start an idle Session" });
+  await expect(sessionDialog).toBeVisible();
+  await expect(sessionDialog.getByLabel("Saved Agent")).toHaveValue(/^agent_created_/);
+  await expect(sessionDialog.getByRole("radio", { name: /No environment/ })).toBeChecked();
+  await sessionDialog.getByRole("button", { name: "Create Session" }).click();
   await expect(page.getByRole("button", { name: "Sessions", exact: true })).toHaveAttribute("aria-current", "page");
-  await expect(page.getByRole("region", { name: "Environment and Workspace status" })).toHaveCount(0);
+  await expect(environmentTrigger(page)).toHaveCount(0);
+  await expect(
+    page.getByRole("tabpanel", { name: "Conversation" })
+      .getByRole("region", { name: "Environment and Workspace status" }),
+  ).toHaveCount(0);
 
   const sessionCreates = (await fixtureRequests(request)).filter((entry) => (
     entry.method === "POST" && entry.path === "/v1/agents/sessions"
@@ -372,6 +412,10 @@ test("starts only Agents that pass known Session admission", async ({ page, requ
     entry.method === "POST" && entry.path === "/v1/agents/sessions"
   )).length;
   await page.getByRole("button", { name: "Start a Session with Second Agent" }).click();
+  const sessionDialog = page.getByRole("dialog", { name: "Start an idle Session" });
+  await expect(sessionDialog).toBeVisible();
+  await expect(sessionDialog.getByLabel("Saved Agent")).toHaveValue("agent_b");
+  await sessionDialog.getByRole("button", { name: "Create Session" }).click();
   await expect(page.getByRole("button", { name: "Sessions", exact: true })).toHaveAttribute("aria-current", "page");
 
   const sessionCreates = (await fixtureRequests(request)).filter((entry) => (
@@ -383,6 +427,64 @@ test("starts only Agents that pass known Session admission", async ({ page, requ
     environment: { type: "none" },
     stream: false,
   });
+});
+
+test("creates the bounded self-hosted profile and renders a secret-free connection guide", async ({ page, request }) => {
+  await openAgents(page, request);
+  const sessionPostsBefore = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions"
+  )).length;
+
+  await page.getByRole("button", { name: "Start a Session with Second Agent" }).click();
+  const dialog = page.getByRole("dialog", { name: "Start an idle Session" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel("Saved Agent")).toHaveValue("agent_b");
+  await dialog.getByRole("radio", { name: /Self-hosted/ }).check();
+  const workspace = dialog.getByLabel("Workspace directory");
+  await workspace.fill("relative/workspace");
+  await expect(dialog.getByText("Workspace directory must be an absolute POSIX path")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Create Session" })).toBeDisabled();
+  expect((await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions"
+  ))).toHaveLength(sessionPostsBefore);
+
+  await workspace.fill("/executor/workspace");
+  await expect(dialog.getByRole("button", { name: "Create Session" })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Create Session" }).click();
+
+  const { dialog: environmentDialog, panel: environmentPanel, trigger } = await openEnvironmentDialog(page);
+  await expect(environmentPanel).toBeVisible();
+  await expect(environmentPanel).toContainText("Self-hosted Environment");
+  await expect(environmentPanel).toContainText("0f745b0d-b545-49cd-8d7e-4c31c80dc564");
+  await expect(environmentPanel).toContainText("https://executor.example.test");
+  await expect(environmentPanel).toContainText("/executor/workspace");
+  await expect(environmentPanel).toContainText("Pending");
+
+  await expect(environmentPanel.locator("details.environment-launcher-guide")).toHaveAttribute("open", "");
+  await expect(environmentPanel.getByRole("button", { name: "Copy native command" })).toBeVisible();
+  await expect(environmentPanel).toContainText("agents-api-codex-executor");
+  await expect(environmentPanel).toContainText("$HOME/.parsar/executor-key.json");
+  await expect(environmentPanel).toContainText("Web copies its path but never creates, reads, stores, or transmits the key");
+  await expect(environmentPanel).not.toContainText("executor_token");
+  await expect(environmentPanel).not.toContainText("Authorization: Bearer");
+
+  await page.keyboard.press("Escape");
+  await expect(environmentDialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+
+  const requests = await fixtureRequests(request);
+  const sessionCreates = requests.filter((entry) => entry.method === "POST" && entry.path === "/v1/agents/sessions");
+  expect(sessionCreates).toHaveLength(sessionPostsBefore + 1);
+  expect(sessionCreates.at(-1)?.body).toEqual({
+    agent_id: "agent_b",
+    environment: {
+      type: "self_hosted",
+      workspace_directory: "/executor/workspace",
+      capability_directories: [],
+    },
+    stream: false,
+  });
+  expect(requests.filter((entry) => entry.method === "POST" && entry.path.endsWith("/events"))).toHaveLength(0);
 });
 
 test("keeps the New Session reason keyboard-accessible when every loaded Agent is incompatible", async ({ page, request }) => {
@@ -585,7 +687,7 @@ test("keeps the Agent ledger and dialogs usable at 390 px in light and dark mode
 
 test("starts one Session with an idempotency key and without browser authorization", async ({ page, request }) => {
   await openAgents(page, request);
-  await page.getByRole("button", { name: /Start a Session with Second Agent/ }).click();
+  await startSessionWithSecondAgent(page);
   await expect(page.getByRole("heading", { name: "Sessions" })).toBeVisible();
 
   const requests = await fixtureRequests(request);
@@ -599,10 +701,42 @@ test("starts one Session with an idempotency key and without browser authorizati
   }
 });
 
+test("keeps one Session create attempt across response loss and an unchanged manual retry", async ({ page, request }) => {
+  await openAgents(page, request);
+  await page.getByRole("button", { name: /Start a Session with Second Agent/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Start an idle Session" });
+  const create = dialog.getByRole("button", { name: "Create Session" });
+  await controlFixture(request, { sessionCreateDelayMs: 1_500, sessionCreateResponseLoss: 1 });
+
+  await create.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect(dialog.getByRole("alert")).toContainText("Agent core request failed (502).");
+  await expect(dialog.getByText("Retrying this unchanged form reuses the original idempotency key.")).toBeVisible();
+
+  let creates = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions"
+  ));
+  expect(creates).toHaveLength(1);
+  const originalKey = creates[0]?.idempotencyKey;
+  expect(originalKey).toBeTruthy();
+  expect((await fixtureState(request)).sessions).toHaveLength(2);
+
+  await create.click();
+  await expect(page.getByRole("heading", { name: "Sessions" })).toBeVisible();
+  creates = (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions"
+  ));
+  expect(creates).toHaveLength(2);
+  expect(creates[1]?.idempotencyKey).toBe(originalKey);
+  expect((await fixtureState(request)).sessions).toHaveLength(2);
+});
+
 test("shows composer activity only for a Core-reported in-progress Session", async ({ page, request }, testInfo) => {
   await resetFixture(request);
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
 
   const activity = page.locator(".conversation-activity");
   await expect(activity).toHaveCount(0);
@@ -620,10 +754,51 @@ test("shows composer activity only for a Core-reported in-progress Session", asy
   await expect(page.getByRole("button", { name: "Send message" })).toBeVisible();
 });
 
+test("shows immediate local feedback while a message submission is waiting for Core", async ({ page, request }) => {
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(connectedLiveEvents(page)).toBeVisible();
+
+  let releaseSend: (() => void) | undefined;
+  const sendGate = new Promise<void>((resolve) => {
+    releaseSend = resolve;
+  });
+  let interceptedSends = 0;
+  await page.route("**/v1/agents/sessions/*/events", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    interceptedSends += 1;
+    await sendGate;
+    await route.continue();
+  });
+
+  const composer = page.getByLabel("Message the Agent");
+  await composer.fill("Immediate pending message");
+  await composer.press("Enter");
+
+  const pending = page.locator('[data-send-state="sending"]');
+  await expect(pending).toBeVisible();
+  await expect(pending).toContainText("Immediate pending message");
+  await expect(pending).toContainText("Sending…");
+  await expect(page.locator(".conversation-activity")).toContainText("Sending message…");
+  await expect(page.getByText("Lifecycle Agent is working…")).toHaveCount(0);
+  await expect(composer).toHaveValue("");
+  await expect.poll(() => interceptedSends).toBe(1);
+
+  releaseSend?.();
+  await expect(pending).toHaveCount(0);
+  await expect(page.locator(".conversation-activity")).toHaveCount(0);
+  await expect.poll(async () => (await fixtureRequests(request)).filter(
+    (entry) => entry.method === "POST" && entry.path.endsWith("/events"),
+  ).length).toBe(1);
+});
+
 test("updates Session title and metadata after a latest read while preserving failed and unknown drafts", async ({ page, request }) => {
   await resetFixture(request);
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
   const manage = page.locator(".conversation-session-action");
   const streamReadsBefore = (await fixtureRequests(request)).filter((entry) => (
     entry.method === "GET" && entry.path.endsWith("/events")
@@ -685,7 +860,7 @@ test("updates Session title and metadata after a latest read while preserving fa
 test("preserves and safely rebases a Session metadata draft after a same-key conflict", async ({ page, request }) => {
   await resetFixture(request);
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
   await page.locator(".conversation-session-action").click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("button", { name: "Edit", exact: true })).toBeEnabled();
@@ -720,7 +895,7 @@ test("preserves and safely rebases a Session metadata draft after a same-key con
 test("rejects wrong-id and deep-malformed Session reads before writes or delete retries", async ({ page, request }) => {
   await resetFixture(request);
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
 
   await controlFixture(request, { sessionRetrieveVariant: "wrong_id" });
   await page.locator(".conversation-session-action").click();
@@ -760,7 +935,7 @@ test("rejects wrong-id and deep-malformed Session reads before writes or delete 
 test("requires confirmation and reconciles unknown Session deletes once without retrying the write", async ({ page, request }) => {
   await resetFixture(request);
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
   const manage = page.locator(".conversation-session-action");
   await manage.click();
   const dialog = page.getByRole("dialog");
@@ -838,7 +1013,7 @@ test("requires confirmation and reconciles unknown Session deletes once without 
 test("keeps a stale Session row and surfaces each explicit repeated 404 deletion", async ({ page, request }) => {
   await resetFixture(request);
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
   const manage = page.locator(".conversation-session-action");
   await manage.click();
   const dialog = page.getByRole("dialog");
@@ -854,14 +1029,14 @@ test("keeps a stale Session row and surfaces each explicit repeated 404 deletion
   }
 });
 
-test("deletes an inactive Session without disturbing the active composer or listening stream", async ({ page, request }) => {
+test("deletes an inactive Session without disturbing the active composer or live event stream", async ({ page, request }) => {
   await resetFixture(request);
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
   await page.getByRole("button", { name: "Agents" }).click();
-  await page.getByRole("button", { name: /Start a Session with Second Agent/ }).click();
+  await startSessionWithSecondAgent(page);
   await expect(page.locator(".conversation-header h2")).toHaveText("Second Agent");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
   const composer = page.getByLabel("Message the Agent");
   await composer.fill("active draft must survive");
   const before = await fixtureState(request);
@@ -888,7 +1063,7 @@ test("deletes an inactive Session without disturbing the active composer or list
   await expect(dialog).toHaveCount(0);
   await expect(inactiveRow).toHaveCount(0);
   await expect(composer).toHaveValue("active draft must survive");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
   await expect(page.locator(".conversation-session-action")).toBeFocused();
 
   const after = await fixtureState(request);
@@ -926,14 +1101,14 @@ for (const pendingRead of [
     });
     await resetFixture(request);
     await page.goto("/");
-    await expect(page.getByText("listening", { exact: true })).toBeVisible();
+    await expect(connectedLiveEvents(page)).toBeVisible();
     await page.getByRole("button", { name: "Agents" }).click();
-    await page.getByRole("button", { name: /Start a Session with Second Agent/ }).click();
+    await startSessionWithSecondAgent(page);
     await expect(page.locator(".conversation-header h2")).toHaveText("Second Agent");
     await controlFixture(request, { turnsScenario: 1 });
     await page.locator(".session-row").filter({ hasText: "Lifecycle Agent" }).locator(".session-row-select").click();
     await expect(page.locator(".conversation-header h2")).toHaveText("Lifecycle Agent");
-    await expect(page.getByText("listening", { exact: true })).toBeVisible();
+    await expect(connectedLiveEvents(page)).toBeVisible();
     await expect(page.getByText("Completed Turn output remains in the conversation.")).toBeVisible();
     await page.locator(".conversation-session-action").click();
     const dialog = page.getByRole("dialog");
@@ -956,7 +1131,7 @@ for (const pendingRead of [
     await expect(page.getByText("Completed Turn output remains in the conversation.")).toHaveCount(0);
     await expect(page.locator('[data-turn-id="turn_completed"]')).toHaveCount(0);
     await expect(page.locator(".conversation-session-action")).toBeFocused();
-    await expect(page.getByText("listening", { exact: true })).toBeVisible();
+    await expect(connectedLiveEvents(page)).toBeVisible();
 
     await expect.poll(() => failedReads.get(pendingRead.path)).toContain("ERR_ABORTED");
     await expect.poll(async () => (await fixtureState(request)).aborts.streams).toBeGreaterThan(before.aborts.streams);
@@ -969,7 +1144,7 @@ for (const pendingRead of [
 test("aborts a pending manual recovery read after deleting the selected Session", async ({ page, request }) => {
   await resetFixture(request);
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
   await controlFixture(request, { sessionRetrieveDelayMs: 5_000 });
 
   await expectSelectedDeleteAbortsSessionRead(page, request, () => (
@@ -980,7 +1155,7 @@ test("aborts a pending manual recovery read after deleting the selected Session"
 test("aborts a pending detail retry read after deleting the selected Session", async ({ page, request }) => {
   await resetFixture(request);
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
   await controlFixture(request, { sessionRetrieveStatus: 503 });
   await page.getByRole("button", { name: "Recover durable state" }).click();
   const detailError = page.locator(".session-detail-error");
@@ -995,16 +1170,16 @@ test("aborts a pending detail retry read after deleting the selected Session", a
 test("deletes the selected Session while its SSE is still connecting", async ({ page, request }) => {
   await resetFixture(request);
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
   await page.getByRole("button", { name: "Agents" }).click();
-  await page.getByRole("button", { name: /Start a Session with Second Agent/ }).click();
+  await startSessionWithSecondAgent(page);
   await expect(page.locator(".conversation-header h2")).toHaveText("Second Agent");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
 
   await controlFixture(request, { streamOpenDelayMs: 3_000 });
   await page.locator(".session-row").filter({ hasText: "Lifecycle Agent" }).locator(".session-row-select").click();
   await expect(page.locator(".conversation-header h2")).toHaveText("Lifecycle Agent");
-  await expect(page.getByText("connecting", { exact: true })).toBeVisible();
+  await expect(page.getByText("Connecting events…", { exact: true })).toBeVisible();
   const before = await fixtureState(request);
 
   await page.locator(".conversation-session-action").click();
@@ -1022,7 +1197,7 @@ test("keeps Session actions accessible and contained at 390 px in dark mode", as
   await page.setViewportSize({ width: 390, height: 844 });
   await resetFixture(request);
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
   await page.getByRole("button", { name: "Dark theme" }).click();
   const manage = page.locator(".conversation-session-action");
   await manage.focus();
@@ -1067,9 +1242,10 @@ test("renders self-hosted Environment and Workspace state safely across reconnec
     streamCloseDelayMs: 1_000,
   });
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
 
-  const panel = page.getByRole("region", { name: "Environment and Workspace status" });
+  const { dialog, panel, trigger } = await openEnvironmentDialog(page);
+  await expect(trigger).toHaveAccessibleName("Environment pending");
   await expect(panel).toContainText("Self-hosted Environment");
   await expect(panel).toContainText("Pending");
   await expect(panel).toContainText("environment_fixture");
@@ -1097,10 +1273,14 @@ test("renders self-hosted Environment and Workspace state safely across reconnec
   await attachElementScreenshot(panel, testInfo, "desktop-light-environment-panel");
   await attachScreenshot(page, testInfo, "desktop-light-self-hosted-environment");
 
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Dark theme" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  const widths = await panel.evaluate((element) => {
+  const { panel: narrowPanel } = await openEnvironmentDialog(page);
+  const widths = await narrowPanel.evaluate((element) => {
     const box = element.getBoundingClientRect();
     return {
       viewport: innerWidth,
@@ -1114,15 +1294,16 @@ test("renders self-hosted Environment and Workspace state safely across reconnec
   expect(widths.body).toBeLessThanOrEqual(widths.viewport);
   expect(widths.left).toBeGreaterThanOrEqual(0);
   expect(widths.right).toBeLessThanOrEqual(390);
-  await panel.getByRole("link", { name: "Launcher setup" }).focus();
-  await expect(panel.getByRole("link", { name: "Launcher setup" })).toBeFocused();
-  await panel.evaluate((element) => element.scrollIntoView({ block: "start" }));
-  await attachElementScreenshot(panel, testInfo, "narrow-dark-environment-panel");
+  await narrowPanel.getByRole("link", { name: "Launcher setup" }).focus();
+  await expect(narrowPanel.getByRole("link", { name: "Launcher setup" })).toBeFocused();
+  await narrowPanel.evaluate((element) => element.scrollIntoView({ block: "start" }));
+  await attachElementScreenshot(narrowPanel, testInfo, "narrow-dark-environment-panel");
   await attachScreenshot(page, testInfo, "narrow-dark-self-hosted-environment");
 
   await controlFixture(request, { environmentScenario: 2, environmentEventStatus: 0 });
   await page.reload();
-  const unknown = page.getByRole("region", { name: "Environment and Workspace status" });
+  const { panel: unknown, trigger: unknownTrigger } = await openEnvironmentDialog(page);
+  await expect(unknownTrigger).toHaveAccessibleName("Environment unavailable");
   await expect(unknown).toContainText("Environment unavailable");
   await expect(unknown).toContainText("Unknown type");
   await expect(unknown).not.toContainText("/must-not-render");
@@ -1130,7 +1311,7 @@ test("renders self-hosted Environment and Workspace state safely across reconnec
 
   await controlFixture(request, { environmentScenario: 3, environmentEventStatus: 0 });
   await page.reload();
-  const missing = page.getByRole("region", { name: "Environment and Workspace status" });
+  const { panel: missing } = await openEnvironmentDialog(page);
   await expect(missing).toContainText("ID unavailable");
   await expect(missing).toContainText("unsafe or malformed URL");
 });
@@ -1143,9 +1324,10 @@ test("hydrates durable expired and unavailable Environment states without a writ
     environmentEventStatus: 0,
   });
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
 
-  const panel = page.getByRole("region", { name: "Environment and Workspace status" });
+  let { panel, trigger } = await openEnvironmentDialog(page);
+  await expect(trigger).toHaveAccessibleName("Environment expired");
   await expect(panel).toContainText("Expired");
   await expect(panel).toContainText("Environment expired");
   await expect(panel).toContainText("no API-managed files, plugins, or skills");
@@ -1169,6 +1351,8 @@ test("hydrates durable expired and unavailable Environment states without a writ
 
   await controlFixture(request, { environmentRetrieveStatus: 503 });
   await page.reload();
+  ({ panel, trigger } = await openEnvironmentDialog(page));
+  await expect(trigger).toHaveAccessibleName("Environment unavailable");
   await expect(panel).toContainText("Unavailable");
   await expect(panel).toContainText("conversation remains usable");
   await expect(panel).not.toContainText("Expired");
@@ -1180,6 +1364,8 @@ test("hydrates durable expired and unavailable Environment states without a writ
     environmentResourceVariant: "missing_skills",
   });
   await page.reload();
+  ({ panel, trigger } = await openEnvironmentDialog(page));
+  await expect(trigger).toHaveAccessibleName("Environment unavailable");
   await expect(panel).toContainText("Unavailable");
   await expect(page.getByLabel("Message the Agent")).toBeVisible();
 
@@ -1198,10 +1384,11 @@ test("hydrates durable Environment state even when the live stream is rejected",
   });
   await page.goto("/");
 
-  const panel = page.getByRole("region", { name: "Environment and Workspace status" });
+  const { panel, trigger } = await openEnvironmentDialog(page);
+  await expect(trigger).toHaveAccessibleName("Environment expired");
   await expect(panel).toContainText("Expired");
   await expect(panel).toContainText("Status comes from the durable Environment resource");
-  await expect(page.getByText("failed", { exact: true })).toBeVisible();
+  await expect(page.getByText("Events unavailable", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Message the Agent")).toBeVisible();
 
   const requests = await fixtureRequests(request);
@@ -1220,7 +1407,8 @@ test("keeps canonical Environment UUID identity across Session and resource proj
   });
   await page.goto("/");
 
-  const panel = page.getByRole("region", { name: "Environment and Workspace status" });
+  const { panel, trigger } = await openEnvironmentDialog(page);
+  await expect(trigger).toHaveAccessibleName("Environment connected");
   await expect(panel).toContainText("Connected");
   await expect(panel).toContainText("Status comes from the durable Environment resource");
   await expect(panel).not.toContainText("Durable Environment status is unavailable");
@@ -1247,7 +1435,8 @@ test("applies a buffered live Environment event after an earlier durable snapsho
   });
   await page.goto("/");
 
-  const panel = page.getByRole("region", { name: "Environment and Workspace status" });
+  const { panel, trigger } = await openEnvironmentDialog(page);
+  await expect(trigger).toHaveAccessibleName("Environment connected");
   await expect(panel).toContainText("Connected");
   await expect(panel).toContainText("last supported live event observed after the durable Environment snapshot");
   await expect(panel).not.toContainText("Pending");
@@ -1260,7 +1449,7 @@ test("loads every Turn page, reconciles terminal events, and keeps diagnostics o
     turnsPageSize: 2,
   });
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
 
   const conversationTab = page.getByRole("tab", { name: "Conversation" });
   const conversation = page.getByRole("tabpanel", { name: "Conversation" });
@@ -1351,7 +1540,7 @@ test("presents an honest searchable Trace workbench without changing the convers
     itemsScenario: 2,
   });
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
 
   const viewTabs = page.getByRole("tablist", { name: "Session view" });
   const conversationTab = viewTabs.getByRole("tab", { name: "Conversation" });
@@ -1473,7 +1662,7 @@ test("drops a delayed Turn page after switching Sessions", async ({ page, reques
   await expect(timeline).toContainText("Loading every Turn page");
   await page.getByRole("button", { name: "Agents" }).click();
   await expect(page.getByRole("table", { name: "Agents" })).toBeVisible();
-  await page.getByRole("button", { name: /Start a Session with Second Agent/ }).click();
+  await startSessionWithSecondAgent(page);
 
   await page.getByRole("tab", { name: "Trace" }).click();
   const nextDiagnostics = page.locator("details.trace-turn-diagnostics");
@@ -1495,7 +1684,7 @@ test("renders Parsar patches as accessible read-only diffs in desktop and narrow
   await resetFixture(request);
   await controlFixture(request, { itemsScenario: 1 });
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
 
   const completedTrace = page.locator('[data-work-trace="completed"]');
   await completedTrace.getByRole("button", { name: /Completed/ }).click();
@@ -1544,7 +1733,7 @@ test("renders Parsar patches as accessible read-only diffs in desktop and narrow
 test("manually retries uncertain sends with the original key only while the payload is unchanged", async ({ page, request }, testInfo) => {
   await resetFixture(request);
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
   const composer = page.getByLabel("Message the Agent");
 
   await controlFixture(request, { sendResponseLoss: 1 });
@@ -1593,7 +1782,7 @@ test("keeps cancellation available for an Environment-only required action", asy
   await resetFixture(request);
   await controlFixture(request, { environmentScenario: 6 });
   await page.goto("/");
-  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+  await expect(connectedLiveEvents(page)).toBeVisible();
   await expect(page.getByRole("region", { name: "Environment connection required" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Function result required" })).toHaveCount(0);
   const writesBefore = (await fixtureRequests(request)).filter(

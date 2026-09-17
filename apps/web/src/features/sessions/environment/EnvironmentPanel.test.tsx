@@ -8,7 +8,12 @@ import type {
   SessionEnvironmentStatus,
 } from "@agents-core-web/agents-client";
 
-import { EnvironmentPanel, sanitizeRemoteUrl } from "./EnvironmentPanel";
+import type { LocalDockerGuideProfile } from "../../../lib/docker-guide-config";
+import {
+  EnvironmentPanel,
+  resolveEnvironmentPresentation,
+  sanitizeRemoteUrl,
+} from "./EnvironmentPanel";
 import type { EnvironmentObservation, LiveEnvironmentObservation } from "./environment-state";
 
 const selfHosted: AgentEnvironment = {
@@ -57,13 +62,56 @@ function durableObservation(
   };
 }
 
-function render(environment: AgentEnvironment, live: EnvironmentObservation | null = null) {
+function render(
+  environment: AgentEnvironment,
+  live: EnvironmentObservation | null = null,
+  dockerGuideProfile: LocalDockerGuideProfile | null = null,
+) {
   return renderToStaticMarkup(
-    <EnvironmentPanel environment={environment} observation={live} connectionActions={[]} />,
+    <EnvironmentPanel
+      environment={environment}
+      observation={live}
+      connectionActions={[]}
+      dockerGuideProfile={dockerGuideProfile}
+    />,
   );
 }
 
 describe("EnvironmentPanel", () => {
+  it("projects one fail-closed status for both the header trigger and detail panel", () => {
+    expect(resolveEnvironmentPresentation({ type: "none" }, null, [])).toMatchObject({
+      visible: false,
+    });
+    expect(resolveEnvironmentPresentation(selfHosted, observation("connected"), [])).toMatchObject({
+      visible: true,
+      status: "connected",
+      statusLabel: "Connected",
+      triggerLabel: "Environment connected",
+      defaultLauncherGuideOpen: false,
+    });
+    expect(resolveEnvironmentPresentation(selfHosted, null, [])).toMatchObject({
+      status: "unknown",
+      triggerLabel: "Environment status unknown",
+      defaultLauncherGuideOpen: false,
+    });
+    expect(resolveEnvironmentPresentation(selfHosted, null, [{
+      type: "environment_connection",
+      environment_id: "environment_01",
+    }])).toMatchObject({
+      status: "required",
+      triggerLabel: "Connect environment",
+      defaultLauncherGuideOpen: true,
+    });
+    expect(resolveEnvironmentPresentation(
+      { type: "future_remote" } as unknown as AgentEnvironment,
+      observation("connected"),
+      [],
+    )).toMatchObject({
+      status: "unavailable",
+      triggerLabel: "Environment unavailable",
+    });
+  });
+
   it("does not render Environment or Workspace UI for environment:none", () => {
     const html = render({ type: "none" });
     expect(html).toBe("");
@@ -214,4 +262,82 @@ describe("EnvironmentPanel", () => {
     );
     expect(uuidHtml).toContain("Connection required");
   });
+
+  it("shows a secret-free launcher guide only for a complete safe projection", () => {
+    const html = renderToStaticMarkup(
+      <EnvironmentPanel
+        environment={{
+          ...selfHosted,
+          id: canonicalEnvironmentUuid,
+          remote_url: "https://executor.example.test",
+          workspace_directory: "/executor/workspace",
+          capability_directories: [],
+        }}
+        observation={null}
+        connectionActions={[{ type: "environment_connection", environment_id: canonicalEnvironmentUuid }]}
+      />,
+    );
+    expect(html).toContain("Connect Environment");
+    expect(html).toContain("Copy native command");
+    expect(html).toContain("agents-api-codex-executor");
+    expect(html).toContain("executor-key.json");
+    expect(html).toContain("Web copies its path but never creates, reads, stores, or transmits the key");
+    expect(html).not.toContain("executor_token");
+    expect(html).not.toContain("Authorization");
+    expect(html).toContain(parsarBaselineForAssertion());
+
+    const expanded = renderToStaticMarkup(
+      <EnvironmentPanel
+        environment={{
+          ...selfHosted,
+          id: canonicalEnvironmentUuid,
+          remote_url: "https://executor.example.test",
+          workspace_directory: "/executor/workspace",
+          capability_directories: [],
+        }}
+        observation={null}
+        connectionActions={[{ type: "environment_connection", environment_id: canonicalEnvironmentUuid }]}
+        defaultLauncherGuideOpen
+      />,
+    );
+    expect(expanded).toContain('<details class="environment-launcher-guide" open="">');
+
+    const unsafe = renderToStaticMarkup(
+      <EnvironmentPanel
+        environment={{ ...selfHosted, id: canonicalEnvironmentUuid }}
+        observation={null}
+        connectionActions={[{ type: "environment_connection", environment_id: canonicalEnvironmentUuid }]}
+      />,
+    );
+    expect(unsafe).toContain("Connect Environment unavailable");
+    expect(unsafe).not.toContain("Copy native command");
+  });
+
+  it("shows an operator-configured Docker recipe without hiding the native fallback", () => {
+    const dockerProfile: LocalDockerGuideProfile = {
+      image: "agents-core-web-executor:2b34ea46-codex-0.153.4",
+      apiContainer: "agents-core-web-api",
+      user: "501:20",
+      credentialsHomePath: ".parsar/agents-api-web-smoke/executor-key.json",
+      runtimeHomePath: ".parsar/agents-api-web-smoke/executors",
+    };
+    const html = render({
+      ...selfHosted,
+      id: canonicalEnvironmentUuid,
+      remote_url: "http://127.0.0.1:8091",
+      workspace_directory: "/good",
+      capability_directories: [],
+    }, null, dockerProfile);
+    expect(html).toContain("Docker");
+    expect(html).toContain("Linux / VM");
+    expect(html).toContain("Copy Docker command");
+    expect(html).toContain("docker run --detach");
+    expect(html).toContain("HOST_WORKSPACE_DIRECTORY");
+    expect(html).toContain("/good");
+    expect(html).not.toContain("executor_token");
+  });
 });
+
+function parsarBaselineForAssertion(): string {
+  return "2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e";
+}

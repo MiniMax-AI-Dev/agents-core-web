@@ -29,7 +29,7 @@ export type ConnectionProbeState =
   | { status: "complete"; result: CoreProbeResult };
 
 const webBaseline = "98c5b3312ad33e1fae8b94283a011eb3e5f4ee2c";
-const parsarBaseline = "d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee";
+const parsarBaseline = "2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e";
 const operatorGuideUrl = `https://github.com/MiniMax-AI-Dev/agents-core-web/blob/${webBaseline}/docs/core-connection.md`;
 const troubleshootingUrl = `${operatorGuideUrl}#troubleshooting`;
 const parsarCoreSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/services/agents-api/README.md#standalone-http-service`;

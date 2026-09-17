@@ -159,6 +159,37 @@ function sessionSnapshot(agent) {
   return snapshot;
 }
 
+function sessionEnvironmentResponse(environment) {
+  if (!isRecord(environment) || typeof environment.type !== "string") return null;
+  if (environment.type === "none") {
+    return hasOnlyKeys(environment, ["type"]) ? { type: "none" } : null;
+  }
+  if (
+    environment.type !== "self_hosted"
+    || !hasOnlyKeys(environment, ["type", "workspace_directory", "capability_directories"])
+  ) return null;
+
+  const workspace = environment.workspace_directory;
+  const capabilities = environment.capability_directories;
+  if (
+    typeof workspace !== "string"
+    || !workspace
+    || workspace.startsWith("~")
+    || !workspace.startsWith("/")
+    || /[\0\r\n\\]/u.test(workspace)
+    || capabilities !== undefined && capabilities !== null
+      && (!Array.isArray(capabilities) || capabilities.length !== 0)
+  ) return null;
+
+  return {
+    type: "self_hosted",
+    id: canonicalEnvironmentUuid,
+    remote_url: "https://executor.example.test",
+    workspace_directory: workspace,
+    capability_directories: [],
+  };
+}
+
 function initialState() {
   const first = savedAgent("agent_a", "Lifecycle Agent", "fixture/model-a", baseline - 60);
   const second = savedAgent("agent_b", "Second Agent", "fixture/model-b", baseline - 30);
@@ -182,8 +213,12 @@ function initialState() {
     }],
     turns: [],
     requests: [],
+    sessionCreateReceipts: new Map(),
     controls: {
       createAgentResponseVariant: "valid",
+      sessionCreateDelayMs: 0,
+      sessionCreateStatus: 201,
+      sessionCreateResponseLoss: 0,
       retrieveDelayMs: 0,
       retrieveStatus: 200,
       updateDelayMs: 0,
@@ -381,11 +416,11 @@ function recordRequest(request, url, body) {
   });
 }
 
-function consumeControl(prefix) {
+function consumeControl(prefix, successStatus = 200) {
   const delayMs = state.controls[`${prefix}DelayMs`];
   const status = state.controls[`${prefix}Status`];
   state.controls[`${prefix}DelayMs`] = 0;
-  state.controls[`${prefix}Status`] = 200;
+  state.controls[`${prefix}Status`] = successStatus;
   return { delayMs, status };
 }
 
@@ -497,16 +532,35 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && url.pathname === "/v1/agents/sessions") {
+      const idempotencyKey = request.headers["idempotency-key"];
+      const fingerprint = JSON.stringify(body);
+      const receipt = typeof idempotencyKey === "string"
+        ? state.sessionCreateReceipts.get(idempotencyKey)
+        : undefined;
+      if (receipt) {
+        if (receipt.fingerprint !== fingerprint) {
+          return sendError(response, 409, "Fixture idempotency key was reused with a different Session request.");
+        }
+        return sendJson(response, receipt.session, 200);
+      }
+
+      const control = consumeControl("sessionCreate", 201);
+      const responseLoss = state.controls.sessionCreateResponseLoss;
+      state.controls.sessionCreateResponseLoss = 0;
+      if (control.delayMs) await wait(control.delayMs);
+      if (control.status !== 201) return sendError(response, control.status, "Fixture Session create failed.");
       const agent = state.agents.find((candidate) => candidate.id === body.agent_id);
       if (!agent) return sendError(response, 404, "Fixture Agent not found for Session.");
       const admissionError = sessionAdmissionError(agent);
       if (admissionError) return sendError(response, 400, admissionError);
+      const environment = sessionEnvironmentResponse(body.environment);
+      if (!environment) return sendError(response, 400, "Fixture Session environment is unsupported.");
       state.sequence += 1;
       const created = {
         id: `session_created_${state.sequence}`,
         object: "agent.session",
         agent: sessionSnapshot(agent),
-        environment: body.environment,
+        environment,
         status: "idle",
         error: null,
         metadata: body.metadata ?? {},
@@ -517,6 +571,13 @@ const server = http.createServer(async (request, response) => {
         last_active_at: baseline + state.sequence,
       };
       state.sessions.unshift(created);
+      if (typeof idempotencyKey === "string") {
+        state.sessionCreateReceipts.set(idempotencyKey, { fingerprint, session: created });
+      }
+      if (responseLoss) {
+        response.destroy();
+        return;
+      }
       return sendJson(response, created, 201);
     }
 

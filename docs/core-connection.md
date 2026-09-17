@@ -476,9 +476,104 @@ unset agent_core_token
 
 Do not enable shell tracing while handling secrets.
 
+### Optional self-hosted Session creation
+
+> This optional Web flow is newer than the legacy runbook snapshot at the top of
+> this file. Its immutable capability baseline is Parsar
+> [`2b34ea46`](https://github.com/MiniMax-AI-Dev/parsar/commit/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e).
+
+Agents Core Web keeps self-hosted Session creation hidden by default because Core
+does not expose a public capability-discovery resource. An operator may expose the
+known profile by setting this non-secret flag before starting or building Vite:
+
+```dotenv
+AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS=1
+```
+
+Restart the development server or rebuild the production bundle after changing it.
+The flag enables a form; it does not configure Parsar or prove execution readiness.
+Before enabling it, the operator must separately configure a Codex Core with the
+executor registry and an externally reachable executor origin as described by the
+[pinned native executor prerequisite](https://github.com/MiniMax-AI-Dev/parsar/blob/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e/services/agents-api/README.md#native-executor-transport-prerequisite).
+
+The optional form creates an idle Session with no initial model input and this
+Environment input only:
+
+```json
+{
+  "type": "self_hosted",
+  "workspace_directory": "/workspace",
+  "capability_directories": []
+}
+```
+
+This profile is Codex-only. `workspace_directory` must be an absolute POSIX path on
+the executor host, not a path in the browser, Vite server, Agent Core, or
+`parsar-daemon` container. The current profile admits only empty/default
+`capability_directories`; Web does not expose other Environment input fields. Core
+remains authoritative and may reject the request when execution or its executor
+registry is unavailable. Web never retries an uncertain Session creation
+automatically. A failed attempt keeps the exact form and idempotency key in memory;
+an explicit unchanged resubmission reuses that key, while changing the Agent or
+Environment draft creates a new operation.
+
+After creation, Core returns a Session-scoped Environment ID and executor origin.
+For a complete, validated response using HTTPS, or loopback HTTP in development,
+Web can present the pinned launcher shape with non-secret variables and path
+placeholders:
+
+```bash
+agents-api-codex-executor \
+  --remote "$REMOTE_URL" \
+  --environment-id "$ENVIRONMENT_ID" \
+  --credentials "$HOME/.parsar/executor-key.json" \
+  --codex-bin /opt/codex/bin/codex
+```
+
+For an operator-controlled loopback development stack, Web can also render a
+ready-to-copy Docker recipe when every `AGENTS_CORE_WEB_DOCKER_*` value documented
+in `.env.example` is configured and `AGENTS_CORE_WEB_DOCKER_GUIDE=1`. This is an
+explicit local presentation profile, not Core capability discovery. The image,
+API-container name, numeric user, credential-file path, and private runtime-root
+path are non-secret strings compiled into the local browser bundle; never put a
+credential value in them.
+
+The Docker recipe is offered only for a strict loopback HTTP executor origin and
+the same complete Session Environment projection required by the native command.
+It creates an Environment-specific state directory below the configured runtime
+root, uses a stable full-UUID container name, and bind-mounts the terminal's current
+directory at the exact `workspace_directory` returned by Core. Set
+`HOST_WORKSPACE_DIRECTORY` before running the copied block to select another
+existing host directory. The recipe pins the configured image, shares the named
+local API container's network namespace, drops all Linux capabilities, enables
+`no-new-privileges`, uses no automatic restart, and never removes an existing
+container or directory.
+
+Copying the recipe does not execute it. Running it is an operator action and may
+release input that is already waiting on `environment_connection`, which can start
+a paid Turn. Create and connect an idle Session before submitting input when that
+is not intended. A missing/invalid local profile, non-loopback origin, unsafe
+Workspace mount target, or incomplete Environment projection hides the Docker
+recipe while retaining the native launcher fallback.
+
+Run the launcher on caller-managed Linux x86_64 executor compute, including an
+appropriately isolated Linux VM or container, not in the browser. The operator
+issues its connect-only credential with `agents-api-environment-key`, delivers the
+mode-0600 JSON file directly to that compute, and follows the
+[pinned launcher guide](https://github.com/MiniMax-AI-Dev/parsar/blob/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e/packages/codex-executor/README.md#connect-an-executor).
+The credential is not the ordinary Core caller bearer. Never paste it into Web or
+place it in `AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS`, `VITE_*`, Session metadata, a
+URL, browser storage, fixture, log, screenshot, or Git.
+
+Web only displays the command and observes Core state. It never issues or reads an
+executor key, starts a process/container, or connects to Parsar's native
+`/cloud/environment/**` routes or WebSockets. Environment `connected` and live
+`ready` are scoped observations, not proof that the executor is isolated, native
+preparation succeeded, a model/provider is usable, or a Turn completed.
+
 ### Read-only self-hosted Environment status
 
-At this pinned revision, an existing `self_hosted` Session exposes an Environment ID.
+At the `2b34ea46` feature baseline, a `self_hosted` Session exposes an Environment ID.
 Agents Core Web first retrieves the current Session and then makes one authenticated
 `GET /v1/agents/environments/{environment_id}`. The response is accepted only when it
 contains exactly `id`, `object`, `type`, `status`, `files`, `plugins`, and `skills`

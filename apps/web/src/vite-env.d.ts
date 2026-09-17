@@ -1,6 +1,14 @@
 /// <reference types="vite/client" />
 
 declare const __AGENTS_CORE_WEB_DEV_PROXY_AUTH__: boolean;
+declare const __AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS__: boolean;
+declare const __AGENTS_CORE_WEB_DOCKER_GUIDE__: null | {
+  readonly image: string;
+  readonly apiContainer: string;
+  readonly user: string;
+  readonly credentialsHomePath: string;
+  readonly runtimeHomePath: string;
+};
 
 interface ImportMetaEnv {
   readonly VITE_AGENT_MODEL_PRESETS?: string;

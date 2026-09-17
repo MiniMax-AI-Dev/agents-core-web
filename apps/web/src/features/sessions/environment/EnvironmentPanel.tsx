@@ -1,4 +1,5 @@
-import { ExternalLink, Folder, HardDrive, TerminalSquare } from "lucide-react";
+import { Check, Copy, ExternalLink, Folder, HardDrive, TerminalSquare } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import type {
   AgentEnvironment,
@@ -8,9 +9,11 @@ import type {
 } from "@agents-core-web/agents-client";
 
 import { StatusIcon, type StatusKind } from "../../../components/StatusIcon";
+import type { LocalDockerGuideProfile } from "../../../lib/docker-guide-config";
+import { buildLauncherCommand, buildLocalDockerCommand } from "./environment-launcher";
 import { environmentIdsMatch, type EnvironmentObservation } from "./environment-state";
 
-const parsarBaseline = "d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee";
+const parsarBaseline = "2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e";
 const coreSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/services/agents-api/README.md#native-executor-transport-prerequisite`;
 const launcherSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/packages/codex-executor/README.md#connect-an-executor`;
 
@@ -45,7 +48,7 @@ function directories(value: unknown): string[] | null {
     : null;
 }
 
-type EnvironmentDisplayStatus = SessionEnvironmentStatus | EnvironmentResourceStatus | "required" | "unknown" | "unavailable";
+export type EnvironmentDisplayStatus = SessionEnvironmentStatus | EnvironmentResourceStatus | "required" | "unknown" | "unavailable";
 
 function statusKind(status: EnvironmentDisplayStatus): StatusKind {
   if (status === "connected" || status === "ready") return "completed";
@@ -70,7 +73,186 @@ function matchingObservation(
     : null;
 }
 
-export function EnvironmentConnectionNotice({ action }: { action: EnvironmentConnectionAction }) {
+export interface EnvironmentPresentation {
+  visible: boolean;
+  status: EnvironmentDisplayStatus;
+  statusKind: StatusKind;
+  statusLabel: string;
+  triggerLabel: string;
+  defaultLauncherGuideOpen: boolean;
+}
+
+export function resolveEnvironmentPresentation(
+  environment: AgentEnvironment,
+  observation: EnvironmentObservation | null,
+  connectionActions: EnvironmentConnectionAction[],
+): EnvironmentPresentation {
+  const raw = environment !== null && typeof environment === "object" && !Array.isArray(environment)
+    ? environment as unknown as Record<string, unknown>
+    : {};
+  const type = typeof raw.type === "string" ? raw.type : null;
+
+  if (type === "none") {
+    return {
+      visible: false,
+      status: "unavailable",
+      statusKind: "interrupted",
+      statusLabel: "Unavailable",
+      triggerLabel: "Environment unavailable",
+      defaultLauncherGuideOpen: false,
+    };
+  }
+
+  const environmentId = field(raw.id);
+  const live = type === "self_hosted" ? matchingObservation(observation, environmentId) : null;
+  const requiresConnection = type === "self_hosted" && Boolean(environmentId && connectionActions.some(
+    (action) => environmentIdsMatch(action.environment_id, environmentId),
+  ));
+  const status: EnvironmentDisplayStatus = type !== "self_hosted"
+    ? "unavailable"
+    : live?.source === "unavailable"
+      ? "unavailable"
+      : live?.status ?? (requiresConnection ? "required" : "unknown");
+  const triggerLabel = status === "connected"
+    ? "Environment connected"
+    : status === "ready"
+      ? "Environment ready"
+      : status === "required" || status === "disconnected"
+        ? "Connect environment"
+        : status === "pending"
+          ? "Environment pending"
+          : status === "failed"
+            ? "Environment failed"
+            : status === "expired"
+              ? "Environment expired"
+              : status === "unknown"
+                ? "Environment status unknown"
+                : "Environment unavailable";
+
+  return {
+    visible: true,
+    status,
+    statusKind: statusKind(status),
+    statusLabel: statusLabel(status),
+    triggerLabel,
+    defaultLauncherGuideOpen: status === "required" || status === "pending" || status === "disconnected" || status === "failed" || status === "expired",
+  };
+}
+
+function EnvironmentLauncherGuide({
+  environmentId,
+  remoteUrl,
+  workspaceDirectory,
+  capabilityDirectories,
+  dockerGuideProfile,
+  defaultOpen,
+}: {
+  environmentId: unknown;
+  remoteUrl: unknown;
+  workspaceDirectory: unknown;
+  capabilityDirectories: unknown;
+  dockerGuideProfile: LocalDockerGuideProfile | null;
+  defaultOpen: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+  const launcherCommand = buildLauncherCommand(
+    environmentId,
+    remoteUrl,
+    workspaceDirectory,
+    capabilityDirectories,
+  );
+  const dockerCommand = buildLocalDockerCommand(
+    environmentId,
+    remoteUrl,
+    workspaceDirectory,
+    capabilityDirectories,
+    dockerGuideProfile,
+  );
+  const [commandType, setCommandType] = useState<"docker" | "native">(
+    dockerCommand ? "docker" : "native",
+  );
+  const [guideOpen, setGuideOpen] = useState(defaultOpen);
+  const command = commandType === "docker" && dockerCommand ? dockerCommand : launcherCommand;
+
+  useEffect(() => {
+    setCommandType(dockerCommand ? "docker" : "native");
+    setCopied(false);
+    setGuideOpen(defaultOpen);
+  }, [defaultOpen, dockerCommand, launcherCommand]);
+
+  if (!command) {
+    return (
+      <div className="environment-launcher-unavailable" role="note">
+        <strong>Connect Environment unavailable</strong>
+        <p>Core did not return the complete supported projection: a canonical Environment ID, safe executor origin, absolute Workspace, and empty capability directories. This Web will not construct a launcher command.</p>
+      </div>
+    );
+  }
+
+  const copyCommand = async () => {
+    if (!navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  return (
+    <details
+      className="environment-launcher-guide"
+      open={guideOpen}
+      onToggle={(event) => setGuideOpen(event.currentTarget.open)}
+    >
+      <summary>
+        <TerminalSquare size={14} strokeWidth={1.5} aria-hidden="true" />
+        <span><strong>Connect Environment</strong><small>Copy a command for the executor compute</small></span>
+      </summary>
+      <div className="environment-launcher-body">
+        {dockerCommand ? (
+          <div className="environment-launcher-modes" role="group" aria-label="Connection command type">
+            <button
+              type="button"
+              aria-pressed={commandType === "docker"}
+              onClick={() => { setCommandType("docker"); setCopied(false); }}
+            >Docker</button>
+            <button
+              type="button"
+              aria-pressed={commandType === "native"}
+              onClick={() => { setCommandType("native"); setCopied(false); }}
+            >Linux / VM</button>
+          </div>
+        ) : null}
+        {commandType === "docker" && dockerCommand ? (
+          <p>
+            Run this block on the configured local Docker host. It bind-mounts the terminal&apos;s current directory as <code>{String(workspaceDirectory)}</code>; set <code>HOST_WORKSPACE_DIRECTORY</code> first to use another existing host directory.
+          </p>
+        ) : (
+          <p>
+            Run this on the Linux machine, Docker container, or VM that owns the Workspace above—not in the browser or the Agent Core daemon container.
+          </p>
+        )}
+        <pre><code>{command}</code></pre>
+        <button className="button outline" type="button" onClick={() => void copyCommand()}>
+          {copied ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+          {copied ? "Copied" : commandType === "docker" && dockerCommand ? "Copy Docker command" : "Copy native command"}
+        </button>
+        <p className="environment-launcher-security">
+          The operator must provide the mode-0600 credential file at the configured path. Web copies its path but never creates, reads, stores, or transmits the key. Running a command can release already queued input; connected status is transport evidence only, not model or runtime readiness.
+        </p>
+      </div>
+    </details>
+  );
+}
+
+export function EnvironmentConnectionNotice({
+  action,
+  onOpenSetup,
+}: {
+  action: EnvironmentConnectionAction;
+  onOpenSetup?: () => void;
+}) {
   return (
     <section className="environment-connection-notice" aria-label="Environment connection required">
       <div className="environment-connection-notice-heading">
@@ -81,6 +263,11 @@ export function EnvironmentConnectionNotice({ action }: { action: EnvironmentCon
         Environment <code>{action.environment_id}</code> must be connected by the Core operator.
         This Web cannot connect, complete, or approve it.
       </p>
+      {onOpenSetup ? (
+        <button className="button outline environment-connection-notice-action" type="button" onClick={onOpenSetup}>
+          Open setup
+        </button>
+      ) : null}
     </section>
   );
 }
@@ -89,15 +276,20 @@ export function EnvironmentPanel({
   environment,
   observation,
   connectionActions,
+  dockerGuideProfile = __AGENTS_CORE_WEB_DOCKER_GUIDE__,
+  defaultLauncherGuideOpen = false,
 }: {
   environment: AgentEnvironment;
   observation: EnvironmentObservation | null;
   connectionActions: EnvironmentConnectionAction[];
+  dockerGuideProfile?: LocalDockerGuideProfile | null;
+  defaultLauncherGuideOpen?: boolean;
 }) {
   const raw = environment !== null && typeof environment === "object" && !Array.isArray(environment)
     ? environment as unknown as Record<string, unknown>
     : {};
   const type = typeof raw.type === "string" ? raw.type : null;
+  const presentation = resolveEnvironmentPresentation(environment, observation, connectionActions);
 
   if (type === "none") {
     return null;
@@ -123,9 +315,7 @@ export function EnvironmentPanel({
   const requiresConnection = Boolean(environmentId && connectionActions.some(
     (action) => environmentIdsMatch(action.environment_id, environmentId),
   ));
-  const status: EnvironmentDisplayStatus = live?.source === "unavailable"
-    ? "unavailable"
-    : live?.status ?? (requiresConnection ? "required" : "unknown");
+  const status = presentation.status;
 
   return (
     <section className="environment-panel" aria-label="Environment and Workspace status">
@@ -136,8 +326,8 @@ export function EnvironmentPanel({
           <span>{environmentId ?? "ID unavailable"}</span>
         </div>
         <div className={`environment-panel-status environment-panel-status-${status}`} role="status" aria-live="polite">
-          <StatusIcon status={statusKind(status)} />
-          <span>{statusLabel(status)}</span>
+          <StatusIcon status={presentation.statusKind} />
+          <span>{presentation.statusLabel}</span>
         </div>
       </div>
 
@@ -175,6 +365,17 @@ export function EnvironmentPanel({
                 ? "Core durably requires an operator connection. No executor availability is inferred."
                 : "Connection status is unknown because the durable Session projection does not expose it."}
       </p>
+
+      {status !== "connected" && status !== "ready" ? (
+        <EnvironmentLauncherGuide
+          environmentId={environmentId}
+          remoteUrl={raw.remote_url}
+          workspaceDirectory={raw.workspace_directory}
+          capabilityDirectories={raw.capability_directories}
+          dockerGuideProfile={dockerGuideProfile}
+          defaultOpen={defaultLauncherGuideOpen}
+        />
+      ) : null}
 
       {status === "failed" ? (
         <div className="environment-panel-error" role="alert">
