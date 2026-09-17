@@ -6,6 +6,7 @@ import {
   Code2,
   Ellipsis,
   ExternalLink,
+  HardDrive,
   MessageSquare,
   Plus,
   RefreshCw,
@@ -26,18 +27,27 @@ import type {
 import type { FailedPendingSend } from "../../lib/pending-send";
 
 import { ErrorState } from "../../components/ErrorState";
-import { Modal } from "../../components/Modal";
 import { Skeleton } from "../../components/Skeleton";
 import { StatusIcon, type StatusKind } from "../../components/StatusIcon";
 import type { CoreConnectionState } from "../../lib/connection";
 import { useThreadScroll } from "../../lib/use-thread-scroll";
 import { knownSessionAdmissionBlocker } from "../agents/session-admission";
 import {
+  SessionStartDialog,
+  type SessionStartInput,
+} from "./create/SessionStartDialog";
+import {
   EnvironmentConnectionNotice,
-  EnvironmentPanel,
+  resolveEnvironmentPresentation,
 } from "./environment/EnvironmentPanel";
+import { EnvironmentDialog } from "./environment/EnvironmentDialog";
 import type { EnvironmentObservation } from "./environment/environment-state";
 import { ThreadItems } from "./items/ItemRenderers";
+import {
+  beginLocalPendingMessage,
+  hasDurablePendingMessage,
+  type LocalPendingMessage,
+} from "./pending-message";
 import { TraceView } from "./trace/TraceView";
 import type { TurnTimelineLoadState } from "./turns/TurnTimeline";
 import { SessionActionsDialog } from "./actions/SessionActionsDialog";
@@ -45,6 +55,11 @@ import { SessionActionsDialog } from "./actions/SessionActionsDialog";
 export type StreamState = "idle" | "connecting" | "listening" | "recovering" | "failed";
 export type SessionDetailState = "idle" | "loading" | "ready" | "failed";
 type SessionView = "conversation" | "trace";
+
+export interface SessionCreateRequest {
+  agentId: string | null;
+  requestId: number;
+}
 
 interface SessionsViewProps {
   agents: SavedAgent[];
@@ -55,7 +70,7 @@ interface SessionsViewProps {
   busy: boolean;
   coreError: string | null;
   coreState: CoreConnectionState;
-  createRequest?: number;
+  createRequest?: SessionCreateRequest | null;
   onCreateRequestConsumed?: (request: number) => void;
   detailError: string | null;
   detailState: SessionDetailState;
@@ -65,8 +80,9 @@ interface SessionsViewProps {
   sendError?: FailedPendingSend | null;
   streamError: string | null;
   streamState: StreamState;
+  selfHostedEnabled?: boolean;
   onCancel: () => Promise<void>;
-  onCreateSession: (agentId: string) => Promise<void>;
+  onCreateSession: (input: SessionStartInput) => Promise<void>;
   onDeleteSession: (sessionId: string) => Promise<boolean>;
   onFunctionResult: (input: FunctionResultInput) => Promise<void>;
   onRefresh: () => void;
@@ -82,7 +98,7 @@ interface SessionsViewProps {
   ) => Promise<AgentSession | undefined>;
 }
 
-const coreRuntimeSetupUrl = "https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/services/agents-api/README.md#public-text-execution";
+const coreRuntimeSetupUrl = "https://github.com/MiniMax-AI-Dev/parsar/blob/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e/services/agents-api/README.md#public-text-execution";
 
 function SessionsListSkeleton() {
   return (
@@ -166,6 +182,14 @@ function streamStatusKind(state: StreamState): StatusKind {
   return "queued";
 }
 
+function streamStatusLabel(state: StreamState): string {
+  if (state === "connecting") return "Connecting events…";
+  if (state === "listening") return "Live events";
+  if (state === "recovering") return "Reconnecting events…";
+  if (state === "failed") return "Events unavailable";
+  return "Events idle";
+}
+
 function isEnvironmentConnectionAction(value: unknown): value is EnvironmentConnectionAction {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const action = value as Record<string, unknown>;
@@ -218,11 +242,22 @@ function CancelOnlyBar({ busy, onCancel }: { busy: boolean; onCancel: () => void
   );
 }
 
-function ConversationActivity({ agentName }: { agentName: string }) {
+function PendingUserMessage({ message }: { message: LocalPendingMessage }) {
+  return (
+    <article className="message-row user pending-message" data-send-state="sending">
+      <div className="message-body">
+        <div className="message-copy">{message.payload}</div>
+        <span className="message-delivery-state">Sending…</span>
+      </div>
+    </article>
+  );
+}
+
+function ConversationActivity({ label }: { label: string }) {
   return (
     <div className="conversation-activity" role="status" aria-live="polite" aria-atomic="true">
       <StatusIcon status="running" />
-      <span>{agentName} is working…</span>
+      <span>{label}</span>
     </div>
   );
 }
@@ -311,7 +346,7 @@ export function SessionsView({
   busy,
   coreError,
   coreState,
-  createRequest = 0,
+  createRequest = null,
   onCreateRequestConsumed,
   detailError,
   detailState,
@@ -321,6 +356,7 @@ export function SessionsView({
   sendError = null,
   streamError,
   streamState,
+  selfHostedEnabled = false,
   onCancel,
   onCreateSession,
   onDeleteSession,
@@ -342,10 +378,12 @@ export function SessionsView({
   const [message, setMessage] = useState("");
   const [sessionView, setSessionView] = useState<SessionView>("conversation");
   const [newSessionOpen, setNewSessionOpen] = useState(false);
-  const [agentId, setAgentId] = useState(firstStartableAgent?.id ?? "");
+  const [environmentDialogSessionId, setEnvironmentDialogSessionId] = useState<string | null>(null);
+  const [preselectedAgentId, setPreselectedAgentId] = useState<string | null>(null);
   const [actionSession, setActionSession] = useState<AgentSession | null>(null);
   const [viewport, setViewport] = useState<HTMLDivElement | null>(null);
   const [threadContent, setThreadContent] = useState<HTMLDivElement | null>(null);
+  const [pendingMessage, setPendingMessage] = useState<LocalPendingMessage | null>(null);
   const sendingRef = useRef(false);
   const pageRef = useRef<HTMLElement>(null);
   const newSessionActionRef = useRef<HTMLButtonElement>(null);
@@ -361,20 +399,12 @@ export function SessionsView({
     threadContent,
   );
 
-  const selectedAgent = agents.find((agent) => agent.id === agentId);
-  const selectedAgentBlocker = selectedAgent ? knownSessionAdmissionBlocker(selectedAgent) : null;
-
   useEffect(() => {
-    if (selectedAgent && !selectedAgentBlocker) return;
-    const next = agents.find((agent) => !knownSessionAdmissionBlocker(agent));
-    if ((next?.id ?? "") !== agentId) setAgentId(next?.id ?? "");
-  }, [agentId, agents, selectedAgent, selectedAgentBlocker]);
-
-  useEffect(() => {
-    if (!createRequest || createRequest === lastCreateRequestRef.current) return;
-    lastCreateRequestRef.current = createRequest;
+    if (!createRequest || createRequest.requestId === lastCreateRequestRef.current) return;
+    lastCreateRequestRef.current = createRequest.requestId;
+    setPreselectedAgentId(createRequest.agentId);
     setNewSessionOpen(true);
-    onCreateRequestConsumed?.(createRequest);
+    onCreateRequestConsumed?.(createRequest.requestId);
   }, [createRequest, onCreateRequestConsumed]);
 
   useEffect(() => {
@@ -409,14 +439,31 @@ export function SessionsView({
     setMessage((current) => restoreDraftAfterFailedSend(current, sendError.payload));
   }, [selected?.id, sendError]);
 
+  const visiblePendingMessage = pendingMessage &&
+    pendingMessage.sessionId === selected?.id &&
+    !hasDurablePendingMessage(pendingMessage, items)
+    ? pendingMessage
+    : null;
+
+  useEffect(() => {
+    if (
+      !pendingMessage ||
+      pendingMessage.sessionId !== selected?.id ||
+      !hasDurablePendingMessage(pendingMessage, items)
+    ) return;
+    setPendingMessage((current) => current === pendingMessage ? null : current);
+  }, [items, pendingMessage, selected?.id]);
+
   const send = async (event?: FormEvent) => {
     event?.preventDefault();
     const value = message.trim();
     if (sendingRef.current || busy || !value || !selected || detailState !== "ready" || streamState !== "listening") return;
     const sessionId = selected.id;
+    const pending = beginLocalPendingMessage(sessionId, value, items);
     sendingRef.current = true;
     draftsBySessionRef.current.set(sessionId, "");
     setMessage("");
+    setPendingMessage(pending);
     try {
       await onSend(value);
       if (selectedIdRef.current === sessionId) scrollToLatest();
@@ -434,6 +481,7 @@ export function SessionsView({
         });
       }
     } finally {
+      setPendingMessage((current) => current === pending ? null : current);
       sendingRef.current = false;
     }
   };
@@ -444,16 +492,6 @@ export function SessionsView({
       event.preventDefault();
       void send();
     }
-  };
-
-  const createSession = async () => {
-    if (coreState !== "ready" || !agentId || selectedAgentBlocker) return;
-    try {
-      await onCreateSession(agentId);
-    } catch {
-      return;
-    }
-    setNewSessionOpen(false);
   };
 
   const cancel = () => {
@@ -472,6 +510,9 @@ export function SessionsView({
     (selected?.status === "in_progress" || selected?.status === "requires_action") &&
     (unsupportedActionCount > 0 || environmentConnections.length > 0 && functionActions.length === 0),
   );
+  const environmentPresentation = selected
+    ? resolveEnvironmentPresentation(selected.environment, environmentObservation, environmentConnections)
+    : null;
 
   const onViewTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     const tabs = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role=tab]") ?? []);
@@ -507,7 +548,10 @@ export function SessionsView({
                 className="icon-button primary session-create-trigger"
                 type="button"
                 onClick={() => {
-                  if (!newSessionUnavailableReason) setNewSessionOpen(true);
+                  if (!newSessionUnavailableReason) {
+                    setPreselectedAgentId(null);
+                    setNewSessionOpen(true);
+                  }
                 }}
                 disabled={coreState !== "ready"}
                 aria-disabled={newSessionUnavailableReason ? true : undefined}
@@ -603,22 +647,55 @@ export function SessionsView({
               </div>
               <p>{selected.agent.name || "Untitled Agent"} <span>·</span> <code>{selected.agent.model}</code></p>
             </div>
-            <div className={`stream-indicator ${streamState}`} title="Live stream state">
-              <StatusIcon status={streamStatusKind(streamState)} />
-              {streamState}
+            <div className="conversation-header-actions">
+              {environmentPresentation?.visible ? (
+                <button
+                  className={`environment-trigger environment-trigger-${environmentPresentation.status}`}
+                  type="button"
+                  aria-haspopup="dialog"
+                  aria-expanded={environmentDialogSessionId === selected.id}
+                  aria-label={environmentPresentation.triggerLabel}
+                  title="View Environment status and connection instructions"
+                  onClick={() => setEnvironmentDialogSessionId(selected.id)}
+                >
+                  <HardDrive size={14} strokeWidth={1.5} aria-hidden="true" />
+                  <span>{environmentPresentation.triggerLabel}</span>
+                </button>
+              ) : null}
+              <div
+                className={`stream-indicator ${streamState}`}
+                role="status"
+                aria-live="polite"
+                aria-label={`Session live events: ${streamState === "listening" ? "connected" : streamState}`}
+                title="Status of this Session’s live update channel. It does not confirm that the Environment or executor is ready."
+              >
+                <StatusIcon status={streamStatusKind(streamState)} />
+                <span>{streamStatusLabel(streamState)}</span>
+              </div>
+              <button
+                ref={conversationActionRef}
+                className="icon-button ghost conversation-session-action"
+                type="button"
+                aria-label={`Manage ${sessionTitle(selected)}`}
+                title="Session details and actions"
+                disabled={busy}
+                onClick={() => setActionSession(selected)}
+              >
+                <Ellipsis size={14} strokeWidth={1.5} aria-hidden="true" />
+              </button>
             </div>
-            <button
-              ref={conversationActionRef}
-              className="icon-button ghost conversation-session-action"
-              type="button"
-              aria-label={`Manage ${sessionTitle(selected)}`}
-              title="Session details and actions"
-              disabled={busy}
-              onClick={() => setActionSession(selected)}
-            >
-              <Ellipsis size={14} strokeWidth={1.5} aria-hidden="true" />
-            </button>
           </header>
+
+          {environmentPresentation?.visible ? (
+            <EnvironmentDialog
+              open={environmentDialogSessionId === selected.id}
+              onClose={() => setEnvironmentDialogSessionId(null)}
+              environment={selected.environment}
+              observation={environmentObservation}
+              connectionActions={environmentConnections}
+              defaultLauncherGuideOpen={environmentPresentation.defaultLauncherGuideOpen}
+            />
+          ) : null}
 
           <div className="session-view-tabs" role="tablist" aria-label="Session view">
             <button
@@ -663,14 +740,9 @@ export function SessionsView({
                   <code>{selected.id}</code>
                 </div>
 
-                <EnvironmentPanel
-                  environment={selected.environment}
-                  observation={environmentObservation}
-                  connectionActions={environmentConnections}
-                />
-
                 <div className="message-stack">
                   <ThreadItems items={items} agentName={selected.agent.name || "Agent"} />
+                  {visiblePendingMessage ? <PendingUserMessage message={visiblePendingMessage} /> : null}
                 </div>
 
                 {detailState === "loading" && !items.length ? <SessionTimelineSkeleton /> : null}
@@ -730,7 +802,7 @@ export function SessionsView({
                   />
                 ) : null}
 
-                {detailState === "ready" && streamState !== "failed" && selected.status !== "failed" && !items.length ? (
+                {detailState === "ready" && streamState !== "failed" && selected.status !== "failed" && !items.length && !visiblePendingMessage ? (
                   <div className="conversation-empty">
                     <Bot size={24} strokeWidth={1.5} />
                     <h3>Session is ready</h3>
@@ -753,11 +825,17 @@ export function SessionsView({
 
           <footer className="composer-footer">
             {environmentConnections.map((action, index) => (
-              <EnvironmentConnectionNotice action={action} key={`${action.environment_id}:${index}`} />
+              <EnvironmentConnectionNotice
+                action={action}
+                key={`${action.environment_id}:${index}`}
+                onOpenSetup={environmentPresentation?.visible ? () => setEnvironmentDialogSessionId(selected.id) : undefined}
+              />
             ))}
             {unsupportedActionCount ? <UnsupportedActionNotice /> : null}
             {selected.status === "in_progress" ? (
-              <ConversationActivity agentName={selected.agent.name || "Agent"} />
+              <ConversationActivity label={`${selected.agent.name || "Agent"} is working…`} />
+            ) : visiblePendingMessage ? (
+              <ConversationActivity label="Sending message…" />
             ) : null}
             {showCancelOnly ? (
               <CancelOnlyBar busy={busy} onCancel={cancel} />
@@ -841,43 +919,15 @@ export function SessionsView({
         </div>
       )}
 
-      <Modal
+      <SessionStartDialog
+        agents={agents}
+        disabled={busy || coreState !== "ready"}
         open={newSessionOpen}
+        preselectedAgentId={preselectedAgentId}
+        selfHostedEnabled={selfHostedEnabled}
         onClose={() => setNewSessionOpen(false)}
-        title="Start an idle Session"
-        footer={
-          <>
-            <button className="button outline" type="button" onClick={() => setNewSessionOpen(false)}>Cancel</button>
-            <button className="button primary" type="button" onClick={() => void createSession()} disabled={busy || coreState !== "ready" || !agentId || Boolean(selectedAgentBlocker)}>
-              {busy ? "Creating…" : "Create Session"}
-            </button>
-          </>
-        }
-      >
-        <label className="field">
-          <span>Saved Agent</span>
-          <select value={agentId} onChange={(event) => setAgentId(event.target.value)}>
-            {!firstStartableAgent ? <option value="">No Session-compatible saved Agent</option> : null}
-            {agents.map((agent) => {
-              const blocker = knownSessionAdmissionBlocker(agent);
-              return (
-                <option value={agent.id} key={agent.id} disabled={Boolean(blocker)}>
-                  {agent.name || agent.id} · {agent.model}{blocker ? " · Session unavailable" : ""}
-                </option>
-              );
-            })}
-          </select>
-          <small>The initial slice uses environment: none. Saved-only reasoning, non-auto tiers, JSON schema, multi-agent settings, unsupported tool shapes, and attached MCP credentials cannot start this Web Session flow.</small>
-        </label>
-        {!firstStartableAgent ? (
-          <div className="notice warning" role="note">
-            No loaded Agent matches the known Core Session-admission profile. Create an Agent with the Web defaults or update the saved configuration first.
-          </div>
-        ) : null}
-        <div className="notice success">
-          <StatusIcon status="completed" /> The Session starts idle so the UI can subscribe before the first Turn.
-        </div>
-      </Modal>
+        onSubmit={onCreateSession}
+      />
       <SessionActionsDialog
         busy={busy}
         session={actionSession}

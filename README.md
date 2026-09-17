@@ -15,6 +15,8 @@ persistence, scheduling, and execution; this project does not embed or reimpleme
 
 - Create, view, edit, and delete reusable Agent configurations.
 - Start durable Sessions and inspect their saved Items.
+- Optionally create a Codex `self_hosted` Session and follow the connection state
+  of an operator-managed Linux executor.
 - Follow live progress over SSE and recover persisted output after reconnecting.
 - Cancel active work and return function results or errors.
 - Use the same Web client with Parsar Core or another proven-compatible Core.
@@ -67,12 +69,25 @@ AGENTS_API_PROXY_TARGET=http://127.0.0.1:8091
 AGENTS_API_PROXY_TOKEN_FILE=/absolute/private/path/to/web-token
 ```
 
-Restart `pnpm dev` after changing them. Keep credentials server-side. A direct
-Core URL in the connection dialog is only for a compatible Core that explicitly
-allows the Web origin, methods, and headers through CORS.
+Self-hosted Session creation is a public, non-secret operator opt-in and is hidden
+by default. Enable it only for a reviewed Codex Core deployment whose executor
+registry and externally reachable executor origin are configured:
+
+```dotenv
+AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS=1
+```
+
+This flag is read when Vite starts or builds the Web. It exposes the supported
+Session creation form; it does not probe Core capabilities or prove that an
+executor, native runtime, model, or provider is ready. Restart `pnpm dev` after
+changing it. Never place an executor key or any other credential in this variable.
+
+Keep credentials server-side. A direct Core URL in the connection dialog is only
+for a compatible Core that explicitly allows the Web origin, methods, and headers
+through CORS.
 
 Do not have a Core running yet? Use the immutable
-[current Parsar setup guide](https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/services/agents-api/README.md#standalone-http-service).
+[current Parsar setup guide](https://github.com/MiniMax-AI-Dev/parsar/blob/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e/services/agents-api/README.md#standalone-http-service).
 The repository's [legacy Web connection runbook](docs/core-connection.md) is pinned
 to the older revision stated at its top; revalidate its PostgreSQL, caller-key,
 device, daemon, native-harness, `CODEX_HOME`, verification, and shutdown steps before
@@ -81,9 +96,26 @@ applying them to a newer Core.
 ## First use
 
 1. Open **Agents** and create an Agent with a name, instructions, and model ID.
-2. Review, edit, or delete the saved Agent, or start a Session from it.
+2. Review, edit, or delete the saved Agent, or start a Session from it. The default
+   uses no Environment.
 3. Open **Sessions**, select the Session, and send a message.
 4. Follow live Items, cancel active work, or return a requested function result.
+
+When the operator opt-in is enabled, **Start Session** also offers **Self-hosted**.
+Its absolute Workspace path is on the executor host, not in the browser, Web server,
+or `parsar-daemon` container. After Core creates the idle Session, Web can show a
+launcher template built from that Session's Environment ID and executor origin. The
+operator-issued executor credential file stays outside Web, and the launcher itself
+runs on caller-managed Linux executor compute. See
+[Connecting Agent Core](docs/core-connection.md#optional-self-hosted-session-creation)
+for the exact boundary.
+
+For the reviewed local loopback stack, an operator can additionally enable the
+default-off `AGENTS_CORE_WEB_DOCKER_GUIDE=1` profile and its required non-secret
+`AGENTS_CORE_WEB_DOCKER_*` settings from `.env.example`. The connection panel then
+offers a copyable Docker command alongside the native launcher. Web still never
+reads the credential file or talks to Docker, and running the command can release
+already queued paid input.
 
 The model ID must be supported by the connected execution runtime. Core currently
 has no model-catalog endpoint, so Web suggestions are editable hints rather than
@@ -104,6 +136,9 @@ flowchart LR
 Core, `parsar-daemon`, and native Codex/Claude execution adapters. This repository
 owns only the open Web experience and `@agents-core-web/agents-client`. The browser
 connects to the Core protocol; it never uses the daemon WebSocket as its API URL.
+For `self_hosted`, a separate operator-managed Linux executor connects to Core with
+its own credential and runs commands in its own Workspace; neither Web nor the daemon
+container becomes that Environment.
 
 See [Architecture](docs/architecture.md) for the full component and trust boundaries.
 
@@ -115,6 +150,7 @@ See [Architecture](docs/architecture.md) for the full component and trust bounda
 | `401 invalid_api_key` | The plaintext caller bearer must match the current Core key binding |
 | `503 execution_unavailable` / `Execution is not enabled` | Core rejected execution; inspect its safe error plus runtime and ownership state. A worker, executor, or daemon may be unconfigured or disconnected, or an execution lease may have been lost |
 | Agent saves but its model fails | Use a model ID and provider credential supported by the connected runtime |
+| Self-hosted option is hidden | Set the non-secret `AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS=1` operator flag and restart/rebuild Web only after the connected Codex Core and executor path have been reviewed |
 
 `/healthz` proves HTTP liveness only, not chat readiness. Check durable Core state and
 the current pinned Parsar guide before retrying an uncertain request; the
@@ -123,7 +159,7 @@ historical context only.
 
 ## Documentation
 
-- [Current Parsar Core setup](https://github.com/MiniMax-AI-Dev/parsar/blob/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee/services/agents-api/README.md#standalone-http-service) — immutable current upstream guide
+- [Current Parsar Core setup](https://github.com/MiniMax-AI-Dev/parsar/blob/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e/services/agents-api/README.md#standalone-http-service) — immutable current upstream guide
 - [Legacy Web connection runbook](docs/core-connection.md) — historical `0438880` snapshot; revalidate before use
 - [Protocol coverage](docs/protocol-coverage.md) — exact supported API surface
 - [Architecture](docs/architecture.md) — ownership, runtime, and trust boundaries

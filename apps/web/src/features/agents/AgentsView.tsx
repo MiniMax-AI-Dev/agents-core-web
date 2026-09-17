@@ -24,7 +24,7 @@ interface AgentsViewProps {
   onDelete?: (agentId: string) => Promise<void>;
   onRefresh: () => void;
   onRetrieve?: (agentId: string) => Promise<SavedAgent | undefined>;
-  onStartSession: (agentId: string) => Promise<void>;
+  onStartSession: (agentId: string) => void;
   onUpdate?: (agentId: string, input: UpdateAgentInput) => Promise<SavedAgent | undefined>;
 }
 
@@ -300,7 +300,7 @@ export function AgentsView({
   };
 
   const startSession = (agentId: string) => {
-    void onStartSession(agentId).catch(() => undefined);
+    onStartSession(agentId);
   };
 
   const dialogTitle = mode === "create"

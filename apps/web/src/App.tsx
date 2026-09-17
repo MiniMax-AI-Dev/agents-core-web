@@ -34,6 +34,8 @@ import {
   type SessionDetailState,
   type StreamState,
 } from "./features/sessions/SessionsView";
+import type { SessionStartInput } from "./features/sessions/create/SessionStartDialog";
+import { sessionEnvironmentInput } from "./features/sessions/create/session-environment";
 import {
   removeSession,
   reconcileUnknownSessionDelete,
@@ -109,6 +111,11 @@ interface SelectedSessionLoad {
   sessionId: string | null;
   state: SessionDetailState;
   error: string | null;
+}
+
+interface SessionCreateRequest {
+  agentId: string | null;
+  requestId: number;
 }
 
 function errorMessage(error: unknown): string {
@@ -209,7 +216,7 @@ export function App() {
   );
   const [busy, setBusy] = useState(false);
   const [agentCreateRequest, setAgentCreateRequest] = useState<number | null>(null);
-  const [sessionCreateRequest, setSessionCreateRequest] = useState<number | null>(null);
+  const [sessionCreateRequest, setSessionCreateRequest] = useState<SessionCreateRequest | null>(null);
   const agentCreateSequenceRef = useRef(0);
   const sessionCreateSequenceRef = useRef(0);
   const selectedIdRef = useRef<string | null>(selectedId);
@@ -868,19 +875,42 @@ export function App() {
     setAgents((current) => removeSavedAgent(current, agentId));
   };
 
-  const createSession = async (agentId: string) => {
-    const savedAgent = agents.find((agent) => agent.id === agentId);
+  const createSession = async (input: SessionStartInput) => {
+    const savedAgent = agents.find((agent) => agent.id === input.agentId);
     const admissionBlocker = savedAgent ? knownSessionAdmissionBlocker(savedAgent) : "The selected saved Agent is not loaded.";
     if (admissionBlocker) {
       const error = new Error(`Session was not created. ${admissionBlocker}`);
       notify(error.message, "error");
       throw error;
     }
-    const session = await run(
-      () => core.createSession({ agent_id: agentId, environment: { type: "none" }, stream: false }),
-      "Idle Session created. Opening live events…",
-    );
-    if (!session || coreGeneration !== connectionGenerationRef.current) return;
+    if (input.environment.type === "self_hosted" && !__AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS__) {
+      const error = new Error("Session was not created. Self-hosted Sessions are not enabled for this Web build.");
+      notify(error.message, "error");
+      throw error;
+    }
+    const rawEnvironment = input.environment as unknown as Record<string, unknown>;
+    const environmentType = rawEnvironment.type;
+    const workspaceDirectory = typeof rawEnvironment.workspace_directory === "string"
+      ? rawEnvironment.workspace_directory
+      : "";
+    const normalizedEnvironment = environmentType === "self_hosted"
+      ? sessionEnvironmentInput("self_hosted", workspaceDirectory)
+      : environmentType === "none"
+        ? sessionEnvironmentInput("none", "")
+        : sessionEnvironmentInput(environmentType, "");
+    const environmentInput = normalizedEnvironment.input;
+    if (!environmentInput) {
+      const error = new Error(`Session was not created. ${normalizedEnvironment.error ?? "The Environment input is invalid."}`);
+      notify(error.message, "error");
+      throw error;
+    }
+    const session = await run(() => core.createSession(
+      { agent_id: input.agentId, environment: environmentInput, stream: false },
+      input.idempotencyKey,
+    ));
+    if (!session || coreGeneration !== connectionGenerationRef.current) {
+      throw new Error("The Session creation outcome could not be confirmed.");
+    }
     sessionCollectionRevisionRef.current += 1;
     setSessions((current) => [session, ...current.filter((value) => value.id !== session.id)]);
     setSelectedId(session.id);
@@ -888,6 +918,7 @@ export function App() {
     itemsSessionIdRef.current = session.id;
     setItemsSessionId(session.id);
     setView("sessions");
+    notify("Idle Session created. Opening live events…", "success");
   };
 
   const retrieveSessionForAction = useCallback(async (sessionId: string) => {
@@ -1133,10 +1164,18 @@ export function App() {
     setAgentCreateRequest(agentCreateSequenceRef.current);
   };
 
-  const openSessionSetup = () => {
+  const openSessionSetup = (agentId?: string) => {
+    if (agentId) {
+      const agent = agents.find((candidate) => candidate.id === agentId);
+      const blocker = agent ? knownSessionAdmissionBlocker(agent) : "The selected saved Agent is not loaded.";
+      if (blocker) {
+        notify(`Session was not created. ${blocker}`, "error");
+        return;
+      }
+    }
     setView("sessions");
     sessionCreateSequenceRef.current += 1;
-    setSessionCreateRequest(sessionCreateSequenceRef.current);
+    setSessionCreateRequest({ agentId: agentId ?? null, requestId: sessionCreateSequenceRef.current });
   };
 
   const consumeAgentCreateRequest = useCallback((request: number) => {
@@ -1144,7 +1183,7 @@ export function App() {
   }, []);
 
   const consumeSessionCreateRequest = useCallback((request: number) => {
-    setSessionCreateRequest((current) => current === request ? null : current);
+    setSessionCreateRequest((current) => current?.requestId === request ? null : current);
   }, []);
 
   return (
@@ -1205,7 +1244,7 @@ export function App() {
             canCreateAgent={agentCollectionState === "ready" && !busy}
             canStartSession={sessionCollectionState === "ready" && agents.some((agent) => !knownSessionAdmissionBlocker(agent)) && !busy}
             onCreateAgent={openAgentSetup}
-            onStartSession={openSessionSetup}
+            onStartSession={() => openSessionSetup()}
           />
         </header>
         <div className="page-transition" key={view}>
@@ -1220,7 +1259,7 @@ export function App() {
               busy={busy}
               coreError={sessionCollectionError}
               coreState={sessionCollectionState}
-              createRequest={sessionCreateRequest ?? 0}
+              createRequest={sessionCreateRequest}
               onCreateRequestConsumed={consumeSessionCreateRequest}
               detailError={detailError}
               detailState={detailState}
@@ -1230,6 +1269,7 @@ export function App() {
               sendError={sendError}
               streamError={streamError}
               streamState={streamState}
+              selfHostedEnabled={__AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS__}
               onCancel={cancel}
               onCreateSession={createSession}
               onDeleteSession={deleteSessionFromCore}
@@ -1259,7 +1299,7 @@ export function App() {
               onDelete={deleteAgent}
               onRefresh={() => void refreshAgents()}
               onRetrieve={retrieveAgent}
-              onStartSession={createSession}
+              onStartSession={openSessionSetup}
               onUpdate={updateAgent}
             />
           ) : null}
