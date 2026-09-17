@@ -117,6 +117,33 @@ describe("Agent Core collection states", () => {
     expect(failed).toContain("Researcher");
   });
 
+  it("shows composer activity only for a Core-reported in-progress Session", () => {
+    const renderStatus = (status: AgentSession["status"], busy = false) => renderToStaticMarkup(
+      <SessionsView
+        agents={[]}
+        sessions={[selectedSession]}
+        selected={{ ...selectedSession, status }}
+        items={durableItems}
+        busy={busy}
+        coreError={null}
+        coreState="ready"
+        detailError={null}
+        detailState="ready"
+        streamError={null}
+        streamState="listening"
+        {...sessionsCallbacks}
+      />,
+    );
+
+    const active = renderStatus("in_progress");
+    expect(active).toContain('class="conversation-activity"');
+    expect(active).toContain('role="status" aria-live="polite" aria-atomic="true"');
+    expect(active).toContain("Researcher is working…");
+    expect(renderStatus("idle", true)).not.toContain("conversation-activity");
+    expect(renderStatus("requires_action")).not.toContain("conversation-activity");
+    expect(renderStatus("failed")).not.toContain("conversation-activity");
+  });
+
   it("keeps Sessions loading and failure distinct from ready empty copy", () => {
     const common = {
       agents: [],

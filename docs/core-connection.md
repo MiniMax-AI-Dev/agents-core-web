@@ -417,7 +417,7 @@ HTTP-only start it is safe to enable execution and submit the message. A timeout
 disconnected write is different. The client never retries automatically. The current
 UI retains the original payload and idempotency key in memory only for an explicit,
 byte-for-byte unchanged manual resend; editing the payload creates a new operation.
-Refresh the durable Session, Items, and Turn timeline, and use Core logs when the
+Refresh the durable Session and Items, inspect Trace → Turn diagnostics, and use Core logs when the
 public resources are insufficient before deciding whether another submission is safe.
 
 ## Credential ownership
@@ -501,11 +501,11 @@ In Agents Core Web:
 2. Create an Agent using a model known to the selected native runtime.
 3. Create an `environment:none` Session and send one text message.
 4. Confirm the events POST returns `204` and live lifecycle/output events arrive.
-5. Confirm Items contain the user and assistant messages, then confirm the Turn
-   timeline shows the terminal Turn snapshot, server wall-clock timestamps, and
-   reported Usage. The timeline may also advance from an exact live lifecycle event;
-   reload or use the corresponding authenticated API read for independent durable
-   proof.
+5. Confirm Items contain the user and assistant messages, then open **Trace → Turn
+   diagnostics** and confirm its Turn timeline shows the terminal Turn snapshot,
+   server wall-clock timestamps, and reported Usage. The diagnostics may also advance
+   from an exact live lifecycle event; reload or use the corresponding authenticated
+   API read for independent durable proof.
 6. Reload and confirm the completed state is recovered from resource reads.
 
 A completed Turn plus durable Item readback is execution evidence. Successful Agent

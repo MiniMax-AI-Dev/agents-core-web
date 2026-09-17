@@ -66,6 +66,8 @@ describe("Agents view", () => {
 
     expect(html).toContain('type="button" aria-label="Open details for this Agent"');
     expect(html).toContain('aria-disabled="true" aria-label="Start a Session with this Agent"');
+    expect(html).toContain('<span class="ledger-session-header" role="columnheader">Session</span>');
+    expect(html).toContain('<span>Unavailable</span>');
     expect(html).toContain("Session unavailable: Current Core Session admission requires");
   });
 
@@ -91,6 +93,7 @@ describe("Agents view", () => {
     );
 
     expect(html).toContain('type="button" aria-label="Start a Session with this Agent"');
+    expect(html).toContain('<span>Start Session</span>');
     expect(html).not.toContain("Session unavailable:");
   });
 

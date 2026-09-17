@@ -312,6 +312,25 @@ function emitTurnLifecycle(status) {
   return true;
 }
 
+function emitSessionLifecycle(status) {
+  if (!["in_progress", "idle"].includes(status)) return false;
+  const session = state.sessions.find((candidate) => candidate.id === "session_snapshot");
+  if (!session) return false;
+  session.status = status;
+  session.required_actions = [];
+  state.sequence += 1;
+  const event = `id: session_${state.sequence}\ndata: ${JSON.stringify({
+    type: `agent.session.${status}`,
+    event_id: `session_${state.sequence}`,
+    session_id: session.id,
+    session,
+  })}\n\n`;
+  for (const [stream, sessionId] of streamResponses) {
+    if (sessionId === session.id) stream.write(event);
+  }
+  return true;
+}
+
 function sendJson(response, value, status = 200) {
   const body = JSON.stringify(value);
   response.writeHead(status, {
@@ -408,6 +427,12 @@ const server = http.createServer(async (request, response) => {
       return emitTurnLifecycle(input.status)
         ? sendJson(response, { emitted: true })
         : sendError(response, 400, "Fixture terminal Turn is unavailable.");
+    }
+    if (request.method === "POST" && url.pathname === "/__fixture/emit-session") {
+      const input = await readJson(request);
+      return emitSessionLifecycle(input.status)
+        ? sendJson(response, { emitted: true })
+        : sendError(response, 400, "Fixture Session lifecycle status is unavailable.");
     }
     if (request.method === "GET" && url.pathname === "/__fixture/requests") {
       return sendJson(response, state.requests);
@@ -659,11 +684,13 @@ const server = http.createServer(async (request, response) => {
       }
       const items = sessionId !== "session_snapshot"
         ? []
-        : state.controls.itemsScenario
-          ? patchItems()
-          : state.controls.turnsScenario
-            ? observableTurnItems()
-            : [];
+        : state.controls.itemsScenario === 2
+          ? [...observableTurnItems(), ...patchItems()]
+          : state.controls.itemsScenario
+            ? patchItems()
+            : state.controls.turnsScenario
+              ? observableTurnItems()
+              : [];
       return sendJson(response, page(items));
     }
 

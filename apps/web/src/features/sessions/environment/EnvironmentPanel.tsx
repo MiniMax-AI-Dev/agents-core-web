@@ -1,4 +1,4 @@
-import { ExternalLink, Folder, HardDrive, Server, TerminalSquare } from "lucide-react";
+import { ExternalLink, Folder, HardDrive, TerminalSquare } from "lucide-react";
 
 import type {
   AgentEnvironment,
@@ -100,15 +100,7 @@ export function EnvironmentPanel({
   const type = typeof raw.type === "string" ? raw.type : null;
 
   if (type === "none") {
-    return (
-      <section className="environment-panel environment-panel-none" aria-label="Environment and Workspace status">
-        <div className="environment-panel-heading">
-          <Server size={15} strokeWidth={1.5} aria-hidden="true" />
-          <div><strong>Core-owned</strong><span>No Workspace</span></div>
-        </div>
-        <p>Core owns runtime placement. This Session has no Environment execution directory.</p>
-      </section>
-    );
+    return null;
   }
 
   if (type !== "self_hosted") {

@@ -5,15 +5,15 @@ OpenAI-hosted service compatibility.
 
 ## Compatibility baseline
 
-- Current Parsar Core compatibility audit:
+- Current immutable Parsar Core capability baseline:
   [`d91ba48a`](https://github.com/MiniMax-AI-Dev/parsar/commit/d91ba48ac6c49cfdf6f08d7687b9be76ba6d53ee).
   This immutable revision re-confirms the Web-used Agent admission, chat, and
-  Environment boundaries. `OpenAI-Beta: agents=v1` plus the `/v1/agents/**`
-  resources and Session events endpoint are the versioned Web/Core contract. Core
-  exposes no additional public execution-readiness, capability, or build-version
-  resource; Web does not require one before using the documented chat events. It
-  exposes Environment retrieve plus Session-bound `self_hosted` data, but no public
-  Environment list, template, file-management, or browser-facing key route.
+  Environment and trace-observability boundaries. `OpenAI-Beta: agents=v1` plus the
+  `/v1/agents/**` resources and Session events endpoint are the versioned Web/Core
+  contract. Core exposes no additional public execution-readiness, capability, or
+  build-version resource; Web does not require one before using the documented chat
+  events. It exposes Environment retrieve plus Session-bound `self_hosted` data, but
+  no public Environment list, template, file-management, or browser-facing key route.
 - Upstream resource source: `openai-python` 3.13.0 beta Agents resources at
   [`d7c41efe`](https://github.com/openai/openai-python/tree/d7c41efee1b0802b79f3f88a678ef2052b06e9ce/src/openai/resources/beta/agents)
 - Required beta header: `OpenAI-Beta: agents=v1`
@@ -88,6 +88,10 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 - Saved Agent names are limited to 128 Unicode characters. Agent metadata is limited
   to 16 string pairs, 64 Unicode characters per key, and 512 per value; the Web
   enforces those limits before a write.
+- A selected `environment:none` Session renders no Environment or Workspace panel;
+  absence of that optional UI is not an error and does not block conversation use.
+  Read-only Environment status is shown only for a real `self_hosted` projection or
+  for an unsupported Environment variant that must fail closed.
 - Parsar Core at the audited revision supports Session-bound `self_hosted` data and
   its documented event inputs. This Web does not create or connect that profile; it
   safely renders selected Sessions that already carry one. That read-only projection
@@ -274,7 +278,9 @@ read keeps the existing conversation usable.
   `limit=100&order=asc`, follows `has_more` using the last returned Turn ID when the
   optional list cursors are absent, and rejects a repeated/cyclic cursor or a Turn
   scoped to another Session. Reads are abortable and never retried automatically.
-- The timeline presents observed Core snapshots for `queued`, `in_progress`,
+- Trace keeps the complete Turn timeline in a collapsed **Turn diagnostics**
+  disclosure so Conversation remains focused on messages and composing. The
+  diagnostics present observed Core snapshots for `queued`, `in_progress`,
   `waiting`, `completed`, `failed`, and `cancelled`. Its all-pages read supplies the
   authoritative creation order, while a newer exact lifecycle SSE snapshot may
   advance a Turn before that read settles. Live projection is limited to exact
@@ -301,6 +307,54 @@ read keeps the existing conversation usable.
 - Turn status, timings, Usage, errors, and tool progress are resource-level
   observability. They are not per-Item timing, monetary cost, provider attribution,
   or a complete OpenAI Trace waterfall.
+
+## Trace workbench boundary
+
+- Against the immutable Parsar `d91ba48a` capability baseline, the trace workbench
+  is a read-only projection of the selected Session's Agent snapshot, all loaded
+  Turn and Item snapshots, and accepted newer lifecycle events. A Turn can contribute
+  its exact status, start/completion timestamps, and available token totals. An Item
+  can present its exact type, status, role/phase, message content,
+  command, working directory, tool identity, arguments/action, output/error, exit
+  code, and tool `duration_ms` when those fields exist. Missing values stay
+  unavailable. Unknown Item types and known discriminants with malformed required
+  fields retain a generic inspectable presentation rather than acquiring a known
+  semantic label.
+- Turn rows follow the durable all-pages creation order with the existing exact live
+  status merge. Items retain their durable order and group under a Turn only by an
+  exact `turn_id`; unmatched Items remain explicit. A function result may be paired
+  with a function call only when the same non-empty `call_id` identifies exactly one
+  call followed by exactly one result within that Turn. Ambiguous or out-of-order
+  snapshots remain separate rows. Sequence labels, Turn/tool counts, bounded local
+  search, and filters are Web-derived views over the currently loaded snapshots.
+  They do not mutate Core state, establish an execution hierarchy, or make a partial
+  or failed read complete.
+- The instructions available to this view are the Session Agent snapshot's
+  configured `instructions`. They are labelled **Configured instructions**, not
+  **System prompt**, because the public contract does not expose the complete prompt
+  assembled by the runtime, daemon, model provider, or native harness. Likewise, the
+  configured model is not proof of the model or provider that executed a Turn.
+- A function Tool schema is shown only when a known `function_call` Item's exact
+  function name has one unambiguous, structurally valid function-tool match in the
+  selected Session's Agent snapshot. Missing, duplicate, malformed, MCP, command,
+  Web-search, and unknown Tool definitions do not receive an inferred schema.
+- Summary, preview, payload, result, and raw-detail panels project allow-listed
+  fields from those public resource snapshots. A merged function row keeps the call
+  and result as two distinct raw snapshots. The Web does not add request headers,
+  authentication material, daemon/native-harness diagnostics, or provider-private
+  payloads that are absent from the resource. Nested public field values are shown
+  as Core returned them and are not claimed to be recursively redacted. The Session
+  SSE endpoint is live-only and does not replay history, so the assembled trace must
+  not be described as an audit log or lossless record of every intermediate state.
+- Core exposes Turn-level `created_at`, `started_at`, and `completed_at`, but no
+  per-Item start/end timestamps, first-token timestamp, model-generation span,
+  throughput, provider attribution, parent span, request/step hierarchy, or subagent
+  relationship in this contract. Item `duration_ms` remains tool progress only;
+  `phase`, `turn_id`, event arrival time, list position, and configured multi-agent
+  fields cannot fill those gaps. Therefore the Web may render an execution-order
+  overview, but it must not draw a time-scaled Input/Model/Tools waterfall or claim
+  TTFT, generation time, tokens-per-second, provider, step, or subagent metrics until
+  Core supplies versioned fields for them.
 
 The client never retries a write automatically. For an input message that receives
 an unexpected non-204 2xx, loses its network/response, or fails with HTTP 5xx or a

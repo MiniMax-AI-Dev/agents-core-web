@@ -38,11 +38,13 @@ import {
 } from "./environment/EnvironmentPanel";
 import type { EnvironmentObservation } from "./environment/environment-state";
 import { ThreadItems } from "./items/ItemRenderers";
-import { TurnTimeline, type TurnTimelineLoadState } from "./turns/TurnTimeline";
+import { TraceView } from "./trace/TraceView";
+import type { TurnTimelineLoadState } from "./turns/TurnTimeline";
 import { SessionActionsDialog } from "./actions/SessionActionsDialog";
 
 export type StreamState = "idle" | "connecting" | "listening" | "recovering" | "failed";
 export type SessionDetailState = "idle" | "loading" | "ready" | "failed";
+type SessionView = "conversation" | "trace";
 
 interface SessionsViewProps {
   agents: SavedAgent[];
@@ -216,6 +218,15 @@ function CancelOnlyBar({ busy, onCancel }: { busy: boolean; onCancel: () => void
   );
 }
 
+function ConversationActivity({ agentName }: { agentName: string }) {
+  return (
+    <div className="conversation-activity" role="status" aria-live="polite" aria-atomic="true">
+      <StatusIcon status="running" />
+      <span>{agentName} is working…</span>
+    </div>
+  );
+}
+
 function FunctionActionBar({
   actions,
   agentName,
@@ -329,6 +340,7 @@ export function SessionsView({
       : "Create or load a saved Agent before starting a Session."
     : null;
   const [message, setMessage] = useState("");
+  const [sessionView, setSessionView] = useState<SessionView>("conversation");
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [agentId, setAgentId] = useState(firstStartableAgent?.id ?? "");
   const [actionSession, setActionSession] = useState<AgentSession | null>(null);
@@ -461,6 +473,25 @@ export function SessionsView({
     (unsupportedActionCount > 0 || environmentConnections.length > 0 && functionActions.length === 0),
   );
 
+  const onViewTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const tabs = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role=tab]") ?? []);
+    const index = tabs.indexOf(event.currentTarget);
+    if (index < 0) return;
+    const target = event.key === "ArrowRight"
+      ? tabs[(index + 1) % tabs.length]
+      : event.key === "ArrowLeft"
+        ? tabs[(index - 1 + tabs.length) % tabs.length]
+        : event.key === "Home"
+          ? tabs[0]
+          : event.key === "End"
+            ? tabs[tabs.length - 1]
+            : null;
+    if (!target) return;
+    event.preventDefault();
+    target.click();
+    target.focus();
+  };
+
   return (
     <section ref={pageRef} className="page-section session-page" tabIndex={-1}>
       <aside className="session-browser">
@@ -589,6 +620,40 @@ export function SessionsView({
             </button>
           </header>
 
+          <div className="session-view-tabs" role="tablist" aria-label="Session view">
+            <button
+              id="session-conversation-tab"
+              type="button"
+              role="tab"
+              aria-controls="session-conversation-panel"
+              aria-selected={sessionView === "conversation"}
+              tabIndex={sessionView === "conversation" ? 0 : -1}
+              onClick={() => setSessionView("conversation")}
+              onKeyDown={onViewTabKeyDown}
+            >
+              Conversation
+            </button>
+            <button
+              id="session-trace-tab"
+              type="button"
+              role="tab"
+              aria-controls="session-trace-panel"
+              aria-selected={sessionView === "trace"}
+              tabIndex={sessionView === "trace" ? 0 : -1}
+              onClick={() => setSessionView("trace")}
+              onKeyDown={onViewTabKeyDown}
+            >
+              Trace
+            </button>
+          </div>
+
+          <div
+            className="session-view-panel conversation-view-panel"
+            id="session-conversation-panel"
+            role="tabpanel"
+            aria-labelledby="session-conversation-tab"
+            hidden={sessionView !== "conversation"}
+          >
           <div className="conversation-thread-frame">
             <div ref={setViewport} className="conversation-scroll">
               <div ref={setThreadContent} className="thread-content">
@@ -602,14 +667,6 @@ export function SessionsView({
                   environment={selected.environment}
                   observation={environmentObservation}
                   connectionActions={environmentConnections}
-                />
-
-                <TurnTimeline
-                  turns={turns}
-                  items={items}
-                  sessionUsage={selected.usage}
-                  loadState={turnState}
-                  error={turnError}
                 />
 
                 <div className="message-stack">
@@ -699,6 +756,9 @@ export function SessionsView({
               <EnvironmentConnectionNotice action={action} key={`${action.environment_id}:${index}`} />
             ))}
             {unsupportedActionCount ? <UnsupportedActionNotice /> : null}
+            {selected.status === "in_progress" ? (
+              <ConversationActivity agentName={selected.agent.name || "Agent"} />
+            ) : null}
             {showCancelOnly ? (
               <CancelOnlyBar busy={busy} onCancel={cancel} />
             ) : null}
@@ -751,6 +811,27 @@ export function SessionsView({
               </form>
             )}
           </footer>
+          </div>
+          {sessionView === "trace" ? (
+            <TraceView
+              id="session-trace-panel"
+              labelledBy="session-trace-tab"
+              session={selected}
+              turns={turns}
+              items={items}
+              detailState={detailState}
+              detailError={detailError}
+              turnState={turnState}
+              turnError={turnError}
+            />
+          ) : (
+            <div
+              id="session-trace-panel"
+              role="tabpanel"
+              aria-labelledby="session-trace-tab"
+              hidden
+            />
+          )}
         </div>
       ) : (
         <div className="workspace-empty">
