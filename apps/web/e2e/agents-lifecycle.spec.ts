@@ -1285,6 +1285,113 @@ test("loads every Turn page, reconciles terminal events, and keeps failures besi
   await attachElementScreenshot(timeline, testInfo, "narrow-turn-timeline");
 });
 
+test("presents an honest searchable Trace workbench without changing the conversation draft", async ({ page, request }, testInfo) => {
+  await resetFixture(request);
+  await controlFixture(request, {
+    turnsScenario: 1,
+    turnsPageSize: 2,
+    itemsScenario: 2,
+  });
+  await page.goto("/");
+  await expect(page.getByText("listening", { exact: true })).toBeVisible();
+
+  const viewTabs = page.getByRole("tablist", { name: "Session view" });
+  const conversationTab = viewTabs.getByRole("tab", { name: "Conversation" });
+  const traceTab = viewTabs.getByRole("tab", { name: "Trace" });
+  const composer = page.getByLabel("Message the Agent");
+  await expect(page.locator("#session-trace-panel")).toBeHidden();
+  await composer.fill("Draft survives Trace inspection\nwith a second line");
+  const sendsBefore = (await fixtureRequests(request)).filter(
+    (entry) => entry.method === "POST" && entry.path.endsWith("/events"),
+  ).length;
+
+  await conversationTab.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(traceTab).toHaveAttribute("aria-selected", "true");
+  const trace = page.getByRole("tabpanel", { name: "Trace" });
+  await expect(trace).toBeVisible();
+  await expect(trace).toContainText("Known Turn time");
+  await expect(trace.getByText("7 observed Turns")).toHaveCount(0);
+  await expect(trace).toContainText("Turns");
+  await expect(trace).toContainText("Tool calls");
+  await expect(trace).toContainText("Equal-width sequence · not time-scaled");
+  await expect(trace.locator(".trace-order-scroll")).toHaveCount(1);
+  await expect(trace).toContainText("Per-item timing is unavailable");
+  await expect(trace).toContainText("Configured instructions");
+  await expect(trace).toContainText("Completed Turn output remains in the conversation.");
+  await expect(trace).not.toContainText("TTFT");
+  await expect(trace).not.toContainText("Throughput");
+
+  const search = trace.getByRole("searchbox", { name: "Search trace" });
+  await search.fill("Persisted input failed");
+  await expect(trace.locator(".trace-ledger-row")).toHaveCount(1);
+  await expect(trace).toContainText("Persisted input before the Turn failed.");
+  await search.fill("");
+
+  const patchRow = trace.locator(".trace-ledger-row-tools").filter({ hasText: "apply_patch" }).first();
+  await patchRow.click();
+  const detail = page.getByRole("complementary", { name: "Trace item details" });
+  await expect(detail).toBeVisible();
+  await expect(detail.getByRole("button", { name: "Close trace details" })).toBeFocused();
+  const previewTab = detail.getByRole("tab", { name: "Preview" });
+  await expect(previewTab).toHaveAttribute("aria-controls", "session-trace-panel-detail-content");
+  await previewTab.click();
+  await expect(detail.getByRole("tabpanel", { name: "Preview" })).toHaveAttribute("tabindex", "0");
+  const viewer = detail.getByRole("region", { name: "Parsar apply patch diff" });
+  await expect(viewer).toContainText("3 files");
+  await expect(viewer).toContainText("Completed");
+  const desktopSplit = await Promise.all([
+    trace.locator(".trace-ledger").boundingBox(),
+    detail.boundingBox(),
+  ]);
+  expect(desktopSplit[0]).not.toBeNull();
+  expect(desktopSplit[1]).not.toBeNull();
+  expect(desktopSplit[1]!.x).toBeGreaterThanOrEqual(desktopSplit[0]!.x + desktopSplit[0]!.width - 1);
+  await attachScreenshot(page, testInfo, "desktop-trace-detail");
+  await page.keyboard.press("Escape");
+  await expect(detail).toHaveCount(0);
+  await expect(patchRow).toBeFocused();
+
+  await patchRow.click();
+  await search.fill("filter selected row out");
+  await expect(patchRow).toBeHidden();
+  await page.getByRole("button", { name: "Close trace details" }).click();
+  await expect(search).toBeFocused();
+  await search.fill("");
+
+  await conversationTab.click();
+  await expect(composer).toBeVisible();
+  await expect(composer).toHaveValue("Draft survives Trace inspection\nwith a second line");
+  const sendsAfter = (await fixtureRequests(request)).filter(
+    (entry) => entry.method === "POST" && entry.path.endsWith("/events"),
+  ).length;
+  expect(sendsAfter).toBe(sendsBefore);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await traceTab.click();
+  const narrowTrace = page.getByRole("tabpanel", { name: "Trace" });
+  const narrowPatchRow = narrowTrace.locator(".trace-ledger-row-tools").filter({ hasText: "apply_patch" }).first();
+  await narrowPatchRow.click();
+  const narrowDetail = page.getByRole("complementary", { name: "Trace item details" });
+  await expect(narrowDetail).toBeVisible();
+  await expect(narrowTrace.locator(".trace-ledger")).toBeHidden();
+  const widths = await narrowDetail.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return {
+      viewport: innerWidth,
+      document: document.documentElement.scrollWidth,
+      body: document.body.scrollWidth,
+      left: box.left,
+      right: box.right,
+    };
+  });
+  expect(widths.document).toBeLessThanOrEqual(widths.viewport);
+  expect(widths.body).toBeLessThanOrEqual(widths.viewport);
+  expect(widths.left).toBeGreaterThanOrEqual(0);
+  expect(widths.right).toBeLessThanOrEqual(widths.viewport);
+  await attachScreenshot(page, testInfo, "narrow-trace-detail");
+});
+
 test("drops a delayed Turn page after switching Sessions", async ({ page, request }) => {
   await resetFixture(request);
   await controlFixture(request, {

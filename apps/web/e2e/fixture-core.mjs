@@ -659,11 +659,13 @@ const server = http.createServer(async (request, response) => {
       }
       const items = sessionId !== "session_snapshot"
         ? []
-        : state.controls.itemsScenario
-          ? patchItems()
-          : state.controls.turnsScenario
-            ? observableTurnItems()
-            : [];
+        : state.controls.itemsScenario === 2
+          ? [...observableTurnItems(), ...patchItems()]
+          : state.controls.itemsScenario
+            ? patchItems()
+            : state.controls.turnsScenario
+              ? observableTurnItems()
+              : [];
       return sendJson(response, page(items));
     }
 
