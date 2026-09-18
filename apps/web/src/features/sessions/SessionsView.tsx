@@ -3,7 +3,6 @@ import {
   ArrowUp,
   Bot,
   Clock3,
-  Code2,
   Ellipsis,
   ExternalLink,
   HardDrive,
@@ -15,6 +14,7 @@ import {
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import type {
+  AgentCore,
   AgentSession,
   AgentTurn,
   EnvironmentConnectionAction,
@@ -31,7 +31,7 @@ import { Skeleton } from "../../components/Skeleton";
 import { StatusIcon, type StatusKind } from "../../components/StatusIcon";
 import type { CoreConnectionState } from "../../lib/connection";
 import { useThreadScroll } from "../../lib/use-thread-scroll";
-import { knownSessionAdmissionBlocker } from "../agents/session-admission";
+import type { VaultCatalog } from "../vaults/vault-catalog";
 import {
   SessionStartDialog,
   type SessionStartInput,
@@ -41,6 +41,7 @@ import {
   resolveEnvironmentPresentation,
 } from "./environment/EnvironmentPanel";
 import { EnvironmentDialog } from "./environment/EnvironmentDialog";
+import type { ListEnvironmentFiles } from "./environment/EnvironmentFilesPanel";
 import type { EnvironmentObservation } from "./environment/environment-state";
 import { ThreadItems } from "./items/ItemRenderers";
 import {
@@ -50,6 +51,7 @@ import {
 } from "./pending-message";
 import { TraceView } from "./trace/TraceView";
 import type { TurnTimelineLoadState } from "./turns/TurnTimeline";
+import { FunctionActionPanel } from "./actions/FunctionActionPanel";
 import { SessionActionsDialog } from "./actions/SessionActionsDialog";
 
 export type StreamState = "idle" | "connecting" | "listening" | "recovering" | "failed";
@@ -63,6 +65,7 @@ export interface SessionCreateRequest {
 
 interface SessionsViewProps {
   agents: SavedAgent[];
+  agentFilter?: string | null;
   sessions: AgentSession[];
   selected: AgentSession | null;
   items: SessionItem[];
@@ -81,10 +84,15 @@ interface SessionsViewProps {
   streamError: string | null;
   streamState: StreamState;
   selfHostedEnabled?: boolean;
+  openAIHostedEnabled?: boolean;
+  vaultCatalog?: VaultCatalog | null;
   onCancel: () => Promise<void>;
+  onAgentFilterChange?: (agentId: string | null) => void;
   onCreateSession: (input: SessionStartInput) => Promise<void>;
   onDeleteSession: (sessionId: string) => Promise<boolean>;
   onFunctionResult: (input: FunctionResultInput) => Promise<void>;
+  onListEnvironmentFiles?: ListEnvironmentFiles;
+  onCreateEnvironmentFile?: AgentCore["createEnvironmentFile"];
   onRefresh: () => void;
   onRetrySession: () => void;
   onRetryStream: () => void;
@@ -98,7 +106,7 @@ interface SessionsViewProps {
   ) => Promise<AgentSession | undefined>;
 }
 
-const coreRuntimeSetupUrl = "https://github.com/MiniMax-AI-Dev/parsar/blob/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e/services/agents-api/README.md#public-text-execution";
+const coreRuntimeSetupUrl = "https://github.com/MiniMax-AI-Dev/parsar/blob/c31f81677a8b16c53b665de9075181df837a0032/services/agents-api/README.md#public-text-execution";
 
 function SessionsListSkeleton() {
   return (
@@ -157,16 +165,6 @@ function relativeTime(seconds: number): string {
 
 export function restoreDraftAfterFailedSend(currentDraft: string, failedDraft: string): string {
   return currentDraft || failedDraft;
-}
-
-function pretty(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (value === undefined) return "";
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
 }
 
 function sessionStatusKind(status: AgentSession["status"]): StatusKind {
@@ -262,83 +260,9 @@ function ConversationActivity({ label }: { label: string }) {
   );
 }
 
-function FunctionActionBar({
-  actions,
-  agentName,
-  autoFocus,
-  busy,
-  onCancel,
-  onSubmit,
-}: {
-  actions: FunctionCallAction[];
-  agentName: string;
-  autoFocus: boolean;
-  busy: boolean;
-  onCancel: () => void;
-  onSubmit: (input: FunctionResultInput) => Promise<void>;
-}) {
-  const current = actions[0];
-  const [result, setResult] = useState("");
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    setResult("");
-    if (autoFocus) inputRef.current?.focus({ preventScroll: true });
-  }, [autoFocus, current?.call_id]);
-
-  if (!current) return null;
-
-  const submit = (success: boolean) => {
-    const input: FunctionResultInput = success
-      ? { callId: current.call_id, turnId: current.turn_id, success: true, output: result }
-      : { callId: current.call_id, turnId: current.turn_id, success: false, error: result || "Function rejected by the operator." };
-    void onSubmit(input).catch(() => undefined);
-  };
-
-  return (
-    <section className="approval-bar" aria-label="Function result required">
-      <div className="approval-heading">
-        <Code2 size={14} strokeWidth={1.5} aria-hidden="true" />
-        <span title={current.name}>{current.name}</span>
-        {actions.length > 1 ? <span className="approval-count">1 / {actions.length}</span> : null}
-      </div>
-      <p>{agentName || "Agent"} is waiting for this function result.</p>
-      <pre className="approval-arguments">{pretty(current.arguments)}</pre>
-      <textarea
-        ref={inputRef}
-        className="approval-input"
-        value={result}
-        onChange={(event) => setResult(event.target.value)}
-        placeholder="Return a result or describe the error…"
-        aria-label="Function result or error"
-        rows={3}
-        disabled={busy}
-      />
-      <div className="approval-actions">
-        <button
-          className="button outline"
-          type="button"
-          disabled={busy}
-          onClick={() => submit(false)}
-        >
-          Return error
-        </button>
-        <button
-          className="button primary"
-          type="button"
-          disabled={busy || !result.trim()}
-          onClick={() => submit(true)}
-        >
-          Submit result
-        </button>
-        <CancelActiveTurnButton busy={busy} onCancel={onCancel} />
-      </div>
-    </section>
-  );
-}
-
 export function SessionsView({
   agents,
+  agentFilter = null,
   sessions,
   selected,
   items,
@@ -357,10 +281,15 @@ export function SessionsView({
   streamError,
   streamState,
   selfHostedEnabled = false,
+  openAIHostedEnabled = false,
+  vaultCatalog = null,
   onCancel,
+  onAgentFilterChange,
   onCreateSession,
   onDeleteSession,
   onFunctionResult,
+  onListEnvironmentFiles,
+  onCreateEnvironmentFile,
   onRefresh,
   onRetrySession,
   onRetryStream,
@@ -369,12 +298,9 @@ export function SessionsView({
   onSend,
   onUpdateSession,
 }: SessionsViewProps) {
-  const firstStartableAgent = agents.find((agent) => !knownSessionAdmissionBlocker(agent));
-  const newSessionUnavailableReason = coreState === "ready" && !firstStartableAgent
-    ? agents.length
-      ? "No loaded Agent matches the known Core Session-admission profile."
-      : "Create or load a saved Agent before starting a Session."
-    : null;
+  // Inline Agent creation remains available without a saved Agent. Saved-only
+  // incompatibilities can also be repaired through explicit Session overrides.
+  const newSessionUnavailableReason = null;
   const [message, setMessage] = useState("");
   const [sessionView, setSessionView] = useState<SessionView>("conversation");
   const [newSessionOpen, setNewSessionOpen] = useState(false);
@@ -569,6 +495,25 @@ export function SessionsView({
           </div>
         </header>
 
+        <label className="session-agent-filter">
+          <Bot size={13} strokeWidth={1.5} aria-hidden="true" />
+          <span className="sr-only">Filter Sessions by Agent</span>
+          <select
+            aria-label="Filter Sessions by Agent"
+            value={agentFilter ?? ""}
+            onChange={(event) => onAgentFilterChange?.(event.target.value || null)}
+            disabled={!agents.length}
+          >
+            <option value="">All Agents</option>
+            {agentFilter && !agents.some((agent) => agent.id === agentFilter) ? (
+              <option value={agentFilter}>Unavailable Agent (not loaded)</option>
+            ) : null}
+            {agents.map((agent) => (
+              <option value={agent.id} key={agent.id}>{agent.name || agent.model}</option>
+            ))}
+          </select>
+        </label>
+
         <div className="session-list-heading">
           <span>Recent</span>
           <span>{coreState === "ready" || sessions.length ? sessions.length : "—"}</span>
@@ -694,6 +639,8 @@ export function SessionsView({
               observation={environmentObservation}
               connectionActions={environmentConnections}
               defaultLauncherGuideOpen={environmentPresentation.defaultLauncherGuideOpen}
+              onListFiles={onListEnvironmentFiles}
+              onCreateFile={onCreateEnvironmentFile}
             />
           ) : null}
 
@@ -841,7 +788,7 @@ export function SessionsView({
               <CancelOnlyBar busy={busy} onCancel={cancel} />
             ) : null}
             {!unsupportedActionCount && functionActions.length ? (
-                <FunctionActionBar
+                <FunctionActionPanel
                   actions={functionActions}
                   agentName={selected.agent.name || "Agent"}
                   autoFocus={!environmentConnections.length && !unsupportedActionCount}
@@ -925,6 +872,8 @@ export function SessionsView({
         open={newSessionOpen}
         preselectedAgentId={preselectedAgentId}
         selfHostedEnabled={selfHostedEnabled}
+        openAIHostedEnabled={openAIHostedEnabled}
+        vaultCatalog={vaultCatalog}
         onClose={() => setNewSessionOpen(false)}
         onSubmit={onCreateSession}
       />

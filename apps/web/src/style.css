@@ -605,7 +605,7 @@ html[data-theme="dark"] .brand-mark-dark {
   color: var(--fg-muted);
 }
 
-/* Agents — the Parsar ledger, never a card grid. */
+/* Shared ledger primitives and legacy Agent detail styles. */
 
 .agents-page {
   display: flex;
@@ -1073,6 +1073,30 @@ html[data-theme="dark"] .brand-mark-dark {
   align-items: center;
   margin-left: auto;
   gap: 2px;
+}
+
+.session-agent-filter {
+  display: flex;
+  min-height: 38px;
+  flex: 0 0 38px;
+  align-items: center;
+  padding: 5px 12px;
+  gap: 7px;
+  color: var(--fg-muted);
+  border-bottom: 1px solid var(--line);
+}
+
+.session-agent-filter select {
+  min-width: 0;
+  height: 28px;
+  flex: 1;
+  padding: 0 26px 0 8px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  background-color: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
 }
 
 .session-list-heading {
@@ -4913,9 +4937,9 @@ button.trace-step-row:hover {
   display: grid;
   grid-template-columns: 14px 120px minmax(200px, 1fr);
   min-width: 520px;
-  height: 36px;
+  min-height: 36px;
   align-items: center;
-  padding: 0 24px;
+  padding: 8px 24px;
   gap: 10px;
   color: var(--fg);
   font-size: 13px;
@@ -5119,7 +5143,7 @@ button.trace-step-row:hover {
 }
 
 .agent-setup-editor {
-  padding: 22px 24px 32px;
+  padding: 22px 24px 0;
   border-right: 1px solid var(--line);
 }
 
@@ -5180,13 +5204,115 @@ button.trace-step-row:hover {
   margin: 10px 0 0;
 }
 
-.agent-setup-actions {
+.agent-tools-list {
+  display: grid;
+  margin-top: 12px;
+  gap: 10px;
+}
+
+.agent-tool-card {
+  display: grid;
+  padding: 12px;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.agent-tool-card > header {
   display: flex;
   align-items: center;
-  margin-top: 18px;
-  padding-top: 14px;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.agent-tool-card > header .button {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.agent-tool-card > small,
+.agent-tool-read-only small,
+.agent-mcp-allowed-tools small {
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.agent-tool-read-only {
+  background: color-mix(in srgb, var(--warning) 7%, var(--surface));
+}
+
+.agent-tool-read-only > div {
+  display: grid;
+  gap: 3px;
+}
+
+.agent-tool-read-only span {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.agent-tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.agent-mcp-allowed-tools {
+  display: grid;
+  margin: 0;
+  padding: 10px;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.agent-mcp-allowed-tools legend {
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+.agent-mcp-allowed-tools label,
+.agent-mcp-required {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+}
+
+.agent-mcp-allowed-tools textarea {
+  min-height: 82px;
+}
+
+.agent-tool-actions {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 12px;
   gap: 8px;
+}
+
+.agent-tool-summary {
+  display: grid;
+  margin: 0;
+  padding-left: 18px;
+  gap: 5px;
+}
+
+.agent-setup-actions {
+  position: sticky;
+  z-index: 3;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 18px -24px 0;
+  padding: 14px 24px 18px;
+  gap: 8px;
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
   border-top: 1px solid var(--line);
+  box-shadow: 0 -10px 22px color-mix(in srgb, var(--fg) 8%, transparent);
 }
 
 .agent-start-session {
@@ -5214,6 +5340,7 @@ button.trace-step-row:hover {
 }
 
 .agent-request-preview,
+.agent-saved-summary,
 .agent-setup-guide {
   min-width: 0;
   padding: 16px;
@@ -5230,11 +5357,40 @@ button.trace-step-row:hover {
 }
 
 .agent-request-preview h2,
+.agent-saved-summary h2,
 .agent-setup-guide h2 {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
   line-height: 20px;
+}
+
+.agent-saved-summary dl {
+  display: grid;
+  margin: 12px 0 0;
+  gap: 9px;
+}
+
+.agent-saved-summary dl > div {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.agent-saved-summary dt {
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.agent-saved-summary dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.agent-saved-summary code {
+  font-family: var(--font-mono);
 }
 
 .agent-request-preview header p {
@@ -5334,6 +5490,10 @@ button.trace-step-row:hover {
     grid-template-columns: 1fr;
   }
 
+  .agent-tool-grid {
+    grid-template-columns: 1fr;
+  }
+
   .conversation-header-actions {
     gap: 2px;
   }
@@ -5397,7 +5557,7 @@ button.trace-step-row:hover {
   }
 
   .agent-setup-editor {
-    padding: 16px 12px 22px;
+    padding: 16px 12px 0;
     border-right: 0;
   }
 
@@ -5411,7 +5571,11 @@ button.trace-step-row:hover {
   }
 
   .agent-setup-actions {
-    flex-wrap: wrap;
+    margin-right: -12px;
+    margin-left: -12px;
+    padding-right: 12px;
+    padding-bottom: 14px;
+    padding-left: 12px;
   }
 
   .agent-start-session {
@@ -5447,6 +5611,251 @@ button.trace-step-row:hover {
 
 .refresh-spinning {
   animation: status-spin 1.2s linear infinite;
+}
+
+.page-subtitle {
+  margin: 5px 0 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.vaults-page {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.vaults-page .page-header > div:first-child {
+  min-width: 0;
+}
+
+.vaults-content {
+  min-height: 0;
+  flex: 1;
+  padding: 18px 24px 36px;
+  overflow-y: auto;
+}
+
+.vault-security-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.vault-security-note svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.vault-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 14px;
+}
+
+.vault-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-control);
+}
+
+.vault-card > header,
+.vault-card-title,
+.vault-card-actions,
+.credential-row,
+.credential-actions {
+  display: flex;
+  align-items: center;
+}
+
+.vault-card > header {
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.vault-card-title {
+  min-width: 0;
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.vault-card-title > div,
+.credential-row > div:first-of-type {
+  min-width: 0;
+}
+
+.vault-card-title h2 {
+  margin: 0 0 3px;
+  font-size: 14px;
+}
+
+.vault-card-title code,
+.credential-row code {
+  display: block;
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vault-card-actions,
+.credential-actions {
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.vault-metadata-row {
+  display: flex;
+  justify-content: space-between;
+  margin: 14px 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-muted);
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.vault-credentials {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-muted);
+}
+
+.vault-credentials h3 {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.vault-credentials h3 span {
+  color: var(--fg-muted);
+}
+
+.credential-row {
+  gap: 9px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line-muted);
+}
+
+.credential-row:first-of-type {
+  border-top: 0;
+}
+
+.credential-row > svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.credential-row > div:first-of-type {
+  flex: 1;
+}
+
+.credential-row strong,
+.credential-row small {
+  display: block;
+}
+
+.credential-row strong {
+  margin-bottom: 3px;
+  font-size: 12px;
+}
+
+.credential-row small,
+.vault-empty-credentials {
+  margin-top: 4px;
+  color: var(--fg-muted);
+  font-size: 10px;
+}
+
+.session-vault-plan {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+}
+
+.session-vault-plan h3,
+.session-vault-plan p {
+  margin: 0;
+}
+
+.session-vault-plan h3 {
+  font-size: 12px;
+}
+
+.session-vault-plan p {
+  margin-top: 5px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.session-vault-plan ul {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session-vault-plan li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+}
+
+.session-vault-plan li span {
+  overflow: hidden;
+  color: var(--fg-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .vaults-page .page-header {
+    min-height: auto;
+    flex: 0 0 auto;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+  }
+
+  .vaults-page .page-header > div:first-child,
+  .vaults-page .page-actions {
+    width: 100%;
+  }
+
+  .vaults-page .page-actions {
+    justify-content: flex-end;
+    margin-left: 0;
+  }
+
+  .vaults-content {
+    padding: 14px 12px 28px;
+  }
+
+  .vault-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vault-card > header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .vault-card-actions {
+    margin-left: auto;
+  }
 }
 
 @keyframes skeleton-pulse {

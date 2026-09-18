@@ -1,21 +1,25 @@
-import { Check, ChevronRight, Circle, Code2, MessageSquare } from "lucide-react";
+import { Check, ChevronRight, Circle, Code2, MessageSquare, Trash2 } from "lucide-react";
 import { useState } from "react";
 
-import type { CreateAgentInput, SavedAgent } from "@agents-core-web/agents-client";
+import type { CreateAgentInput, SavedAgent, UpdateAgentInput } from "@agents-core-web/agents-client";
 
+import { buildModelOptionGroups } from "../../lib/model-options";
+import type { VaultCatalog } from "../vaults/vault-catalog";
 import { AgentForm } from "./AgentForm";
 import { buildAgentRequestPreview } from "./agent-preview";
-import { valuesFromAgent } from "./agent-form";
-import { knownSessionAdmissionBlocker } from "./session-admission";
+import { type AgentFormSubmitInput, type AgentFormValues, valuesFromAgent } from "./agent-form";
+import { sessionAdmissionBlocker } from "./session-admission";
 
 function AgentRequestPreview({
+  agentId,
   baseUrl,
   values,
 }: {
+  agentId?: string;
   baseUrl: string;
-  values: ReturnType<typeof valuesFromAgent>;
+  values: AgentFormValues;
 }) {
-  const preview = buildAgentRequestPreview(values, baseUrl);
+  const preview = buildAgentRequestPreview(values, baseUrl, agentId);
   return (
     <section className="agent-request-preview" aria-labelledby="agent-request-preview-title">
       <header>
@@ -33,6 +37,19 @@ function AgentRequestPreview({
         <span>agent.json</span>
         <pre>{preview.json}</pre>
       </div>
+    </section>
+  );
+}
+
+function SavedDefinitionSummary({ agent }: { agent: SavedAgent }) {
+  return (
+    <section className="agent-saved-summary" aria-labelledby="agent-saved-summary-title">
+      <h2 id="agent-saved-summary-title">Saved definition</h2>
+      <dl>
+        <div><dt>Agent ID</dt><dd><code>{agent.id}</code></dd></div>
+        <div><dt>Updated</dt><dd><time dateTime={new Date(agent.updated_at * 1000).toISOString()}>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(agent.updated_at * 1000))}</time></dd></div>
+        <div><dt>Multi-agent</dt><dd>{agent.multi_agent.enabled ? "Enabled · saved configuration" : "Disabled"}</dd></div>
+      </dl>
     </section>
   );
 }
@@ -61,38 +78,77 @@ function SetupGuide({ saved }: { saved: boolean }) {
 
 export function AgentSetupView({
   actionError,
+  agent,
   baseUrl,
   busy,
+  initialValues,
   knownModels,
+  vaultCatalog = null,
   onBack,
   onCreate,
+  onDeleteRequest,
   onStartSession,
+  onUpdate,
 }: {
   actionError: string | null;
+  agent?: SavedAgent;
   baseUrl: string;
   busy: boolean;
+  initialValues?: AgentFormValues;
   knownModels: string[];
+  vaultCatalog?: VaultCatalog | null;
   onBack: () => void;
   onCreate: (input: CreateAgentInput) => Promise<SavedAgent | undefined>;
+  onDeleteRequest?: () => void;
   onStartSession: (agentId: string) => void;
+  onUpdate?: (agentId: string, input: UpdateAgentInput) => Promise<SavedAgent | undefined>;
 }) {
-  const [draft, setDraft] = useState(() => valuesFromAgent());
-  const [created, setCreated] = useState<SavedAgent | null>(null);
-  const formId = "create-agent";
-  const sessionAdmissionBlocker = created ? knownSessionAdmissionBlocker(created) : null;
+  const isEditing = Boolean(agent);
+  const [draft, setDraft] = useState<AgentFormValues>(() => {
+    const values = agent ? valuesFromAgent(agent, vaultCatalog) : initialValues ?? valuesFromAgent(undefined, vaultCatalog);
+    if (values.model) return values;
+    const models = buildModelOptionGroups(
+      knownModels,
+      import.meta.env.VITE_AGENT_MODEL_PRESETS,
+      import.meta.env.VITE_AGENT_DEFAULT_MODEL,
+    );
+    return { ...values, model: models.defaultModel };
+  });
+  const [savedAgent, setSavedAgent] = useState<SavedAgent | null>(agent ?? null);
+  const [formRevision, setFormRevision] = useState(0);
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
+  const formId = isEditing ? "edit-agent" : "create-agent";
+  const sessionBlocker = savedAgent ? sessionAdmissionBlocker(savedAgent, vaultCatalog) : null;
 
-  const create = async (input: CreateAgentInput) => {
-    const agent = await onCreate(input);
-    if (agent) setCreated(agent);
+  const save = async (input: AgentFormSubmitInput) => {
+    setSaveNotice(null);
+    if (isEditing) {
+      if (!agent || !onUpdate) return;
+      const updated = await onUpdate(agent.id, input as UpdateAgentInput);
+      if (updated) {
+        setSavedAgent(updated);
+        setDraft(valuesFromAgent(updated, vaultCatalog));
+        setFormRevision((current) => current + 1);
+        setSaveNotice("Agent definition updated.");
+      }
+      return;
+    }
+    // This form has no loaded Agent, so its Tool drafts are only controlled
+    // create profiles; the cast keeps that lifecycle distinction explicit.
+    const created = await onCreate(input as CreateAgentInput);
+    if (created) {
+      setSavedAgent(created);
+      setSaveNotice(`Agent definition saved as ${created.id}.`);
+    }
   };
 
   return (
     <section className="page-section agent-setup-page">
       <header className="agent-setup-header">
         <div className="agent-setup-breadcrumb" aria-label="Breadcrumb">
-          <button type="button" onClick={onBack}>Agents</button>
+          <button type="button" onClick={onBack} disabled={busy}>Agents</button>
           <ChevronRight size={14} aria-hidden="true" />
-          <h1>{created?.name || "New Agent"}</h1>
+          <h1>{savedAgent?.name || initialValues?.name || "New Agent"}</h1>
         </div>
         <div className="agent-setup-tabs" role="tablist" aria-label="Agent setup sections">
           <button type="button" role="tab" aria-selected="true">Setup</button>
@@ -107,35 +163,44 @@ export function AgentSetupView({
               <strong>Request failed</strong><span>{actionError}</span>
             </div>
           ) : null}
-          {created ? (
+          {saveNotice ? (
             <div className="notice success agent-created-notice" role="status">
               <Check size={14} aria-hidden="true" />
-              Agent definition saved as <code>{created.id}</code>. This does not prove execution readiness.
+              {saveNotice} This does not prove execution readiness.
             </div>
           ) : null}
-          {sessionAdmissionBlocker ? (
+          {sessionBlocker ? (
             <div className="notice warning" id="created-agent-session-blocker" role="note">
-              Saved successfully, but Start Session is unavailable. {sessionAdmissionBlocker}
+              Start Session is unavailable. {sessionBlocker}
             </div>
           ) : null}
           <AgentForm
-            disabled={busy || Boolean(created)}
+            key={isEditing && savedAgent ? `${savedAgent.id}:${savedAgent.updated_at}:${formRevision}` : "create"}
+            agent={isEditing ? savedAgent ?? agent : undefined}
+            disabled={busy || (!isEditing && Boolean(savedAgent))}
             formId={formId}
+            initialValues={isEditing ? undefined : draft}
             knownModels={knownModels}
+            vaultCatalog={vaultCatalog}
             onDraftChange={setDraft}
-            onSubmit={create}
+            onSubmit={save}
           />
           <footer className="agent-setup-actions">
             <button className="button outline" type="button" onClick={onBack} disabled={busy}>Back to Agents</button>
-            <button className="button primary" type="submit" form={formId} disabled={busy || Boolean(created)}>
-              {busy ? "Saving…" : created ? "Agent saved" : "Save Agent definition"}
+            {isEditing && onDeleteRequest ? (
+              <button className="button danger" type="button" data-agent-delete="true" onClick={onDeleteRequest} disabled={busy}>
+                <Trash2 size={14} strokeWidth={1.5} aria-hidden="true" /> Delete Agent
+              </button>
+            ) : null}
+            <button className="button primary" type="submit" form={formId} disabled={busy || (!isEditing && Boolean(savedAgent))}>
+              {busy ? "Saving…" : isEditing ? "Save changes" : savedAgent ? "Agent saved" : "Save Agent definition"}
             </button>
             <button
               className="button primary agent-start-session"
               type="button"
-              disabled={busy || !created || Boolean(sessionAdmissionBlocker)}
-              aria-describedby={sessionAdmissionBlocker ? "created-agent-session-blocker" : undefined}
-              onClick={() => created && onStartSession(created.id)}
+              disabled={busy || !savedAgent || Boolean(sessionBlocker)}
+              aria-describedby={sessionBlocker ? "created-agent-session-blocker" : undefined}
+              onClick={() => savedAgent && onStartSession(savedAgent.id)}
             >
               <MessageSquare size={14} strokeWidth={1.5} aria-hidden="true" />
               Start Session
@@ -144,8 +209,9 @@ export function AgentSetupView({
         </section>
 
         <aside className="agent-setup-aside">
-          <AgentRequestPreview baseUrl={baseUrl} values={draft} />
-          <SetupGuide saved={Boolean(created)} />
+          <AgentRequestPreview agentId={isEditing ? savedAgent?.id ?? agent?.id : undefined} baseUrl={baseUrl} values={draft} />
+          {isEditing && savedAgent ? <SavedDefinitionSummary agent={savedAgent} /> : null}
+          <SetupGuide saved={Boolean(savedAgent)} />
         </aside>
       </div>
     </section>

@@ -8,7 +8,7 @@ export interface ListPage<T> {
   last_id?: string | null;
 }
 
-export interface PageOptions {
+export interface PageOptions extends ReadOptions {
   after?: string;
   limit?: number;
   order?: PageOrder;
@@ -54,6 +54,27 @@ export interface FunctionToolInput {
   defer_loading?: boolean;
 }
 
+/** The service-origin HTTP MCP profile accepted by current Core. */
+export interface ServiceHttpMcpToolInput {
+  type: "mcp";
+  server_label: string;
+  transport: {
+    type: "http";
+    server_url: string;
+  };
+  /** null or omitted permits every advertised tool; [] permits none. */
+  allowed_tools?: string[] | null;
+  connection_origin: "service";
+  /** Saving a reference does not authorize it; Session vault_ids must attach its owner. */
+  credential_id?: string | null;
+  required?: boolean;
+}
+
+/** Anonymous is an explicit subset that cannot name a stored Credential. */
+export type AnonymousHttpMcpToolInput = Omit<ServiceHttpMcpToolInput, "credential_id"> & {
+  credential_id?: null;
+};
+
 export interface ToolSearchInput {
   type: "tool_search";
 }
@@ -63,8 +84,76 @@ export interface ProgrammaticToolCallingInput {
   enabled?: boolean;
 }
 
-export type SavedAgentToolInput = FunctionToolInput | ToolSearchInput | ProgrammaticToolCallingInput;
+export type SavedAgentToolInput = FunctionToolInput | ServiceHttpMcpToolInput | ToolSearchInput | ProgrammaticToolCallingInput;
 export type SessionFunctionToolInput = Omit<FunctionToolInput, "defer_loading"> & { defer_loading?: false };
+export type ConfigurableAgentToolInput = SessionFunctionToolInput | ServiceHttpMcpToolInput;
+
+export type VaultStatus = "active" | "archived";
+
+export interface VaultListOptions extends PageOptions {
+  status?: VaultStatus | VaultStatus[];
+}
+
+export interface Vault {
+  id: string;
+  object: "vault";
+  created_at: number;
+  name: string | null;
+  metadata: Record<string, string>;
+}
+
+export interface VaultList extends ListPage<Vault> {
+  object: "list";
+  first_id: string | null;
+  last_id: string | null;
+}
+
+export interface CreateVaultInput {
+  name?: string;
+  metadata?: Record<string, string> | null;
+}
+
+export interface VaultDeleted {
+  id: string;
+  object: "vault.deleted";
+  deleted: true;
+}
+
+export interface StaticBearerCredentialAuth {
+  type: "static_bearer";
+  mcp_server_url: string;
+}
+
+export interface VaultCredential {
+  id: string;
+  vault_id: string;
+  name: string;
+  object: "vault.credential";
+  auth: StaticBearerCredentialAuth;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface VaultCredentialList extends ListPage<VaultCredential> {
+  object: "list";
+  first_id: string | null;
+  last_id: string | null;
+}
+
+export interface CreateVaultCredentialInput {
+  name: string;
+  auth: StaticBearerCredentialAuth & { token: string };
+}
+
+export interface ReplaceVaultCredentialTokenInput {
+  auth: { type: "static_bearer"; token: string };
+}
+
+export interface VaultCredentialDeleted {
+  id: string;
+  object: "vault.credential.deleted";
+  deleted: true;
+}
 
 export interface SavedAgent {
   id: string;
@@ -102,7 +191,7 @@ export type UpdateAgentInput = Partial<CreateAgentInput>;
 export interface InlineAgentInput {
   model?: string;
   instructions?: string | null;
-  tools?: SessionFunctionToolInput[] | null;
+  tools?: ConfigurableAgentToolInput[] | null;
   text?: AgentTextInput | null;
   reasoning?: AgentReasoning | null;
   service_tier?: AgentServiceTier | null;
@@ -125,7 +214,18 @@ export interface SelfHostedAgentEnvironmentInput {
   capability_directories?: string[] | null;
 }
 
-export type AgentEnvironmentInput = NoneAgentEnvironment | SelfHostedAgentEnvironmentInput;
+export type OpenAIHostedNetworkAccess = "enabled" | "disabled";
+
+export interface OpenAIHostedAgentEnvironmentInput {
+  type: "openai_hosted";
+  /** Omitted or null defaults to enabled in the pinned basic Core profile. */
+  network?: { access: OpenAIHostedNetworkAccess } | null;
+}
+
+export type AgentEnvironmentInput =
+  | NoneAgentEnvironment
+  | SelfHostedAgentEnvironmentInput
+  | OpenAIHostedAgentEnvironmentInput;
 
 export interface SelfHostedAgentEnvironment {
   type: "self_hosted";
@@ -135,6 +235,27 @@ export interface SelfHostedAgentEnvironment {
   capability_directories: string[];
 }
 
+export interface AgentEnvironmentPackages {
+  npm: string[];
+  python: string[];
+  system: string[];
+}
+
+/** Exact safe output of Parsar's operator-gated basic managed profile. */
+export interface OpenAIHostedAgentEnvironment {
+  type: "openai_hosted";
+  id: string;
+  capability_directories: [];
+  network: {
+    access: OpenAIHostedNetworkAccess;
+    allowed_domains: [];
+  };
+  packages: { npm: []; python: []; system: [] };
+  files: [];
+  plugins: [];
+  skills: [];
+}
+
 export type UnknownEnvironmentType = string & { readonly [unknownEnvironmentType]: true };
 
 export interface UnknownAgentEnvironment {
@@ -142,11 +263,15 @@ export interface UnknownAgentEnvironment {
   [key: string]: unknown;
 }
 
-export type AgentEnvironment = NoneAgentEnvironment | SelfHostedAgentEnvironment | UnknownAgentEnvironment;
+export type AgentEnvironment =
+  | NoneAgentEnvironment
+  | SelfHostedAgentEnvironment
+  | OpenAIHostedAgentEnvironment
+  | UnknownAgentEnvironment;
 
 export type EnvironmentResourceStatus = "pending" | "connected" | "disconnected" | "expired" | "failed";
 
-export interface AgentEnvironmentResource {
+export interface SelfHostedAgentEnvironmentResource {
   id: string;
   object: "agent.environment";
   type: "self_hosted";
@@ -154,6 +279,79 @@ export interface AgentEnvironmentResource {
   files: unknown[];
   plugins: unknown[];
   skills: unknown[];
+}
+
+/**
+ * A hosted Environment is writable only after this exact durable resource has
+ * been retrieved. Session shape, health and file-list success are not a
+ * substitute for this projection.
+ */
+export interface OpenAIHostedAgentEnvironmentResource {
+  id: string;
+  object: "agent.environment";
+  type: "openai_hosted";
+  status: EnvironmentResourceStatus;
+  files: [];
+  plugins: [];
+  skills: [];
+}
+
+export type AgentEnvironmentResource =
+  | SelfHostedAgentEnvironmentResource
+  | OpenAIHostedAgentEnvironmentResource;
+
+export interface EnvironmentFile {
+  environment_id: string;
+  object: "agent.environment.file";
+  path: string;
+  size_bytes: number;
+}
+
+export interface EnvironmentFileList {
+  data: EnvironmentFile[];
+  next: string | null;
+}
+
+export interface EnvironmentFileListOptions extends ReadOptions {
+  limit?: number;
+  order?: PageOrder;
+  page?: string;
+  /** Absolute Environment path. Omission selects /workspace; self_hosted callers pass its exact workspace_directory. */
+  path?: string;
+}
+
+export type EnvironmentFileCreateInput =
+  | { type: "inline"; data: string; path: string }
+  | { type: "file_id"; file_id: string; path: string };
+
+export interface SourceFile {
+  id: string;
+  object: "file";
+  bytes: number;
+  created_at: number;
+  filename: string;
+  purpose: "user_data";
+  status: "processed";
+  expires_at: null;
+  status_details: null;
+}
+
+export interface SourceFileDeleted {
+  id: string;
+  object: "file";
+  deleted: true;
+}
+
+export interface SourceFileContent {
+  data: Uint8Array;
+  bytes: number;
+  content_type: "application/octet-stream";
+  content_disposition: string;
+}
+
+export interface SourceFileUploadInput {
+  file: Blob;
+  filename: string;
 }
 
 export type SessionStatus = "idle" | "in_progress" | "requires_action" | "failed";
@@ -346,8 +544,11 @@ export type KnownSessionEventType =
   | "agent.session.turn.cancelled"
   | "agent.session.turn.item.added"
   | "agent.session.turn.item.done"
+  | "agent.session.turn.content_part.added"
+  | "agent.session.turn.content_part.done"
   | "agent.session.turn.output_text.delta"
-  | "agent.session.turn.output_text.done";
+  | "agent.session.turn.output_text.done"
+  | "agent.output.command_execution_output.delta";
 
 export interface KnownSessionEvent extends SessionEventBase {
   type: KnownSessionEventType;
@@ -386,11 +587,43 @@ export type FunctionResultContent =
   | { type: "input_text"; text: string }
   | { type: "input_image"; image_url: string };
 
+/** Exact public wire shape for an ordered user-message input event. */
+export interface SessionMessageInputEvent {
+  type: "agent.session.input.message";
+  input: InputMessage[];
+}
+
+/** Exact public wire shape for a cancellation input event. */
+export interface SessionCancelInputEvent {
+  type: "agent.session.input.cancel";
+}
+
+/** Exact public wire shape for a Function result input event. */
+export interface SessionToolResultInputEvent {
+  type: "agent.session.input.tool_result";
+  call_id: string;
+  turn_id: string;
+  success: boolean;
+  output?: string | FunctionResultContent[] | null;
+  error?: string | null;
+}
+
+/** The three input event variants accepted by the current public Core endpoint. */
+export type SessionInputEvent =
+  | SessionMessageInputEvent
+  | SessionCancelInputEvent
+  | SessionToolResultInputEvent;
+
 export interface StreamOptions {
   signal?: AbortSignal;
   /** Called once the authenticated streaming response has been accepted. */
   onOpen?: () => void;
   onEvent: (event: SessionEvent) => void;
+}
+
+export interface CreateSessionStreamOptions extends StreamOptions {
+  /** Called exactly once after the leading creation snapshot passes validation. */
+  onSession: (session: AgentSession) => void;
 }
 
 export interface AgentCore {
@@ -399,17 +632,38 @@ export interface AgentCore {
   retrieveAgent(agentId: string): Promise<SavedAgent>;
   updateAgent(agentId: string, input: UpdateAgentInput): Promise<SavedAgent>;
   deleteAgent(agentId: string): Promise<AgentDeleted>;
+  listVaults(options?: VaultListOptions): Promise<VaultList>;
+  createVault(input: CreateVaultInput): Promise<Vault>;
+  retrieveVault(vaultId: string, options?: ReadOptions): Promise<Vault>;
+  deleteVault(vaultId: string): Promise<VaultDeleted>;
+  listVaultCredentials(vaultId: string, options?: VaultListOptions): Promise<VaultCredentialList>;
+  createVaultCredential(vaultId: string, input: CreateVaultCredentialInput): Promise<VaultCredential>;
+  retrieveVaultCredential(vaultId: string, credentialId: string, options?: ReadOptions): Promise<VaultCredential>;
+  replaceVaultCredentialToken(vaultId: string, credentialId: string, input: ReplaceVaultCredentialTokenInput): Promise<VaultCredential>;
+  deleteVaultCredential(vaultId: string, credentialId: string): Promise<VaultCredentialDeleted>;
   listSessions(options?: PageOptions & { agentId?: string }): Promise<ListPage<AgentSession>>;
   createSession(input: CreateSessionInput, idempotencyKey?: string): Promise<AgentSession>;
+  createSessionStream(
+    input: Omit<CreateSessionInput, "stream">,
+    idempotencyKey: string | undefined,
+    options: CreateSessionStreamOptions,
+  ): Promise<void>;
   retrieveSession(sessionId: string, options?: ReadOptions): Promise<AgentSession>;
   retrieveEnvironment(environmentId: string, options?: ReadOptions): Promise<AgentEnvironmentResource>;
+  listEnvironmentFiles(environmentId: string, options: EnvironmentFileListOptions): Promise<EnvironmentFileList>;
+  createEnvironmentFile(environmentId: string, input: EnvironmentFileCreateInput, options?: ReadOptions): Promise<EnvironmentFile>;
+  uploadSourceFile(input: SourceFileUploadInput, options?: ReadOptions): Promise<SourceFile>;
+  retrieveSourceFile(fileId: string, options?: ReadOptions): Promise<SourceFile>;
+  downloadSourceFile(fileId: string, options?: ReadOptions): Promise<SourceFileContent>;
+  deleteSourceFile(fileId: string, options?: ReadOptions): Promise<SourceFileDeleted>;
   updateSession(sessionId: string, metadata: Record<string, string> | null): Promise<AgentSession>;
   deleteSession(sessionId: string): Promise<SessionDeleted>;
   listItems(sessionId: string, options?: PageOptions & ReadOptions): Promise<ListPage<SessionItem>>;
   listTurns(sessionId: string, options?: PageOptions & ReadOptions): Promise<ListPage<AgentTurn>>;
   retrieveTurn(sessionId: string, turnId: string): Promise<AgentTurn>;
-  sendMessage(sessionId: string, text: string, idempotencyKey?: string): Promise<void>;
-  cancelTurn(sessionId: string, idempotencyKey?: string): Promise<void>;
-  submitFunctionResult(sessionId: string, input: FunctionResultInput, idempotencyKey?: string): Promise<void>;
+  submitEvents(sessionId: string, events: readonly SessionInputEvent[], idempotencyKey: string): Promise<void>;
+  sendMessage(sessionId: string, text: string, idempotencyKey: string): Promise<void>;
+  cancelTurn(sessionId: string, idempotencyKey: string): Promise<void>;
+  submitFunctionResult(sessionId: string, input: FunctionResultInput, idempotencyKey: string): Promise<void>;
   streamEvents(sessionId: string, options: StreamOptions): Promise<void>;
 }

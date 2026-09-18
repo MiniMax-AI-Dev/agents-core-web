@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { SessionItem } from "@agents-core-web/agents-client";
 
 import {
+  appendCommandOutputDelta,
   mergeDurableAndLiveItems,
   reconcileSessionItem,
   updateLiveSessionItems,
@@ -78,5 +79,56 @@ describe("Session Item reconciliation", () => {
 
     expect(mergeDurableAndLiveItems([], [terminal, stale, terminal])).toEqual([terminal]);
     expect(mergeDurableAndLiveItems([stale], [terminal, stale])).toEqual([terminal]);
+  });
+
+  it("appends only valid live command-output fragments to the matching in-progress Item", () => {
+    const command: SessionItem = {
+      id: "command-1",
+      turn_id: "turn-1",
+      type: "command_execution",
+      status: "in_progress",
+      command: "printf hello",
+      output: "hel",
+    };
+    const event = {
+      type: "agent.output.command_execution_output.delta",
+      event_id: "event-1",
+      item_id: "command-1",
+      turn_id: "turn-1",
+      delta: "lo",
+    } as const;
+
+    expect(appendCommandOutputDelta([command], event)).toEqual([
+      { ...command, output: "hello" },
+    ]);
+    expect(appendCommandOutputDelta([{ ...command, status: "completed" }], event)).toEqual([
+      { ...command, status: "completed" },
+    ]);
+    expect(appendCommandOutputDelta([command], { ...event, turn_id: "turn-2" })).toEqual([command]);
+    expect(appendCommandOutputDelta([], event)).toEqual([]);
+  });
+
+  it("keeps malformed or unsupported command-output projections fail-closed", () => {
+    const command: SessionItem = {
+      id: "command-1",
+      turn_id: "turn-1",
+      type: "command_execution",
+      status: "in_progress",
+      command: "run",
+      output: { unexpected: true },
+    };
+    const event = {
+      type: "agent.output.command_execution_output.delta",
+      event_id: "event-1",
+      item_id: "command-1",
+      turn_id: "turn-1",
+      delta: "unsafe",
+    } as const;
+
+    expect(appendCommandOutputDelta([command], event)).toEqual([command]);
+    expect(appendCommandOutputDelta(
+      [{ ...command, output: "" }],
+      { ...event, delta: "" },
+    )).toEqual([{ ...command, output: "" }]);
   });
 });

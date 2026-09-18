@@ -4,6 +4,8 @@ const host = "127.0.0.1";
 const port = Number(process.env.AGENTS_FIXTURE_PORT ?? 18092);
 const baseline = 1_789_438_800;
 const canonicalEnvironmentUuid = "0f745b0d-b545-49cd-8d7e-4c31c80dc564";
+const hostedEnvironmentUuid = "7a263c51-6bf0-4d53-8518-c792eb1f0d21";
+const sourceFileUuid = "16e1f26e-8cf6-4272-9c31-d470b08d31af";
 const canonicalUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function patchItems() {
@@ -142,7 +144,7 @@ function sessionAdmissionError(agent) {
       }
       functionNames.add(tool.name);
     } else if (tool.type === "mcp") {
-      if (!isCanonicalExecutionMcp(tool) || mcpLabels.has(tool.server_label) || tool.credential_id != null) {
+      if (!isCanonicalExecutionMcp(tool) || mcpLabels.has(tool.server_label)) {
         return "Invalid execution MCP fields.";
       }
       mcpLabels.add(tool.server_label);
@@ -154,15 +156,165 @@ function sessionAdmissionError(agent) {
   return null;
 }
 
+function sessionVaultError(agent, vaultIds) {
+  if (!Array.isArray(vaultIds) || vaultIds.some((id) => typeof id !== "string" || !canonicalUuidPattern.test(id))) {
+    return "Fixture Session Vault attachments are invalid.";
+  }
+  const attached = new Set(vaultIds);
+  if (attached.size !== vaultIds.length || [...attached].some((id) => !state.vaults.some((vault) => vault.id === id))) {
+    return "Fixture Session Vault attachments are unavailable.";
+  }
+  for (const tool of agent.tools) {
+    if (tool.type !== "mcp") continue;
+    const matching = state.credentials.filter((credential) => (
+      attached.has(credential.vault_id) && credential.auth.mcp_server_url === tool.transport.server_url
+    ));
+    if (typeof tool.credential_id === "string") {
+      const selected = matching.find((credential) => credential.id === tool.credential_id);
+      if (!selected || !state.credentialTokens.has(selected.id)) return "Fixture explicit MCP Credential is unavailable.";
+    } else if (matching.length > 1) {
+      return "Fixture anonymous MCP selection is ambiguous.";
+    }
+  }
+  return null;
+}
+
 function sessionSnapshot(agent) {
   const { object: _object, metadata: _metadata, created_at: _created, updated_at: _updated, ...snapshot } = agent;
   return snapshot;
+}
+
+function sessionEffectiveAgent(saved, override) {
+  if (override === undefined) return saved;
+  if (!isRecord(override) || !hasOnlyKeys(override, [
+    "model", "instructions", "multi_agent", "reasoning", "service_tier", "text", "tools",
+  ])) return null;
+  if (Object.hasOwn(override, "model") && typeof override.model !== "string") return null;
+  const effective = { ...saved };
+  if (Object.hasOwn(override, "model")) effective.model = override.model;
+  if (Object.hasOwn(override, "instructions")) {
+    if (override.instructions !== null && typeof override.instructions !== "string") return null;
+    effective.instructions = override.instructions;
+  }
+  if (Object.hasOwn(override, "multi_agent")) {
+    if (override.multi_agent === null) effective.multi_agent = { enabled: false, max_concurrent_subagents: null };
+    else if (isRecord(override.multi_agent) && typeof override.multi_agent.enabled === "boolean") {
+      effective.multi_agent = {
+        enabled: override.multi_agent.enabled,
+        max_concurrent_subagents: override.multi_agent.enabled
+          ? override.multi_agent.max_concurrent_subagents ?? 6
+          : null,
+      };
+    } else return null;
+  }
+  if (Object.hasOwn(override, "reasoning")) {
+    if (override.reasoning !== null && !isRecord(override.reasoning)) return null;
+    effective.reasoning = override.reasoning ?? {};
+  }
+  if (Object.hasOwn(override, "service_tier")) {
+    if (override.service_tier !== null && typeof override.service_tier !== "string") return null;
+    effective.service_tier = override.service_tier ?? "auto";
+  }
+  if (Object.hasOwn(override, "text")) {
+    if (override.text !== null && !isRecord(override.text)) return null;
+    effective.text = {
+      format: override.text?.format ?? { type: "text" },
+      verbosity: override.text?.verbosity ?? "medium",
+    };
+  }
+  if (Object.hasOwn(override, "tools")) {
+    if (override.tools !== null && !Array.isArray(override.tools)) return null;
+    effective.tools = override.tools ?? [];
+  }
+  return effective;
+}
+
+function sessionInlineAgent(input, id) {
+  if (
+    !isRecord(input)
+    || !hasOnlyKeys(input, ["model", "instructions", "tools"])
+    || typeof input.model !== "string"
+    || /^\p{White_Space}*$/u.test(input.model)
+    || input.model !== input.model.trim()
+    || (Object.hasOwn(input, "instructions")
+      && (typeof input.instructions !== "string"
+        || /^\p{White_Space}*$/u.test(input.instructions)
+        || input.instructions !== input.instructions.trim()))
+    || (Object.hasOwn(input, "tools") && !Array.isArray(input.tools))
+  ) return null;
+  return {
+    id,
+    model: input.model,
+    name: null,
+    instructions: input.instructions ?? null,
+    multi_agent: { enabled: false, max_concurrent_subagents: null },
+    reasoning: {},
+    service_tier: "auto",
+    text: { format: { type: "text" }, verbosity: "medium" },
+    tools: input.tools ?? [],
+  };
+}
+
+function sessionInitialInputMessages(input) {
+  if (typeof input === "string") {
+    return /^\p{White_Space}*$/u.test(input)
+      ? null
+      : [{ type: "message", role: "user", content: [{ type: "input_text", text: input }] }];
+  }
+  if (!Array.isArray(input) || input.length === 0) return null;
+
+  const messages = [];
+  for (const message of input) {
+    if (
+      !isRecord(message)
+      || !hasOnlyKeys(message, ["type", "role", "content"])
+      || (message.type !== undefined && message.type !== "message")
+      || message.role !== "user"
+      || !Array.isArray(message.content)
+      || message.content.length === 0
+    ) return null;
+    const content = [];
+    for (const part of message.content) {
+      if (
+        !isRecord(part)
+        || !hasOnlyKeys(part, ["type", "text"])
+        || part.type !== "input_text"
+        || typeof part.text !== "string"
+      ) return null;
+      content.push({ type: "input_text", text: part.text });
+    }
+    if (/^\p{White_Space}*$/u.test(content.map((part) => part.text).join(""))) return null;
+    messages.push({ type: "message", role: "user", content });
+  }
+  return messages;
 }
 
 function sessionEnvironmentResponse(environment) {
   if (!isRecord(environment) || typeof environment.type !== "string") return null;
   if (environment.type === "none") {
     return hasOnlyKeys(environment, ["type"]) ? { type: "none" } : null;
+  }
+  if (environment.type === "openai_hosted") {
+    if (!hasOnlyKeys(environment, ["type", "network"])) return null;
+    let access = "enabled";
+    if (environment.network !== undefined) {
+      if (
+        !isRecord(environment.network) ||
+        !hasOnlyKeys(environment.network, ["access"]) ||
+        (environment.network.access !== "enabled" && environment.network.access !== "disabled")
+      ) return null;
+      access = environment.network.access;
+    }
+    return {
+      type: "openai_hosted",
+      id: hostedEnvironmentUuid,
+      capability_directories: [],
+      network: { access, allowed_domains: [] },
+      packages: { npm: [], python: [], system: [] },
+      files: [],
+      plugins: [],
+      skills: [],
+    };
   }
   if (
     environment.type !== "self_hosted"
@@ -197,6 +349,9 @@ function initialState() {
   savedOnlyTool.tools = [{ type: "tool_search" }];
   return {
     agents: [first, second, savedOnlyTool],
+    vaults: [],
+    credentials: [],
+    credentialTokens: new Set(),
     sessions: [{
       id: "session_snapshot",
       object: "agent.session",
@@ -212,13 +367,20 @@ function initialState() {
       last_active_at: baseline - 10,
     }],
     turns: [],
+    createdSessionItems: new Map(),
     requests: [],
+    sourceFiles: new Map(),
+    hostedWorkspaceFiles: [],
     sessionCreateReceipts: new Map(),
     controls: {
       createAgentResponseVariant: "valid",
       sessionCreateDelayMs: 0,
       sessionCreateStatus: 201,
       sessionCreateResponseLoss: 0,
+      sessionCreateStreamCloseDelayMs: 120,
+      sessionListDelayMs: 0,
+      sessionListStatus: 200,
+      sessionListPageSize: 100,
       retrieveDelayMs: 0,
       retrieveStatus: 200,
       updateDelayMs: 0,
@@ -235,6 +397,10 @@ function initialState() {
       environmentScenario: 0,
       environmentRetrieveDelayMs: 0,
       environmentRetrieveStatus: 200,
+      environmentFilesDelayMs: 0,
+      environmentFilesStatus: 200,
+      environmentFileCreateStatus: 200,
+      environmentFileCreateResponseLoss: 0,
       environmentResourceStatus: "pending",
       environmentResourceVariant: "valid",
       environmentEventStatus: 0,
@@ -255,12 +421,18 @@ function initialState() {
       sessionDeleteStreamCloseDelayMs: 0,
       itemsRetrieveDelayMs: 0,
       itemsRetrieveStatus: 200,
+      sourceUploadStatus: 200,
+      sourceUploadResponseLoss: 0,
+      sourceDeleteStatus: 200,
+      sourceDeleteResponseLoss: 0,
     },
     aborts: {
+      sessionListReads: 0,
       sessionReads: 0,
       itemReads: 0,
       turnReads: 0,
       streams: 0,
+      environmentFileReads: 0,
     },
     sequence: 0,
   };
@@ -288,6 +460,63 @@ function applyEnvironmentScenario(value) {
   const session = state.sessions[0];
   if (!session) return;
   const hostileRemote = "https://launcher:private@executor.example.test/connect?executor_token=secret#credential";
+  if (value === 10) {
+    session.environment = {
+      type: "self_hosted",
+      id: "environment_fixture",
+      remote_url: hostileRemote,
+      workspace_directory: `/workspace/<script>safe</script>/${"long/".repeat(45)}project`,
+      capability_directories: ["/capabilities/read-only", `/capabilities/${"wide/".repeat(55)}`],
+    };
+    session.status = "requires_action";
+    session.required_actions = [
+      { type: "function_call", call_id: "call_fixture", turn_id: "turn_fixture", name: "confirm", arguments: { safe: true } },
+    ];
+    return;
+  }
+  if (value === 9) {
+    session.environment = {
+      type: "openai_hosted",
+      id: hostedEnvironmentUuid,
+      capability_directories: [],
+      network: { access: "enabled", allowed_domains: [] },
+      packages: { npm: [], python: [], system: [] },
+      files: [],
+      plugins: [],
+      skills: [],
+    };
+    session.status = "failed";
+    session.error = "The environment is no longer available for this input.";
+    session.required_actions = [];
+    return;
+  }
+  if (value === 8) {
+    session.environment = {
+      type: "openai_hosted",
+      id: hostedEnvironmentUuid,
+      capability_directories: [],
+      network: { access: "disabled", allowed_domains: [] },
+      packages: { npm: [], python: [], system: [] },
+      files: [],
+      plugins: [],
+      skills: [],
+    };
+    session.status = "idle";
+    session.required_actions = [];
+    return;
+  }
+  if (value === 7) {
+    session.environment = {
+      type: "self_hosted",
+      id: canonicalEnvironmentUuid,
+      remote_url: "https://executor.example.test",
+      workspace_directory: "/executor/workspace",
+      capability_directories: [],
+    };
+    session.status = "idle";
+    session.required_actions = [];
+    return;
+  }
   if (value === 1 || value === 4 || value === 5 || value === 6) {
     session.environment = {
       type: "self_hosted",
@@ -298,10 +527,7 @@ function applyEnvironmentScenario(value) {
     };
     session.status = value === 1 || value === 6 ? "requires_action" : "idle";
     session.required_actions = value === 1
-      ? [
-          { type: "environment_connection", environment_id: "environment_fixture" },
-          { type: "function_call", call_id: "call_fixture", turn_id: "turn_fixture", name: "confirm", arguments: { safe: true } },
-        ]
+      ? [{ type: "environment_connection", environment_id: "environment_fixture" }]
       : value === 6
         ? [{ type: "environment_connection", environment_id: "environment_fixture" }]
         : [];
@@ -376,11 +602,11 @@ function sendJson(response, value, status = 200) {
   response.end(body);
 }
 
-function sendError(response, status, message) {
+function sendError(response, status, message, code = "fixture_failure", type = "fixture_error") {
   sendJson(response, {
     error: {
-      code: "fixture_failure",
-      type: "fixture_error",
+      code,
+      type,
       message,
     },
   }, status);
@@ -393,6 +619,41 @@ async function readJson(request) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
+async function readBuffer(request) {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
+async function readSourceMultipart(request) {
+  const contentType = request.headers["content-type"] ?? "";
+  const match = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType);
+  if (!match) return null;
+  const boundary = match[1] ?? match[2];
+  const raw = (await readBuffer(request)).toString("latin1");
+  const parts = raw.split(`--${boundary}`).slice(1, -1);
+  const result = { file: null, filename: null, purpose: null };
+  for (const rawPart of parts) {
+    const part = rawPart.replace(/^\r\n/, "").replace(/\r\n$/, "");
+    const separator = part.indexOf("\r\n\r\n");
+    if (separator < 0) return null;
+    const header = part.slice(0, separator);
+    const body = part.slice(separator + 4);
+    const name = /\bname="([^"]+)"/i.exec(header)?.[1];
+    if (name === "file") {
+      if (result.file !== null) return null;
+      result.filename = /\bfilename="([^"]*)"/i.exec(header)?.[1] ?? null;
+      result.file = Buffer.from(body, "latin1");
+    } else if (name === "purpose") {
+      if (result.purpose !== null) return null;
+      result.purpose = body;
+    } else {
+      return null;
+    }
+  }
+  return result.file !== null && result.filename && result.purpose === "user_data" ? result : null;
+}
+
 function page(data) {
   return {
     object: "list",
@@ -403,7 +664,33 @@ function page(data) {
   };
 }
 
+function queryPage(data, url, maximumPageSize = 100) {
+  const ordered = url.searchParams.get("order") === "asc" ? [...data].reverse() : [...data];
+  const after = url.searchParams.get("after");
+  const start = after ? ordered.findIndex((value) => value.id === after) + 1 : 0;
+  if (after && start === 0) return null;
+  const requestedLimit = Number(url.searchParams.get("limit") ?? 20);
+  const size = Math.max(1, Math.min(requestedLimit, maximumPageSize));
+  const values = ordered.slice(start, start + size);
+  return {
+    object: "list",
+    data: values,
+    has_more: start + values.length < ordered.length,
+    first_id: values[0]?.id ?? null,
+    last_id: values.at(-1)?.id ?? null,
+  };
+}
+
 function recordRequest(request, url, body) {
+  let safeBody = body;
+  if (
+    request.method === "POST" &&
+    /^\/v1\/vaults\/[^/]+\/credentials(?:\/[^/]+)?$/u.test(url.pathname) &&
+    isRecord(body) && isRecord(body.auth) && Object.hasOwn(body.auth, "token")
+  ) {
+    const { token: _token, ...safeAuth } = body.auth;
+    safeBody = { ...body, auth: { ...safeAuth, token_present: true } };
+  }
   state.requests.push({
     method: request.method,
     path: url.pathname,
@@ -412,8 +699,12 @@ function recordRequest(request, url, body) {
     authorizationPresent: Boolean(request.headers.authorization),
     idempotencyKeyPresent: Boolean(request.headers["idempotency-key"]),
     idempotencyKey: request.headers["idempotency-key"] ?? null,
-    body,
+    body: safeBody,
   });
+}
+
+function fixtureUuid(sequence) {
+  return `10000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
 }
 
 function consumeControl(prefix, successStatus = 200) {
@@ -493,8 +784,171 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, { removed: state.sessions.length !== before });
     }
 
+    if (request.method === "POST" && url.pathname === "/v1/files") {
+      const upload = await readSourceMultipart(request);
+      recordRequest(request, url, upload ? {
+        filename: upload.filename,
+        bytes: upload.file.length,
+        purpose: upload.purpose,
+      } : { multipart: "invalid" });
+      if (request.headers["openai-beta"] != null) return sendError(response, 400, "Source Files do not accept the Agents beta header in this fixture.");
+      if (state.controls.sourceUploadStatus !== 200) {
+        const status = state.controls.sourceUploadStatus;
+        state.controls.sourceUploadStatus = 200;
+        return sendError(response, status, "Fixture Source upload failed.");
+      }
+      if (!upload) return sendError(response, 400, "Fixture Source multipart is invalid.");
+      const id = `file-${sourceFileUuid}`;
+      const metadata = {
+        id,
+        object: "file",
+        bytes: upload.file.length,
+        created_at: baseline,
+        filename: upload.filename,
+        purpose: "user_data",
+        status: "processed",
+        expires_at: null,
+        status_details: null,
+      };
+      state.sourceFiles.set(id, { metadata, data: upload.file });
+      const lose = state.controls.sourceUploadResponseLoss;
+      state.controls.sourceUploadResponseLoss = 0;
+      if (lose) {
+        response.destroy();
+        return;
+      }
+      return sendJson(response, metadata);
+    }
+
+    const sourceContentMatch = url.pathname.match(/^\/v1\/files\/([^/]+)\/content$/);
+    if (request.method === "GET" && sourceContentMatch) {
+      const id = decodeURIComponent(sourceContentMatch[1]);
+      recordRequest(request, url, undefined);
+      if (request.headers["openai-beta"] != null) return sendError(response, 400, "Source Files do not accept the Agents beta header in this fixture.");
+      const source = state.sourceFiles.get(id);
+      if (!source) return sendError(response, 404, "Fixture Source File not found.");
+      response.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-disposition": `attachment; filename="${source.metadata.filename}"`,
+        "content-length": source.data.length,
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+      });
+      response.end(source.data);
+      return;
+    }
+
+    const sourceFileMatch = url.pathname.match(/^\/v1\/files\/([^/]+)$/);
+    if (sourceFileMatch && (request.method === "GET" || request.method === "DELETE")) {
+      const id = decodeURIComponent(sourceFileMatch[1]);
+      recordRequest(request, url, undefined);
+      if (request.headers["openai-beta"] != null) return sendError(response, 400, "Source Files do not accept the Agents beta header in this fixture.");
+      const source = state.sourceFiles.get(id);
+      if (!source) return sendError(response, 404, "Fixture Source File not found.");
+      if (request.method === "GET") return sendJson(response, source.metadata);
+      if (state.controls.sourceDeleteStatus !== 200) {
+        const status = state.controls.sourceDeleteStatus;
+        state.controls.sourceDeleteStatus = 200;
+        return sendError(response, status, "Fixture Source delete failed.");
+      }
+      state.sourceFiles.delete(id);
+      const lose = state.controls.sourceDeleteResponseLoss;
+      state.controls.sourceDeleteResponseLoss = 0;
+      if (lose) {
+        response.destroy();
+        return;
+      }
+      return sendJson(response, { id, object: "file", deleted: true });
+    }
+
     const body = request.method === "GET" || request.method === "DELETE" ? undefined : await readJson(request);
     recordRequest(request, url, body);
+
+    if (url.pathname === "/v1/vaults") {
+      if (request.method === "GET") return sendJson(response, page(state.vaults));
+      if (request.method === "POST") {
+        if (!isRecord(body) || typeof body.name !== "string" || !body.name.trim() || !isRecord(body.metadata ?? {})) {
+          return sendError(response, 400, "Fixture Vault fields are invalid.");
+        }
+        state.sequence += 1;
+        const vault = {
+          id: fixtureUuid(state.sequence),
+          object: "vault",
+          created_at: baseline + state.sequence,
+          name: body.name,
+          metadata: body.metadata ?? {},
+        };
+        state.vaults.unshift(vault);
+        return sendJson(response, vault);
+      }
+    }
+
+    const credentialsMatch = url.pathname.match(/^\/v1\/vaults\/([^/]+)\/credentials$/u);
+    if (credentialsMatch) {
+      const vaultId = decodeURIComponent(credentialsMatch[1]);
+      if (!state.vaults.some((vault) => vault.id === vaultId)) return sendError(response, 404, "Fixture Vault not found.");
+      if (request.method === "GET") {
+        return sendJson(response, page(state.credentials.filter((credential) => credential.vault_id === vaultId)));
+      }
+      if (request.method === "POST") {
+        if (
+          !isRecord(body) || typeof body.name !== "string" || !body.name.trim() ||
+          !isRecord(body.auth) || body.auth.type !== "static_bearer" ||
+          typeof body.auth.mcp_server_url !== "string" || !body.auth.mcp_server_url.startsWith("https://") ||
+          typeof body.auth.token !== "string"
+        ) return sendError(response, 400, "Fixture Credential fields are invalid.");
+        state.sequence += 1;
+        const credential = {
+          id: fixtureUuid(state.sequence),
+          vault_id: vaultId,
+          name: body.name,
+          object: "vault.credential",
+          auth: { type: "static_bearer", mcp_server_url: body.auth.mcp_server_url },
+          created_at: baseline + state.sequence,
+          updated_at: baseline + state.sequence,
+        };
+        state.credentials.unshift(credential);
+        state.credentialTokens.add(credential.id);
+        return sendJson(response, credential);
+      }
+    }
+
+    const credentialMatch = url.pathname.match(/^\/v1\/vaults\/([^/]+)\/credentials\/([^/]+)$/u);
+    if (credentialMatch) {
+      const vaultId = decodeURIComponent(credentialMatch[1]);
+      const credentialId = decodeURIComponent(credentialMatch[2]);
+      const credential = state.credentials.find((candidate) => candidate.vault_id === vaultId && candidate.id === credentialId);
+      if (!credential) return sendError(response, 404, "Fixture Credential not found.");
+      if (request.method === "GET") return sendJson(response, credential);
+      if (request.method === "POST") {
+        if (!isRecord(body) || !isRecord(body.auth) || body.auth.type !== "static_bearer" || typeof body.auth.token !== "string") {
+          return sendError(response, 400, "Fixture Credential replacement is invalid.");
+        }
+        credential.updated_at += 1;
+        state.credentialTokens.add(credential.id);
+        return sendJson(response, credential);
+      }
+      if (request.method === "DELETE") {
+        state.credentials = state.credentials.filter((candidate) => candidate.id !== credentialId);
+        state.credentialTokens.delete(credentialId);
+        return sendJson(response, { id: credentialId, object: "vault.credential.deleted", deleted: true });
+      }
+    }
+
+    const vaultMatch = url.pathname.match(/^\/v1\/vaults\/([^/]+)$/u);
+    if (vaultMatch) {
+      const vaultId = decodeURIComponent(vaultMatch[1]);
+      const vault = state.vaults.find((candidate) => candidate.id === vaultId);
+      if (!vault) return sendError(response, 404, "Fixture Vault not found.");
+      if (request.method === "GET") return sendJson(response, vault);
+      if (request.method === "DELETE") {
+        const deletedCredentialIds = state.credentials.filter((credential) => credential.vault_id === vaultId).map((credential) => credential.id);
+        state.vaults = state.vaults.filter((candidate) => candidate.id !== vaultId);
+        state.credentials = state.credentials.filter((credential) => credential.vault_id !== vaultId);
+        for (const credentialId of deletedCredentialIds) state.credentialTokens.delete(credentialId);
+        return sendJson(response, { id: vaultId, object: "vault.deleted", deleted: true });
+      }
+    }
 
     if (request.method === "GET" && url.pathname === "/v1/agents") {
       const listed = state.agents.map((agent, index) => index === 0
@@ -528,18 +982,40 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && url.pathname === "/v1/agents/sessions") {
-      return sendJson(response, page(state.sessions));
+      trackAbort(response, "sessionListReads");
+      const control = consumeControl("sessionList");
+      if (control.delayMs) await wait(control.delayMs);
+      if (control.status !== 200) return sendError(response, control.status, "Fixture Session list failed.");
+      const agentId = url.searchParams.get("agent_id");
+      const filtered = agentId === null
+        ? state.sessions
+        : state.sessions.filter((session) => session.agent.id === agentId);
+      const listed = queryPage(filtered, url, state.controls.sessionListPageSize);
+      return listed
+        ? sendJson(response, listed)
+        : sendError(response, 400, "Fixture Session cursor is outside the selected Agent filter.");
     }
 
     if (request.method === "POST" && url.pathname === "/v1/agents/sessions") {
       const idempotencyKey = request.headers["idempotency-key"];
-      const fingerprint = JSON.stringify(body);
+      const { stream: _streamResponseMode, ...creationIntent } = body;
+      const fingerprint = JSON.stringify(creationIntent);
       const receipt = typeof idempotencyKey === "string"
         ? state.sessionCreateReceipts.get(idempotencyKey)
         : undefined;
       if (receipt) {
         if (receipt.fingerprint !== fingerprint) {
           return sendError(response, 409, "Fixture idempotency key was reused with a different Session request.");
+        }
+        if (body.stream === true) {
+          response.writeHead(200, {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache, no-transform",
+            connection: "keep-alive",
+          });
+          response.write(": fixture creation retry observes only future events\n\n");
+          setTimeout(() => response.end(), state.controls.sessionCreateStreamCloseDelayMs);
+          return;
         }
         return sendJson(response, receipt.session, 200);
       }
@@ -549,12 +1025,38 @@ const server = http.createServer(async (request, response) => {
       state.controls.sessionCreateResponseLoss = 0;
       if (control.delayMs) await wait(control.delayMs);
       if (control.status !== 201) return sendError(response, control.status, "Fixture Session create failed.");
-      const agent = state.agents.find((candidate) => candidate.id === body.agent_id);
-      if (!agent) return sendError(response, 404, "Fixture Agent not found for Session.");
+      const savedAgent = typeof body.agent_id === "string"
+        ? state.agents.find((candidate) => candidate.id === body.agent_id)
+        : undefined;
+      const agent = body.agent_id === undefined
+        ? sessionInlineAgent(body.agent, `inline_agent_${state.sequence + 1}`)
+        : savedAgent
+          ? sessionEffectiveAgent(savedAgent, body.agent)
+          : null;
+      if (body.agent_id !== undefined && !savedAgent) {
+        return sendError(response, 404, "Fixture Agent not found for Session.");
+      }
+      if (!agent) return sendError(response, 400, "Fixture Session Agent override is invalid.");
       const admissionError = sessionAdmissionError(agent);
       if (admissionError) return sendError(response, 400, admissionError);
+      const vaultError = sessionVaultError(agent, body.vault_ids ?? []);
+      if (vaultError) return sendError(response, 400, vaultError);
       const environment = sessionEnvironmentResponse(body.environment);
       if (!environment) return sendError(response, 400, "Fixture Session environment is unsupported.");
+      if (environment.type === "openai_hosted" && agent.tools.some((tool) => tool.type === "mcp")) {
+        return sendError(response, 400, "Fixture managed hosted MCP combination is not qualified.");
+      }
+      if (
+        body.metadata !== undefined &&
+        (!isRecord(body.metadata) || Object.entries(body.metadata).some(([key, value]) => (
+          typeof value !== "string" || [...key].length > 64 || [...value].length > 512
+        )) || Object.keys(body.metadata).length > 16)
+      ) return sendError(response, 400, "Fixture Session metadata is invalid.");
+      const hasInitialInput = body.input !== undefined && body.input !== null;
+      const initialInputMessages = hasInitialInput ? sessionInitialInputMessages(body.input) : [];
+      if (hasInitialInput && !initialInputMessages) {
+        return sendError(response, 400, "Fixture initial Session input is invalid.");
+      }
       state.sequence += 1;
       const created = {
         id: `session_created_${state.sequence}`,
@@ -576,6 +1078,72 @@ const server = http.createServer(async (request, response) => {
       }
       if (responseLoss) {
         response.destroy();
+        return;
+      }
+      if (body.stream === true) {
+        const createdSnapshot = structuredClone(created);
+        response.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+        });
+        response.write(": connected\n\n");
+        state.sequence += 1;
+        response.write(`event: agent.session.created\nid: create_${state.sequence}\ndata: ${JSON.stringify({
+          type: "agent.session.created",
+          event_id: `create_${state.sequence}`,
+          session: createdSnapshot,
+        })}\n\n`);
+        if (hasInitialInput && initialInputMessages) {
+          state.sequence += 1;
+          const turn = {
+            id: `turn_created_${state.sequence}`,
+            agent_id: created.agent.id,
+            session_id: created.id,
+            object: "agent.session.turn",
+            status: "queued",
+            created_at: baseline + state.sequence,
+            started_at: null,
+            completed_at: null,
+            error: null,
+            usage: null,
+          };
+          const items = initialInputMessages.map((message, index) => ({
+            id: `item_created_${state.sequence}_${index + 1}`,
+            turn_id: turn.id,
+            type: "message",
+            status: "completed",
+            role: "user",
+            content: message.content,
+          }));
+          state.turns.push(turn);
+          state.createdSessionItems.set(created.id, items);
+          response.write(`event: agent.session.turn.created\nid: turn_${state.sequence}\ndata: ${JSON.stringify({
+            type: "agent.session.turn.created",
+            event_id: `turn_${state.sequence}`,
+            session_id: created.id,
+            turn_id: turn.id,
+            turn,
+          })}\n\n`);
+          created.status = "in_progress";
+          created.last_active_at = baseline + state.sequence;
+          response.write(`event: agent.session.in_progress\nid: progress_${state.sequence}\ndata: ${JSON.stringify({
+            type: "agent.session.in_progress",
+            event_id: `progress_${state.sequence}`,
+            session_id: created.id,
+            session: created,
+          })}\n\n`);
+          for (const [index, item] of items.entries()) {
+            response.write(`event: agent.session.turn.item.added\nid: item_${state.sequence}_${index + 1}\ndata: ${JSON.stringify({
+              type: "agent.session.turn.item.added",
+              event_id: `item_${state.sequence}_${index + 1}`,
+              session_id: created.id,
+              turn_id: turn.id,
+              item,
+            })}\n\n`);
+          }
+        }
+        setTimeout(() => response.end(), state.controls.sessionCreateStreamCloseDelayMs);
         return;
       }
       return sendJson(response, created, 201);
@@ -705,6 +1273,109 @@ const server = http.createServer(async (request, response) => {
       }
     }
 
+    const environmentFilesMatch = url.pathname.match(/^\/v1\/agents\/environments\/([^/]+)\/files$/);
+    if (request.method === "POST" && environmentFilesMatch) {
+      const id = decodeURIComponent(environmentFilesMatch[1]);
+      if (id !== hostedEnvironmentUuid) return sendError(response, 503, "Fixture Environment is not a writable hosted placement.");
+      if (request.headers["openai-beta"] !== "agents=v1") return sendError(response, 400, "Fixture Environment Files requires the Agents beta header.");
+      if (state.controls.environmentFileCreateStatus !== 200) {
+        const status = state.controls.environmentFileCreateStatus;
+        state.controls.environmentFileCreateStatus = 200;
+        return sendError(response, status, "Fixture Environment copy failed.");
+      }
+      if (!isRecord(body) || typeof body.path !== "string" || !body.path.startsWith("/workspace/")) {
+        return sendError(response, 400, "Fixture Environment copy body is invalid.");
+      }
+      let data;
+      if (body.type === "file_id" && Object.keys(body).sort().join(",") === "file_id,path,type" && typeof body.file_id === "string") {
+        const source = state.sourceFiles.get(body.file_id);
+        if (!source) return sendError(response, 404, "Fixture Source File not found for copy.");
+        data = source.data;
+      } else if (body.type === "inline" && Object.keys(body).sort().join(",") === "data,path,type" && typeof body.data === "string") {
+        if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(body.data)) {
+          return sendError(response, 400, "Fixture inline Environment data is invalid.");
+        }
+        data = Buffer.from(body.data, "base64");
+        if (data.toString("base64") !== body.data) return sendError(response, 400, "Fixture inline Environment data is invalid.");
+      } else {
+        return sendError(response, 400, "Fixture Environment copy body is invalid.");
+      }
+      if (data.length > 50 * 1024 * 1024) return sendError(response, 413, "Fixture Environment copy is too large.");
+      const result = {
+        environment_id: hostedEnvironmentUuid,
+        object: "agent.environment.file",
+        path: body.path,
+        size_bytes: data.length,
+      };
+      state.hostedWorkspaceFiles = [
+        ...state.hostedWorkspaceFiles.filter((file) => file.path !== body.path),
+        result,
+      ];
+      const lose = state.controls.environmentFileCreateResponseLoss;
+      state.controls.environmentFileCreateResponseLoss = 0;
+      if (lose) {
+        response.destroy();
+        return;
+      }
+      return sendJson(response, result);
+    }
+    if (request.method === "GET" && environmentFilesMatch) {
+      trackAbort(response, "environmentFileReads");
+      const control = consumeControl("environmentFiles");
+      if (control.delayMs) await wait(control.delayMs);
+      if (response.destroyed) return;
+      if (control.status !== 200) {
+        return sendError(
+          response,
+          control.status,
+          control.status === 404 ? "This API operation is not supported." : "Fixture Environment files read failed.",
+          control.status === 404 ? "unsupported_operation" : "fixture_failure",
+          control.status === 404 ? "invalid_request_error" : "fixture_error",
+        );
+      }
+
+      const id = decodeURIComponent(environmentFilesMatch[1]);
+      if (id === hostedEnvironmentUuid) {
+        const directory = url.searchParams.get("path") ?? "/workspace";
+        const limit = Number(url.searchParams.get("limit") ?? 20);
+        const order = url.searchParams.get("order") ?? "desc";
+        if (url.searchParams.get("page") !== null || limit < 1 || limit > 100 || !["asc", "desc"].includes(order)) {
+          return sendError(response, 400, "Fixture hosted Environment files query is invalid.");
+        }
+        const files = state.hostedWorkspaceFiles
+          .filter((file) => file.path.slice(0, file.path.lastIndexOf("/")) === directory)
+          .sort((left, right) => left.path.localeCompare(right.path));
+        if (order === "desc") files.reverse();
+        return sendJson(response, { data: files.slice(0, limit), next: null });
+      }
+      const sessionEnvironment = state.sessions[0]?.environment;
+      const expectedId = sessionEnvironment?.type === "self_hosted" ? sessionEnvironment.id : null;
+      if (id !== expectedId) return sendError(response, 404, "Fixture Environment not found.");
+      const directory = url.searchParams.get("path") ?? sessionEnvironment.workspace_directory;
+      const limit = Number(url.searchParams.get("limit") ?? 20);
+      const order = url.searchParams.get("order") ?? "desc";
+      const cursor = url.searchParams.get("page");
+      if (
+        directory !== sessionEnvironment.workspace_directory ||
+        limit !== 20 ||
+        !["asc", "desc"].includes(order) ||
+        (cursor !== null && cursor !== "fixture-page-2")
+      ) return sendError(response, 400, "Fixture Environment files query is invalid.");
+
+      const allFiles = Array.from({ length: 21 }, (_, index) => ({
+        environment_id: canonicalEnvironmentUuid,
+        object: "agent.environment.file",
+        path: `${sessionEnvironment.workspace_directory}/file-${String(index + 1).padStart(2, "0")}.txt`,
+        size_bytes: (index + 1) * 128,
+      }));
+      if (order === "desc") allFiles.reverse();
+      const start = cursor === "fixture-page-2" ? 20 : 0;
+      return sendJson(response, {
+        data: allFiles.slice(start, start + limit),
+        next: start + limit < allFiles.length ? "fixture-page-2" : null,
+      });
+    }
+
     const environmentMatch = url.pathname.match(/^\/v1\/agents\/environments\/([^/]+)$/);
     if (request.method === "GET" && environmentMatch) {
       if (state.controls.environmentRetrieveDelayMs) await wait(state.controls.environmentRetrieveDelayMs);
@@ -712,6 +1383,23 @@ const server = http.createServer(async (request, response) => {
         return sendError(response, state.controls.environmentRetrieveStatus, "Fixture Environment retrieve failed.");
       }
       const id = decodeURIComponent(environmentMatch[1]);
+      if (id === hostedEnvironmentUuid) {
+        const resource = {
+          id,
+          object: "agent.environment",
+          type: "openai_hosted",
+          status: state.controls.environmentResourceStatus,
+          files: [],
+          plugins: [],
+          skills: [],
+        };
+        if (state.controls.environmentResourceVariant === "missing_skills") delete resource.skills;
+        if (state.controls.environmentResourceVariant === "wrong_id") resource.id = canonicalEnvironmentUuid;
+        if (state.controls.environmentResourceVariant === "extra_field") resource.extra = true;
+        if (state.controls.environmentResourceVariant === "wrong_type") resource.type = "self_hosted";
+        if (state.controls.environmentResourceVariant === "populated") resource.files = [{ id: "unsupported-install" }];
+        return sendJson(response, resource);
+      }
       const sessionEnvironment = state.sessions[0]?.environment;
       const expectedId = sessionEnvironment?.type === "self_hosted" ? sessionEnvironment.id : null;
       if (id !== expectedId) return sendError(response, 404, "Fixture Environment not found.");
@@ -728,6 +1416,7 @@ const server = http.createServer(async (request, response) => {
       if (state.controls.environmentResourceVariant === "missing_skills") delete resource.skills;
       if (state.controls.environmentResourceVariant === "wrong_id") resource.id = "another_environment";
       if (state.controls.environmentResourceVariant === "extra_field") resource.extra = true;
+      if (state.controls.environmentResourceVariant === "wrong_type") resource.type = "openai_hosted";
       return sendJson(response, resource);
     }
 
@@ -744,7 +1433,7 @@ const server = http.createServer(async (request, response) => {
         return sendError(response, 404, "Fixture Session not found for Items.");
       }
       const items = sessionId !== "session_snapshot"
-        ? []
+        ? state.createdSessionItems.get(sessionId) ?? []
         : state.controls.itemsScenario === 2
           ? [...observableTurnItems(), ...patchItems()]
           : state.controls.itemsScenario
@@ -819,14 +1508,16 @@ const server = http.createServer(async (request, response) => {
       if (environmentStatus && state.controls.environmentEventCount > 0) {
         state.controls.environmentEventCount -= 1;
         state.sequence += 1;
-        const sessionEnvironment = state.sessions[0]?.environment;
-        const rawEnvironmentId = sessionEnvironment?.type === "self_hosted"
-          ? sessionEnvironment.id
-          : "environment_fixture";
+        const streamSession = state.sessions.find((candidate) => candidate.id === sessionId);
+        const sessionEnvironment = streamSession?.environment;
+        const supportedEnvironment = sessionEnvironment?.type === "self_hosted" || sessionEnvironment?.type === "openai_hosted"
+          ? sessionEnvironment
+          : null;
+        const rawEnvironmentId = supportedEnvironment?.id ?? "environment_fixture";
         const canonicalEnvironmentId = rawEnvironmentId.toLowerCase();
         const environment = {
           id: canonicalUuidPattern.test(canonicalEnvironmentId) ? canonicalEnvironmentId : rawEnvironmentId,
-          type: "self_hosted",
+          type: supportedEnvironment?.type ?? "self_hosted",
           status: environmentStatus,
           error: environmentStatus === "failed" ? {
             code: "environment_failed",
@@ -837,7 +1528,7 @@ const server = http.createServer(async (request, response) => {
         response.write(`id: environment_${state.sequence}\ndata: ${JSON.stringify({
           type: `agent.session.environment.${environmentStatus}`,
           event_id: `environment_${state.sequence}`,
-          session_id: "session_snapshot",
+          session_id: sessionId,
           environment,
         })}\n\n`);
       }

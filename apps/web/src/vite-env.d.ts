@@ -2,6 +2,8 @@
 
 declare const __AGENTS_CORE_WEB_DEV_PROXY_AUTH__: boolean;
 declare const __AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS__: boolean;
+declare const __AGENTS_CORE_WEB_OPENAI_HOSTED_SESSIONS__: boolean;
+declare const __AGENTS_CORE_WEB_ENVIRONMENT_FILES__: boolean;
 declare const __AGENTS_CORE_WEB_DOCKER_GUIDE__: null | {
   readonly image: string;
   readonly apiContainer: string;

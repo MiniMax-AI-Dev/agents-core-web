@@ -2,6 +2,7 @@ import { Check, Copy, ExternalLink, Folder, HardDrive, TerminalSquare } from "lu
 import { useEffect, useState } from "react";
 
 import type {
+  AgentCore,
   AgentEnvironment,
   EnvironmentConnectionAction,
   EnvironmentResourceStatus,
@@ -10,12 +11,24 @@ import type {
 
 import { StatusIcon, type StatusKind } from "../../../components/StatusIcon";
 import type { LocalDockerGuideProfile } from "../../../lib/docker-guide-config";
-import { buildLauncherCommand, buildLocalDockerCommand } from "./environment-launcher";
-import { environmentIdsMatch, type EnvironmentObservation } from "./environment-state";
+import {
+  buildLauncherCommand,
+  buildLocalDockerCommand,
+  isSupportedSelfHostedEnvironmentProjection,
+} from "./environment-launcher";
+import { EnvironmentFilesPanel, type ListEnvironmentFiles } from "./EnvironmentFilesPanel";
+import { EnvironmentFileCreatePanel } from "./EnvironmentFileCreatePanel";
+import {
+  environmentIdsMatch,
+  isSupportedOpenAIHostedEnvironmentProjection,
+  isWritableBasicHostedEnvironmentResource,
+  type EnvironmentObservation,
+} from "./environment-state";
 
-const parsarBaseline = "2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e";
+const parsarBaseline = "dadf64a76bde58255281f3b6c3e939f8b556be09";
 const coreSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/services/agents-api/README.md#native-executor-transport-prerequisite`;
 const launcherSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/packages/codex-executor/README.md#connect-an-executor`;
+const hostedSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/services/agents-api/HOSTED-RELEASE.md`;
 
 export interface SafeRemoteUrl {
   href: string;
@@ -67,8 +80,9 @@ function statusLabel(status: EnvironmentDisplayStatus): string {
 function matchingObservation(
   observation: EnvironmentObservation | null,
   environmentId: string | null,
+  environmentType: "self_hosted" | "openai_hosted",
 ): EnvironmentObservation | null {
-  return observation?.environmentType === "self_hosted" && environmentIdsMatch(observation.environmentId, environmentId)
+  return observation?.environmentType === environmentType && environmentIdsMatch(observation.environmentId, environmentId)
     ? observation
     : null;
 }
@@ -104,30 +118,32 @@ export function resolveEnvironmentPresentation(
   }
 
   const environmentId = field(raw.id);
-  const live = type === "self_hosted" ? matchingObservation(observation, environmentId) : null;
+  const supportedType = type === "self_hosted" || type === "openai_hosted" ? type : null;
+  const live = supportedType ? matchingObservation(observation, environmentId, supportedType) : null;
   const requiresConnection = type === "self_hosted" && Boolean(environmentId && connectionActions.some(
     (action) => environmentIdsMatch(action.environment_id, environmentId),
   ));
-  const status: EnvironmentDisplayStatus = type !== "self_hosted"
+  const status: EnvironmentDisplayStatus = !supportedType
     ? "unavailable"
     : live?.source === "unavailable"
       ? "unavailable"
       : live?.status ?? (requiresConnection ? "required" : "unknown");
+  const prefix = type === "openai_hosted" ? "Managed Environment" : "Environment";
   const triggerLabel = status === "connected"
-    ? "Environment connected"
+    ? `${prefix} connected`
     : status === "ready"
-      ? "Environment ready"
+      ? `${prefix} ready`
       : status === "required" || status === "disconnected"
-        ? "Connect environment"
+        ? type === "openai_hosted" ? `${prefix} disconnected` : "Connect environment"
         : status === "pending"
-          ? "Environment pending"
+          ? `${prefix} pending`
           : status === "failed"
-            ? "Environment failed"
+            ? `${prefix} failed`
             : status === "expired"
-              ? "Environment expired"
+              ? `${prefix} expired`
               : status === "unknown"
-                ? "Environment status unknown"
-                : "Environment unavailable";
+                ? `${prefix} status unknown`
+                : `${prefix} unavailable`;
 
   return {
     visible: true,
@@ -135,7 +151,7 @@ export function resolveEnvironmentPresentation(
     statusKind: statusKind(status),
     statusLabel: statusLabel(status),
     triggerLabel,
-    defaultLauncherGuideOpen: status === "required" || status === "pending" || status === "disconnected" || status === "failed" || status === "expired",
+    defaultLauncherGuideOpen: type === "self_hosted" && (status === "required" || status === "pending" || status === "disconnected" || status === "failed" || status === "expired"),
   };
 }
 
@@ -278,12 +294,18 @@ export function EnvironmentPanel({
   connectionActions,
   dockerGuideProfile = __AGENTS_CORE_WEB_DOCKER_GUIDE__,
   defaultLauncherGuideOpen = false,
+  environmentFilesEnabled = __AGENTS_CORE_WEB_ENVIRONMENT_FILES__,
+  onListFiles,
+  onCreateFile,
 }: {
   environment: AgentEnvironment;
   observation: EnvironmentObservation | null;
   connectionActions: EnvironmentConnectionAction[];
   dockerGuideProfile?: LocalDockerGuideProfile | null;
   defaultLauncherGuideOpen?: boolean;
+  environmentFilesEnabled?: boolean;
+  onListFiles?: ListEnvironmentFiles;
+  onCreateFile?: AgentCore["createEnvironmentFile"];
 }) {
   const raw = environment !== null && typeof environment === "object" && !Array.isArray(environment)
     ? environment as unknown as Record<string, unknown>
@@ -293,6 +315,129 @@ export function EnvironmentPanel({
 
   if (type === "none") {
     return null;
+  }
+
+  if (type === "openai_hosted") {
+    const supportedHostedProjection = isSupportedOpenAIHostedEnvironmentProjection(environment);
+    const environmentId = field(raw.id);
+    const network = raw.network !== null && typeof raw.network === "object" && !Array.isArray(raw.network)
+      ? raw.network as Record<string, unknown>
+      : null;
+    const packages = raw.packages !== null && typeof raw.packages === "object" && !Array.isArray(raw.packages)
+      ? raw.packages as Record<string, unknown>
+      : null;
+    const capabilityDirectories = directories(raw.capability_directories);
+    const npmPackages = directories(packages?.npm);
+    const pythonPackages = directories(packages?.python);
+    const systemPackages = directories(packages?.system);
+    const installedFiles = Array.isArray(raw.files) ? raw.files : null;
+    const installedPlugins = Array.isArray(raw.plugins) ? raw.plugins : null;
+    const installedSkills = Array.isArray(raw.skills) ? raw.skills : null;
+    const live = matchingObservation(observation, environmentId, "openai_hosted");
+    const durableResource = live?.source === "durable"
+      ? live.resource
+      : live?.source === "live"
+        ? live.durableResource
+        : undefined;
+    const status = presentation.status;
+    const exactDurableHosted = status !== "failed" && status !== "expired" &&
+      isWritableBasicHostedEnvironmentResource(durableResource, environmentId);
+    const networkAccess = network?.access === "enabled"
+      ? "Enabled"
+      : network?.access === "disabled"
+        ? "Disabled"
+        : "Unavailable";
+
+    return (
+      <section className="environment-panel environment-panel-managed" aria-label="Environment and Workspace status">
+        <div className="environment-panel-heading">
+          <HardDrive size={15} strokeWidth={1.5} aria-hidden="true" />
+          <div>
+            <strong>Managed hosted Environment</strong>
+            <span>{environmentId ?? "ID unavailable"}</span>
+          </div>
+          <div className={`environment-panel-status environment-panel-status-${status}`} role="status" aria-live="polite">
+            <StatusIcon status={presentation.statusKind} />
+            <span>{presentation.statusLabel}</span>
+          </div>
+        </div>
+
+        <div className="environment-panel-grid">
+          <div className="environment-panel-field">
+            <span>Environment ID</span>
+            <code>{environmentId ?? "Unavailable"}</code>
+          </div>
+          <div className="environment-panel-field">
+            <span>Network access</span>
+            <strong>{networkAccess}</strong>
+          </div>
+          <div className="environment-panel-field environment-panel-field-wide">
+            <span>Workspace directory</span>
+            <code><Folder size={12} strokeWidth={1.5} aria-hidden="true" />/workspace</code>
+          </div>
+          <div className="environment-panel-field environment-panel-field-wide">
+            <span>Allowed network domains</span>
+            <strong>{Array.isArray(network?.allowed_domains) && network.allowed_domains.length === 0 ? "None configured by the basic profile" : "Unavailable"}</strong>
+          </div>
+          <div className="environment-panel-field environment-panel-field-wide">
+            <span>Startup packages</span>
+            {npmPackages && pythonPackages && systemPackages ? (
+              <strong>{npmPackages.length + pythonPackages.length + systemPackages.length === 0
+                ? "None installed by the basic profile"
+                : `${npmPackages.length} npm · ${pythonPackages.length} Python · ${systemPackages.length} system`}</strong>
+            ) : <strong>Unavailable</strong>}
+          </div>
+          <div className="environment-panel-field environment-panel-field-wide">
+            <span>Installed metadata</span>
+            {capabilityDirectories && installedFiles && installedPlugins && installedSkills ? (
+              <strong>{capabilityDirectories.length} capability directories · {installedFiles.length} files · {installedPlugins.length} plugins · {installedSkills.length} skills</strong>
+            ) : <strong>Unavailable</strong>}
+          </div>
+        </div>
+
+        <p className="environment-panel-provenance">
+          {live?.source === "live"
+            ? "Status is the last supported managed Environment event. Connected transport does not prove native Runtime, model, provider, Function, or tool readiness."
+            : live?.source === "durable"
+              ? "Status comes from the exact durable managed Environment resource. It describes connection lifecycle, not native execution readiness."
+              : live?.source === "unavailable"
+                ? "Durable managed Environment status is unavailable. No previous readiness claim is retained."
+                : "Managed provisioning is owned by Core. Status is unknown until the durable Environment resource or a supported event is read."}
+        </p>
+
+        {environmentFilesEnabled && supportedHostedProjection && environmentId && onListFiles ? (
+          <EnvironmentFilesPanel
+            key={`${environmentId}:/workspace`}
+            environmentId={environmentId}
+            workspaceDirectory="/workspace"
+            onListFiles={onListFiles}
+          />
+        ) : null}
+
+        {environmentFilesEnabled && supportedHostedProjection && exactDurableHosted && environmentId && onCreateFile ? (
+          <EnvironmentFileCreatePanel
+            key={`create:${environmentId}`}
+            environmentId={environmentId}
+            workspaceDirectory="/workspace"
+            onCreateFile={onCreateFile}
+          />
+        ) : null}
+
+        {status === "failed" || status === "expired" ? (
+          <div className="environment-panel-error" role="alert">
+            <strong>Managed Environment {status}</strong>
+            <p>Core reported a terminal managed Environment state. Web does not recreate, retry, or substitute a Runtime.</p>
+          </div>
+        ) : null}
+
+        <footer className="environment-panel-footer">
+          <p>Core provisions this basic managed Runtime automatically. There is no executor launcher or caller connection action.</p>
+          <nav aria-label="Managed Environment setup documentation">
+            <a href={hostedSetupUrl} target="_blank" rel="noreferrer">Operator setup<ExternalLink size={11} aria-hidden="true" /></a>
+          </nav>
+        </footer>
+      </section>
+    );
   }
 
   if (type !== "self_hosted") {
@@ -311,10 +456,16 @@ export function EnvironmentPanel({
   const workspaceDirectory = field(raw.workspace_directory);
   const capabilityDirectories = directories(raw.capability_directories);
   const remoteUrl = sanitizeRemoteUrl(raw.remote_url);
-  const live = matchingObservation(observation, environmentId);
+  const live = matchingObservation(observation, environmentId, "self_hosted");
   const requiresConnection = Boolean(environmentId && connectionActions.some(
     (action) => environmentIdsMatch(action.environment_id, environmentId),
   ));
+  const supportedProjection = isSupportedSelfHostedEnvironmentProjection(
+    raw.id,
+    raw.remote_url,
+    raw.workspace_directory,
+    raw.capability_directories,
+  );
   const status = presentation.status;
 
   return (
@@ -365,6 +516,15 @@ export function EnvironmentPanel({
                 ? "Core durably requires an operator connection. No executor availability is inferred."
                 : "Connection status is unknown because the durable Session projection does not expose it."}
       </p>
+
+      {environmentFilesEnabled && supportedProjection && environmentId && workspaceDirectory && onListFiles ? (
+        <EnvironmentFilesPanel
+          key={`${environmentId}:${workspaceDirectory}`}
+          environmentId={environmentId}
+          workspaceDirectory={workspaceDirectory}
+          onListFiles={onListFiles}
+        />
+      ) : null}
 
       {status !== "connected" && status !== "ready" ? (
         <EnvironmentLauncherGuide

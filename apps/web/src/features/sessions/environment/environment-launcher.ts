@@ -60,6 +60,20 @@ function connectionProjection(
   }
 }
 
+export function isSupportedSelfHostedEnvironmentProjection(
+  environmentId: unknown,
+  remoteValue: unknown,
+  workspaceDirectory: unknown,
+  capabilityDirectories: unknown,
+): boolean {
+  return connectionProjection(
+    environmentId,
+    remoteValue,
+    workspaceDirectory,
+    capabilityDirectories,
+  ) !== null;
+}
+
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }

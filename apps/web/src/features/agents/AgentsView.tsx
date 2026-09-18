@@ -1,4 +1,4 @@
-import { Bot, MessageSquare, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import { RefreshCw, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import type { CreateAgentInput, SavedAgent, UpdateAgentInput } from "@agents-core-web/agents-client";
@@ -6,11 +6,13 @@ import type { CreateAgentInput, SavedAgent, UpdateAgentInput } from "@agents-cor
 import { ErrorState } from "../../components/ErrorState";
 import { Skeleton } from "../../components/Skeleton";
 import type { CoreConnectionState } from "../../lib/connection";
+import type { VaultCatalog } from "../vaults/vault-catalog";
+import { AgentCatalog } from "./AgentCatalog";
 import { AgentDialog } from "./AgentDialog";
-import { AgentForm } from "./AgentForm";
 import { AgentSetupView } from "./AgentSetupView";
-import { createRequestGate } from "./agent-form";
-import { knownSessionAdmissionBlocker } from "./session-admission";
+import { createRequestGate, projectSavedTool } from "./agent-form";
+import { type AgentTemplate, valuesFromAgentTemplate } from "./agent-templates";
+import { sessionAdmissionBlocker } from "./session-admission";
 
 interface AgentsViewProps {
   agents: SavedAgent[];
@@ -18,6 +20,7 @@ interface AgentsViewProps {
   coreBaseUrl?: string;
   coreError: string | null;
   coreState: CoreConnectionState;
+  vaultCatalog?: VaultCatalog | null;
   createRequest?: number;
   onCreateRequestConsumed?: (request: number) => void;
   onCreate: (input: CreateAgentInput) => Promise<SavedAgent | undefined>;
@@ -28,7 +31,13 @@ interface AgentsViewProps {
   onUpdate?: (agentId: string, input: UpdateAgentInput) => Promise<SavedAgent | undefined>;
 }
 
-type DialogMode = "closed" | "create" | "detail" | "edit" | "delete";
+type ViewMode = "closed" | "create" | "edit" | "delete";
+
+type ReturnFocusTarget =
+  | { kind: "agent"; id: string }
+  | { kind: "create" }
+  | { kind: "element"; element: HTMLElement }
+  | { kind: "template"; id: string };
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "The Agent Core request failed.";
@@ -52,60 +61,34 @@ function AgentsLoadingSkeleton() {
   );
 }
 
-function formatShortDate(seconds: number): string {
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(seconds * 1000));
-}
-
 function formatTimestamp(seconds: number): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" }).format(new Date(seconds * 1000));
-}
-
-function initial(name: string | null): string {
-  return (name?.trim().charAt(0) || "A").toUpperCase();
 }
 
 function StructuredValue({ value }: { value: unknown }) {
   return <pre className="agent-structured-value">{JSON.stringify(value, null, 2)}</pre>;
 }
 
-function AgentSessionStartAction({
-  agent,
-  busy,
-  onStart,
-}: {
-  agent: SavedAgent;
-  busy: boolean;
-  onStart: (agentId: string) => void;
-}) {
-  const blocker = knownSessionAdmissionBlocker(agent);
-  const descriptionId = `start-session-${agent.id}`;
+function ToolSummary({ tools, vaultCatalog }: { tools: unknown[]; vaultCatalog: VaultCatalog | null }) {
+  if (tools.length === 0) return <span className="agent-null-value">None</span>;
   return (
-    <span className="action-tooltip">
-      <button
-        className="button outline agent-session-start"
-        type="button"
-        onClick={() => {
-          if (!blocker) onStart(agent.id);
-        }}
-        disabled={busy}
-        aria-disabled={blocker ? true : undefined}
-        aria-label={`Start a Session with ${agent.name || "this Agent"}`}
-        aria-describedby={blocker ? descriptionId : undefined}
-      >
-        <MessageSquare size={14} strokeWidth={1.5} aria-hidden="true" />
-        <span>{blocker ? "Unavailable" : "Start Session"}</span>
-      </button>
-      {blocker ? (
-        <span className="action-tooltip-content" role="tooltip" id={descriptionId}>
-          Session unavailable: {blocker}
-        </span>
-      ) : null}
-    </span>
+    <ul className="agent-tool-summary">
+      {tools.map((rawTool, index) => {
+        const projection = projectSavedTool(rawTool, vaultCatalog);
+        if (projection.kind === "function") {
+          return <li key={index}>Function <code>{projection.name}</code></li>;
+        }
+        if (projection.kind === "mcp") {
+          return <li key={index}>{projection.credentialId ? "Vault bearer" : "Anonymous"} service-origin HTTP MCP <code>{projection.serverLabel}</code></li>;
+        }
+        return <li key={index}>{projection.label} · read only</li>;
+      })}
+    </ul>
   );
 }
 
-export function AgentDetails({ agent }: { agent: SavedAgent }) {
-  const blocker = knownSessionAdmissionBlocker(agent);
+export function AgentDetails({ agent, vaultCatalog = null }: { agent: SavedAgent; vaultCatalog?: VaultCatalog | null }) {
+  const blocker = sessionAdmissionBlocker(agent, vaultCatalog);
   return (
     <div className="agent-details">
       <div className="agent-detail-summary">
@@ -127,7 +110,7 @@ export function AgentDetails({ agent }: { agent: SavedAgent }) {
       <section className="agent-capabilities" aria-labelledby="agent-capabilities-title">
         <h3 id="agent-capabilities-title">Advanced configuration · read only</h3>
         <dl>
-          <div><dt>Tools</dt><dd><StructuredValue value={agent.tools} /></dd></div>
+          <div><dt>Tools</dt><dd><ToolSummary tools={agent.tools} vaultCatalog={vaultCatalog} /></dd></div>
           <div><dt>Reasoning</dt><dd><StructuredValue value={agent.reasoning} /></dd></div>
           <div><dt>Text</dt><dd><StructuredValue value={agent.text} /></dd></div>
           <div><dt>Service tier</dt><dd><code>{agent.service_tier}</code></dd></div>
@@ -142,6 +125,7 @@ export function AgentDeleteConfirmation({ agent }: { agent: SavedAgent }) {
   return (
     <div className="agent-delete-confirmation">
       <p>Delete <strong>{agent.name || "Untitled Agent"}</strong> from Agent Core?</p>
+      <p>Exact Agent ID: <code>{agent.id}</code></p>
       <p>This removes the saved Agent only after Core confirms success. Existing Sessions keep their durable Agent snapshots.</p>
     </div>
   );
@@ -153,6 +137,7 @@ export function AgentsView({
   coreBaseUrl = "/v1",
   coreError,
   coreState,
+  vaultCatalog = null,
   createRequest = 0,
   onCreateRequestConsumed,
   onCreate,
@@ -162,16 +147,16 @@ export function AgentsView({
   onStartSession,
   onUpdate,
 }: AgentsViewProps) {
-  const [mode, setMode] = useState<DialogMode>("closed");
+  const [mode, setMode] = useState<ViewMode>("closed");
   const [selectedAgent, setSelectedAgent] = useState<SavedAgent | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const [selectedTemplate, setSelectedTemplate] = useState<AgentTemplate | null>(null);
+  const [openingAgentId, setOpeningAgentId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [showAllAgents, setShowAllAgents] = useState(false);
   const [createSetupRevision, setCreateSetupRevision] = useState(0);
   const requestGate = useRef(createRequestGate());
-  const detailActionRef = useRef<HTMLButtonElement>(null);
-  const createReturnFocusRef = useRef<HTMLElement | null>(null);
-  const restoreDetailFocus = useRef(false);
+  const returnFocusRef = useRef<ReturnFocusTarget | null>(null);
   const lastCreateRequestRef = useRef(0);
   const knownModels = agents.map((agent) => agent.model);
   const normalizedQuery = query.trim().toLowerCase();
@@ -180,80 +165,87 @@ export function AgentsView({
       .some((value) => value?.toLowerCase().includes(normalizedQuery)))
     : agents;
 
-  const closeDialog = () => {
-    requestGate.current.invalidate();
-    restoreDetailFocus.current = false;
-    setMode("closed");
-    setActionError(null);
-    setDetailLoading(false);
-  };
-
-  const closeCreateSetup = () => {
-    const returnFocus = createReturnFocusRef.current;
-    createReturnFocusRef.current = null;
-    closeDialog();
+  const restoreCatalogFocus = (target: ReturnFocusTarget | null) => {
     window.requestAnimationFrame(() => {
-      if (returnFocus?.isConnected) {
-        returnFocus.focus();
+      if (target?.kind === "element" && target.element.isConnected) {
+        target.element.focus();
         return;
+      }
+      if (target?.kind === "agent") {
+        const button = [...document.querySelectorAll<HTMLButtonElement>("button[data-agent-id]")]
+          .find((candidate) => candidate.dataset.agentId === target.id);
+        if (button) {
+          button.focus();
+          return;
+        }
+      }
+      if (target?.kind === "template") {
+        const button = [...document.querySelectorAll<HTMLButtonElement>("button[data-agent-template-id]")]
+          .find((candidate) => candidate.dataset.agentTemplateId === target.id);
+        if (button) {
+          button.focus();
+          return;
+        }
       }
       document.querySelector<HTMLButtonElement>('button[data-create-agent-entry="true"]')?.focus();
     });
   };
 
-  const openCreateSetup = (returnFocus: HTMLElement | null) => {
+  const closeSetup = () => {
+    if (busy) return;
+    const target = returnFocusRef.current;
+    returnFocusRef.current = null;
     requestGate.current.invalidate();
-    createReturnFocusRef.current = returnFocus;
+    setMode("closed");
+    setSelectedAgent(null);
+    setSelectedTemplate(null);
+    setActionError(null);
+    restoreCatalogFocus(target);
+  };
+
+  const openCreateSetup = (target: ReturnFocusTarget, template: AgentTemplate | null = null) => {
+    requestGate.current.invalidate();
+    returnFocusRef.current = target;
+    setSelectedAgent(null);
+    setSelectedTemplate(template);
     setActionError(null);
     setCreateSetupRevision((current) => current + 1);
     setMode("create");
   };
-
-  const returnToDetail = () => {
-    if (busy) return;
-    requestGate.current.invalidate();
-    restoreDetailFocus.current = true;
-    setActionError(null);
-    setMode("detail");
-  };
-
-  useEffect(() => {
-    if (mode !== "detail" || busy || detailLoading || !restoreDetailFocus.current) return;
-
-    const frame = window.requestAnimationFrame(() => {
-      detailActionRef.current?.focus();
-      restoreDetailFocus.current = false;
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [busy, detailLoading, mode, selectedAgent]);
 
   useEffect(() => {
     if (!createRequest || createRequest === lastCreateRequestRef.current) return;
     lastCreateRequestRef.current = createRequest;
-    requestGate.current.invalidate();
-    createReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setActionError(null);
-    setCreateSetupRevision((current) => current + 1);
-    setMode("create");
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    openCreateSetup(active ? { kind: "element", element: active } : { kind: "create" });
     onCreateRequestConsumed?.(createRequest);
   }, [createRequest, onCreateRequestConsumed]);
 
-  const retrieve = async (agent: SavedAgent) => {
+  useEffect(() => () => {
+    requestGate.current.invalidate();
+  }, []);
+
+  const retrieveForEdit = async (agent: SavedAgent) => {
     const request = requestGate.current.begin();
-    restoreDetailFocus.current = false;
+    returnFocusRef.current = { kind: "agent", id: agent.id };
     setSelectedAgent(agent);
-    setMode("detail");
     setActionError(null);
-    setDetailLoading(true);
+    setOpeningAgentId(agent.id);
     try {
       if (!onRetrieve) throw new Error("Agent retrieval is unavailable for this Agent Core connection.");
       const latest = await onRetrieve(agent.id);
-      if (!latest) throw new Error("The Agent detail request was interrupted by a connection change.");
-      if (requestGate.current.isCurrent(request)) setSelectedAgent(latest);
+      if (!latest) throw new Error("The Agent request was interrupted by a connection change.");
+      if (latest.id !== agent.id) throw new Error("Agent Core returned a different Agent than the one requested.");
+      if (!requestGate.current.isCurrent(request)) return;
+      setSelectedAgent(latest);
+      setMode("edit");
     } catch (error) {
-      if (requestGate.current.isCurrent(request)) setActionError(errorMessage(error));
+      if (requestGate.current.isCurrent(request)) {
+        setActionError(errorMessage(error));
+        restoreCatalogFocus({ kind: "agent", id: agent.id });
+      }
     } finally {
-      if (requestGate.current.isCurrent(request)) setDetailLoading(false);
+      if (requestGate.current.isCurrent(request)) setOpeningAgentId(null);
     }
   };
 
@@ -269,21 +261,27 @@ export function AgentsView({
     }
   };
 
-  const submitUpdate = async (input: CreateAgentInput) => {
-    if (!selectedAgent) return;
+  const submitUpdate = async (agentId: string, input: UpdateAgentInput): Promise<SavedAgent | undefined> => {
     const request = requestGate.current.begin();
     setActionError(null);
     try {
       if (!onUpdate) throw new Error("Agent updates are unavailable for this Agent Core connection.");
-      const updated = await onUpdate(selectedAgent.id, input);
+      const updated = await onUpdate(agentId, input);
       if (!updated) throw new Error("The Agent update was interrupted by a connection change.");
-      if (!requestGate.current.isCurrent(request)) return;
+      if (updated.id !== agentId) throw new Error("Agent Core returned a different Agent than the one updated.");
+      if (!requestGate.current.isCurrent(request)) return undefined;
       setSelectedAgent(updated);
-      restoreDetailFocus.current = true;
-      setMode("detail");
+      return updated;
     } catch (error) {
       if (requestGate.current.isCurrent(request)) setActionError(errorMessage(error));
+      return undefined;
     }
+  };
+
+  const closeDelete = () => {
+    if (busy) return;
+    setActionError(null);
+    setMode("edit");
   };
 
   const confirmDelete = async () => {
@@ -293,7 +291,12 @@ export function AgentsView({
     try {
       if (!onDelete) throw new Error("Delete is unavailable for this Agent Core connection.");
       await onDelete(selectedAgent.id);
-      if (requestGate.current.isCurrent(request)) closeDialog();
+      if (!requestGate.current.isCurrent(request)) return;
+      setMode("closed");
+      setSelectedAgent(null);
+      setSelectedTemplate(null);
+      returnFocusRef.current = null;
+      restoreCatalogFocus(null);
     } catch (error) {
       if (requestGate.current.isCurrent(request)) setActionError(errorMessage(error));
     }
@@ -303,29 +306,54 @@ export function AgentsView({
     onStartSession(agentId);
   };
 
-  const dialogTitle = mode === "create"
-    ? "Create an Agent"
-    : mode === "edit"
-      ? "Edit Agent"
-      : mode === "delete"
-        ? "Delete Agent?"
-        : selectedAgent?.name || "Agent details";
-
-  if (mode === "create") {
+  if (mode === "create" || (mode === "edit" || mode === "delete") && selectedAgent) {
     return (
-      <AgentSetupView
-        key={createSetupRevision}
-        actionError={actionError}
-        baseUrl={coreBaseUrl}
-        busy={busy}
-        knownModels={knownModels}
-        onBack={closeCreateSetup}
-        onCreate={submitCreate}
-        onStartSession={startSession}
-      />
+      <>
+        <AgentSetupView
+          key={mode === "create" ? `create:${createSetupRevision}` : `edit:${selectedAgent?.id}`}
+          actionError={actionError}
+          agent={mode !== "create" ? selectedAgent ?? undefined : undefined}
+          baseUrl={coreBaseUrl}
+          busy={busy}
+          initialValues={mode === "create" && selectedTemplate ? valuesFromAgentTemplate(selectedTemplate) : undefined}
+          knownModels={knownModels}
+          vaultCatalog={vaultCatalog}
+          onBack={closeSetup}
+          onCreate={submitCreate}
+          onDeleteRequest={mode !== "create" ? () => {
+            requestGate.current.invalidate();
+            setActionError(null);
+            setMode("delete");
+          } : undefined}
+          onStartSession={startSession}
+          onUpdate={submitUpdate}
+        />
+        {mode !== "create" ? (
+          <AgentDialog
+            open={mode === "delete"}
+            onClose={closeDelete}
+            title="Delete Agent?"
+            footer={mode === "delete" ? (
+              <>
+                <button key="cancel-delete" className="button outline" type="button" onClick={closeDelete} disabled={busy}>Cancel</button>
+                <button key="confirm-delete" className="button danger" type="button" onClick={() => void confirmDelete()} disabled={busy} autoFocus>
+                  {busy ? "Deleting…" : "Delete Agent"}
+                </button>
+              </>
+            ) : null}
+          >
+            {actionError ? (
+              <div className="agent-action-error" role="alert">
+                <strong>Request failed</strong>
+                <span>{actionError}</span>
+              </div>
+            ) : null}
+            {mode === "delete" && selectedAgent ? <AgentDeleteConfirmation agent={selectedAgent} /> : null}
+          </AgentDialog>
+        ) : null}
+      </>
     );
   }
-  const formId = "edit-agent";
 
   return (
     <section className="page-section agents-page">
@@ -337,7 +365,10 @@ export function AgentsView({
             <input
               type="search"
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setShowAllAgents(false);
+              }}
               placeholder="Search name, model, or ID…"
               aria-label="Search Agents"
               disabled={coreState !== "ready"}
@@ -345,9 +376,6 @@ export function AgentsView({
           </label>
           <button className="icon-button outline" type="button" onClick={onRefresh} disabled={coreState === "connecting"} aria-label="Refresh Agents">
             <RefreshCw className={coreState === "connecting" ? "refresh-spinning" : undefined} size={14} strokeWidth={1.5} />
-          </button>
-          <button data-create-agent-entry="true" className="button primary" type="button" onClick={(event) => openCreateSetup(event.currentTarget)} disabled={busy || coreState !== "ready"}>
-            <Plus size={14} strokeWidth={1.5} /> New Agent
           </button>
         </div>
       </header>
@@ -368,95 +396,32 @@ export function AgentsView({
         </div>
       ) : null}
 
-      {coreState === "ready" || agents.length ? filteredAgents.length ? (
-        <div className="ledger agent-ledger" role="table" aria-label="Agents">
-          <div className="ledger-header" role="row">
-            <span role="columnheader">Agent</span>
-            <span role="columnheader">Model</span>
-            <span role="columnheader">Tools</span>
-            <span role="columnheader">Updated</span>
-            <span className="ledger-session-header" role="columnheader">Session</span>
-          </div>
-          <div className="ledger-body" role="rowgroup">
-            {filteredAgents.map((agent) => (
-              <div className="ledger-row" role="row" key={agent.id}>
-                <div className="agent-identity" role="cell">
-                  <span className="initial-tile">{initial(agent.name)}</span>
-                  <button className="agent-detail-trigger" type="button" onClick={() => void retrieve(agent)} aria-label={`Open details for ${agent.name || "this Agent"}`} disabled={busy}>
-                    <strong>{agent.name || "Untitled Agent"}</strong>
-                    <small>{agent.instructions || agent.id}</small>
-                  </button>
-                </div>
-                <code className="ledger-model" role="cell" title={agent.model}>{agent.model}</code>
-                <span className="ledger-number" role="cell">{agent.tools.length}</span>
-                <span className="ledger-age" role="cell">{formatShortDate(agent.updated_at)}</span>
-                <span className="ledger-actions" role="cell">
-                  <AgentSessionStartAction agent={agent} busy={busy} onStart={startSession} />
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : (
-        <div className="empty-state">
-          <Bot size={24} strokeWidth={1.5} />
-          <h2>{agents.length ? "No matching Agents" : "No saved Agents"}</h2>
-          <p>{agents.length ? "Try another name, model, or ID." : "Create a reusable Agent configuration to start a Session."}</p>
-          {agents.length ? (
-            <button className="button outline" type="button" onClick={() => setQuery("")}>Clear search</button>
-          ) : (
-            <button data-create-agent-entry="true" className="button primary" type="button" onClick={(event) => openCreateSetup(event.currentTarget)} disabled={busy}>Create Agent</button>
-          )}
+      {mode === "closed" && actionError ? (
+        <div className="agent-action-error agent-open-error" role="alert">
+          <strong>Couldn’t open the latest Agent</strong>
+          <span>{actionError}</span>
+          {selectedAgent ? <button className="button outline" type="button" onClick={() => void retrieveForEdit(selectedAgent)}>Retry</button> : null}
         </div>
       ) : null}
 
-      <AgentDialog
-        open={mode !== "closed"}
-        onClose={closeDialog}
-        title={dialogTitle}
-        footer={mode === "edit" ? (
-          <>
-            <button key="cancel-form" className="button outline" type="button" onClick={returnToDetail} disabled={busy}>Cancel</button>
-            <button key="submit-form" className="button primary" type="submit" form={formId} disabled={busy}>
-              {busy ? "Saving…" : "Save changes"}
-            </button>
-          </>
-        ) : mode === "detail" ? (
-          <>
-            <button key="open-delete" className="button danger" type="button" onClick={() => { requestGate.current.invalidate(); restoreDetailFocus.current = false; setActionError(null); setMode("delete"); }} disabled={busy || detailLoading}>
-              <Trash2 size={14} strokeWidth={1.5} /> Delete
-            </button>
-            <button ref={detailActionRef} key="open-edit" className="button primary" type="button" onClick={() => { requestGate.current.invalidate(); restoreDetailFocus.current = false; setActionError(null); setMode("edit"); }} disabled={busy || detailLoading || Boolean(actionError)}>
-              <Pencil size={14} strokeWidth={1.5} /> Edit
-            </button>
-          </>
-        ) : mode === "delete" ? (
-          <>
-            <button key="cancel-delete" className="button outline" type="button" onClick={returnToDetail} disabled={busy}>Cancel</button>
-            <button key="confirm-delete" className="button danger" type="button" onClick={() => void confirmDelete()} disabled={busy} autoFocus>
-              {busy ? "Deleting…" : "Delete Agent"}
-            </button>
-          </>
-        ) : null}
-      >
-        {actionError ? (
-          <div className="agent-action-error" role="alert">
-            <strong>Request failed</strong>
-            <span>{actionError}</span>
-            {mode === "detail" && selectedAgent ? <button className="button outline" type="button" onClick={() => void retrieve(selectedAgent)}>Retry latest Agent</button> : null}
-          </div>
-        ) : null}
-        {mode === "edit" && selectedAgent ? (
-          <AgentForm key={`${selectedAgent.id}:${selectedAgent.updated_at}`} agent={selectedAgent} formId={formId} knownModels={knownModels} onSubmit={submitUpdate} />
-        ) : mode === "delete" && selectedAgent ? (
-          <AgentDeleteConfirmation agent={selectedAgent} />
-        ) : selectedAgent ? (
-          <>
-            {detailLoading ? <p className="agent-detail-loading" aria-live="polite">Retrieving the latest saved Agent…</p> : null}
-            <AgentDetails agent={selectedAgent} />
-          </>
-        ) : null}
-      </AgentDialog>
+      {coreState === "ready" || agents.length ? (
+        <AgentCatalog
+          agents={filteredAgents}
+          busy={busy}
+          coreReady={coreState === "ready"}
+          hasSavedAgents={agents.length > 0}
+          isFiltering={Boolean(normalizedQuery)}
+          openingAgentId={openingAgentId}
+          expanded={showAllAgents}
+          vaultCatalog={vaultCatalog}
+          onClearSearch={() => setQuery("")}
+          onCreate={() => openCreateSetup({ kind: "create" })}
+          onEdit={(agent) => void retrieveForEdit(agent)}
+          onExpandedChange={setShowAllAgents}
+          onStartSession={startSession}
+          onUseTemplate={(template) => openCreateSetup({ kind: "template", id: template.id }, template)}
+        />
+      ) : null}
     </section>
   );
 }

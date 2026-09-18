@@ -197,6 +197,22 @@ describe("Session metadata reconciliation", () => {
     expect(updateSession).not.toHaveBeenCalled();
   });
 
+  it.each(["invalid_session_resource", "invalid_session_vaults"])(
+    "classifies retrieve-time %s as an invalid contract response and sends no update",
+    async (code) => {
+      const retrieveSession = vi.fn().mockRejectedValue(new AgentCoreError("invalid", 502, code));
+      const updateSession = vi.fn();
+      const core = { retrieveSession, updateSession } as unknown as AgentCore;
+
+      await expect(requestSessionUpdate(core, "session-1", {}, { title: "Draft" }))
+        .rejects.toMatchObject({
+          kind: "request_failed",
+          message: expect.stringContaining("invalid Session retrieval response"),
+        });
+      expect(updateSession).not.toHaveBeenCalled();
+    },
+  );
+
   it("does not write when the latest Session response has the wrong identity or shape", async () => {
     const updateSession = vi.fn();
     for (const invalid of [

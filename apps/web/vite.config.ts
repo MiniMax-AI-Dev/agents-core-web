@@ -13,6 +13,8 @@ export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, repositoryRoot, "");
   const target = env.AGENTS_API_PROXY_TARGET ?? "http://127.0.0.1:8091";
   const selfHostedSessionsEnabled = env.AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS === "1";
+  const openAIHostedSessionsEnabled = env.AGENTS_CORE_WEB_OPENAI_HOSTED_SESSIONS === "1";
+  const environmentFilesEnabled = env.AGENTS_CORE_WEB_ENVIRONMENT_FILES === "1";
   const localDockerGuide = loadLocalDockerGuideProfile(env);
   const proxyAuth = command === "serve" && mode !== "test"
     ? loadProxyBearerAuth({
@@ -26,6 +28,8 @@ export default defineConfig(({ command, mode }) => {
     define: {
       __AGENTS_CORE_WEB_DEV_PROXY_AUTH__: JSON.stringify(Boolean(proxyAuth)),
       __AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS__: JSON.stringify(selfHostedSessionsEnabled),
+      __AGENTS_CORE_WEB_OPENAI_HOSTED_SESSIONS__: JSON.stringify(openAIHostedSessionsEnabled),
+      __AGENTS_CORE_WEB_ENVIRONMENT_FILES__: JSON.stringify(environmentFilesEnabled),
       __AGENTS_CORE_WEB_DOCKER_GUIDE__: JSON.stringify(localDockerGuide),
     },
     envDir: repositoryRoot,

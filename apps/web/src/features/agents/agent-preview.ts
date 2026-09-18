@@ -1,4 +1,4 @@
-import type { CreateAgentInput } from "@agents-core-web/agents-client";
+import type { CreateAgentInput, UpdateAgentInput } from "@agents-core-web/agents-client";
 
 import type { AgentFormValues } from "./agent-form";
 import { validateAgentForm } from "./agent-form";
@@ -9,19 +9,20 @@ function shellSingleQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-function previewEndpointArgument(baseUrl: string): string {
+function previewEndpointArgument(baseUrl: string, agentId?: string): string {
   const candidate = (baseUrl.trim() || "/v1").replace(/\/+$/, "");
+  const agentPath = `/agents${agentId ? `/${encodeURIComponent(agentId)}` : ""}`;
   if (candidate === "/v1") {
-    return '"${AGENTS_CORE_BASE_URL:-http://127.0.0.1:8091/v1}/agents"';
+    return `"\${AGENTS_CORE_BASE_URL:-http://127.0.0.1:8091/v1}${agentPath}"`;
   }
   try {
     const url = new URL(candidate);
     if (url.username || url.password || url.search || url.hash || !["http:", "https:"].includes(url.protocol)) {
-      return '"${AGENTS_CORE_BASE_URL}/agents"';
+      return `"\${AGENTS_CORE_BASE_URL}${agentPath}"`;
     }
-    return shellSingleQuote(`${url.toString().replace(/\/+$/, "")}/agents`);
+    return shellSingleQuote(`${url.toString().replace(/\/+$/, "")}${agentPath}`);
   } catch {
-    return '"${AGENTS_CORE_BASE_URL}/agents"';
+    return `"\${AGENTS_CORE_BASE_URL}${agentPath}"`;
   }
 }
 
@@ -40,8 +41,8 @@ function safeMetadata(value: string): Record<string, string> {
   return {};
 }
 
-export function agentInputForPreview(values: AgentFormValues): CreateAgentInput {
-  const validated = validateAgentForm(values).input;
+export function agentInputForPreview(values: AgentFormValues, intent: "create" | "update" = "create"): CreateAgentInput | UpdateAgentInput {
+  const validated = validateAgentForm(values, intent).input;
   if (validated) return validated;
 
   const input: CreateAgentInput = {
@@ -61,11 +62,11 @@ export function agentInputForPreview(values: AgentFormValues): CreateAgentInput 
   return input;
 }
 
-export function buildAgentRequestPreview(values: AgentFormValues, baseUrl: string) {
-  const input = agentInputForPreview(values);
+export function buildAgentRequestPreview(values: AgentFormValues, baseUrl: string, agentId?: string) {
+  const input = agentInputForPreview(values, agentId ? "update" : "create");
   return {
     curl: [
-      `curl --request POST ${previewEndpointArgument(baseUrl)} \\`,
+      `curl --request POST ${previewEndpointArgument(baseUrl, agentId)} \\`,
       `  --header "Authorization: Bearer ${previewTokenPlaceholder}" \\`,
       '  --header "Content-Type: application/json" \\',
       '  --header "OpenAI-Beta: agents=v1" \\',

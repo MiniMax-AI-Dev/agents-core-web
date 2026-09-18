@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import type { SavedAgent } from "@agents-core-web/agents-client";
 
-import { knownSessionAdmissionBlocker, knownSessionAdmissionBlockers } from "./session-admission";
+import {
+  effectiveSessionAgent,
+  knownSessionAdmissionBlocker,
+  knownSessionAdmissionBlockers,
+  sessionAdmissionBlocker,
+  sessionEnvironmentAdmissionBlocker,
+} from "./session-admission";
 
 const executableAgent: SavedAgent = {
   id: "agent_1",
@@ -32,6 +38,46 @@ const executableMcp = {
 };
 
 describe("known Session admission blockers", () => {
+  it("resolves whole-field Session overrides without mutating the saved Agent", () => {
+    const saved = {
+      ...executableAgent,
+      instructions: "saved",
+      multi_agent: { enabled: true, max_concurrent_subagents: 3 },
+      reasoning: { effort: "high" as const },
+      service_tier: "priority" as const,
+      text: { format: { type: "json_schema" as const, schema: { type: "object" } }, verbosity: "high" as const },
+      tools: [{ type: "tool_search" }],
+    };
+    const effective = effectiveSessionAgent(saved, {
+      instructions: null,
+      multi_agent: null,
+      reasoning: null,
+      service_tier: null,
+      text: null,
+      tools: null,
+    });
+
+    expect(effective).toMatchObject({
+      instructions: null,
+      multi_agent: { enabled: false, max_concurrent_subagents: null },
+      reasoning: {},
+      service_tier: "auto",
+      text: { format: { type: "text" }, verbosity: "medium" },
+      tools: [],
+    });
+    expect(saved.tools).toEqual([{ type: "tool_search" }]);
+    expect(knownSessionAdmissionBlocker(effective)).toBeNull();
+  });
+
+  it("inherits omitted fields and applies supplied model and executable tools", () => {
+    const tools = [{ type: "function" as const, name: "lookup", description: "", parameters: {}, defer_loading: false as const }];
+    const effective = effectiveSessionAgent(executableAgent, { model: "provider/override", tools });
+    expect(effective.model).toBe("provider/override");
+    expect(effective.instructions).toBe(executableAgent.instructions);
+    expect(effective.tools).toEqual(tools);
+    expect(knownSessionAdmissionBlocker(effective)).toBeNull();
+  });
+
   it("accepts the current safe profile without claiming runtime readiness", () => {
     expect(knownSessionAdmissionBlockers(executableAgent)).toEqual([]);
     expect(knownSessionAdmissionBlocker(executableAgent)).toBeNull();
@@ -81,6 +127,30 @@ describe("known Session admission blockers", () => {
     expect(knownSessionAdmissionBlocker({ ...executableAgent, tools: [executableMcp] })).toBeNull();
   });
 
+  it("admits a credentialed MCP only through the complete exact-URL Vault plan", () => {
+    const credentialId = "22222222-2222-4222-8222-222222222222";
+    const vaultId = "11111111-1111-4111-8111-111111111111";
+    const credentialed = { ...executableAgent, tools: [{ ...executableMcp, credential_id: credentialId }] };
+    const catalog = {
+      vaults: [{ id: vaultId, object: "vault" as const, created_at: 1, name: "Runtime", metadata: {} }],
+      credentials: [{
+        id: credentialId,
+        vault_id: vaultId,
+        object: "vault.credential" as const,
+        name: "Private MCP",
+        auth: { type: "static_bearer" as const, mcp_server_url: executableMcp.transport.server_url },
+        created_at: 2,
+        updated_at: 2,
+      }],
+    };
+    expect(sessionAdmissionBlocker(credentialed, null)).toContain("not fully loaded");
+    expect(sessionAdmissionBlocker(credentialed, catalog)).toBeNull();
+    expect(sessionAdmissionBlocker({
+      ...credentialed,
+      tools: [{ ...credentialed.tools[0], transport: { ...executableMcp.transport, server_url: "https://other.example/tools" } }],
+    }, catalog)).toContain("URL-mismatched");
+  });
+
   it("accepts canonical function and MCP variants that Core admits", () => {
     expect(knownSessionAdmissionBlocker({
       ...executableAgent,
@@ -92,6 +162,16 @@ describe("known Session admission blockers", () => {
     })).toBeNull();
     const { allowed_tools: _allowedTools, credential_id: _credentialId, request_metadata: _requestMetadata, required: _required, ...mcpWithDefaultsOmitted } = executableMcp;
     expect(knownSessionAdmissionBlocker({ ...executableAgent, tools: [mcpWithDefaultsOmitted] })).toBeNull();
+  });
+
+  it("blocks managed hosted MCP while retaining Function-only admission", () => {
+    expect(sessionEnvironmentAdmissionBlocker({ ...executableAgent, tools: [executableMcp] }, "openai_hosted"))
+      .toContain("do not yet support MCP");
+    expect(sessionEnvironmentAdmissionBlocker({
+      ...executableAgent,
+      tools: [{ type: "function", name: "lookup", description: "", parameters: {}, defer_loading: false }],
+    }, "openai_hosted")).toBeNull();
+    expect(sessionEnvironmentAdmissionBlocker({ ...executableAgent, tools: [executableMcp] }, "none")).toBeNull();
   });
 
   it("matches Core's case-insensitive URL scheme parsing", () => {

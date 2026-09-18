@@ -335,7 +335,7 @@ describe("Agent Core collection states", () => {
     expect(failed).toContain("Your draft was restored and was not retried.");
     expect(failed).toContain("operator runtime configuration");
     expect(failed).toContain("Core runtime setup");
-    expect(failed).toContain("2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e");
+    expect(failed).toContain("c31f81677a8b16c53b665de9075181df837a0032");
     expect(failed).not.toContain("AGENTS_API_DAEMON_WS_URL");
   });
 
@@ -363,6 +363,13 @@ describe("Agent Core collection states", () => {
               name: "lookup",
               arguments: { query: "fixture" },
             },
+            {
+              type: "function_call",
+              call_id: "call_02",
+              turn_id: "turn_01",
+              name: "summarize",
+              arguments: { source: "fixture" },
+            },
           ],
         }}
         items={[]}
@@ -387,6 +394,10 @@ describe("Agent Core collection states", () => {
     expect(waiting).toContain('aria-label="Function result required"');
     expect(waiting).toContain('aria-label="Function result or error"');
     expect(waiting.match(/aria-label="Function result or error"/g)).toHaveLength(1);
+    expect(waiting).toContain("Structured result");
+    expect(waiting).toContain("1 / 2");
+    expect(waiting).toContain('title="lookup"');
+    expect(waiting).not.toContain('title="summarize"');
     expect(waiting).toContain("This Web cannot connect, complete, or approve it.");
   });
 

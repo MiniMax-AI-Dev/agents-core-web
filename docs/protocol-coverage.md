@@ -6,18 +6,25 @@ OpenAI-hosted service compatibility.
 ## Compatibility baseline
 
 - Current immutable Parsar Core capability baseline:
-  [`2b34ea46`](https://github.com/MiniMax-AI-Dev/parsar/commit/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e).
-  This immutable revision re-confirms the Web-used Agent admission, chat, and
-  Environment and trace-observability boundaries. `OpenAI-Beta: agents=v1` plus the
-  `/v1/agents/**` resources and Session events endpoint are the versioned Web/Core
-  contract. Core exposes no additional public execution-readiness, capability, or
-  build-version resource; Web does not require one before using the documented chat
-  events. It exposes Codex-only, Session-scoped `self_hosted` creation and Environment
-  retrieval, but no public Environment list or standalone CRUD, hosted Environment,
-  template, file-management, or browser-facing key route.
+  [`dadf64a7`](https://github.com/MiniMax-AI-Dev/parsar/commit/dadf64a76bde58255281f3b6c3e939f8b556be09).
+  This immutable revision retains the Web-used Agent admission, chat, Environment,
+  and trace-observability boundaries, bounded live Workspace file-metadata listing,
+  and the project-owned Source Files upload/retrieve/content/delete lifecycle.
+  It also exposes the operator-gated basic Codex/Docker `openai_hosted` profile,
+  both supported Environment resource projections, and Environment Files.create
+  for that qualified managed placement. `OpenAI-Beta: agents=v1` plus the
+  `/v1/agents/**` resources and Session events endpoint remain the versioned Web/Core
+  contract. Core exposes no public execution-readiness, capability-discovery, or
+  build-version resource. It exposes Codex-only, Session-scoped `self_hosted`
+  creation; basic Codex/Docker `openai_hosted` creation when Core is explicitly
+  configured with a qualified managed provider; Environment retrieval; bounded
+  Files.list; and Source Files. It still exposes no public Environment list or
+  standalone CRUD, template, Source Files list, browser-facing key route, or
+  managed-provider discovery/configuration route.
 - Upstream resource source: `openai-python` 3.13.0 beta Agents resources at
   [`d7c41efe`](https://github.com/openai/openai-python/tree/d7c41efee1b0802b79f3f88a678ef2052b06e9ce/src/openai/resources/beta/agents)
-- Required beta header: `OpenAI-Beta: agents=v1`
+- Required beta header for `/v1/agents/**`: `OpenAI-Beta: agents=v1`. Source
+  `/v1/files**` routes deliberately omit it.
 - Core base: same-origin `/v1` through the Web proxy for stock Parsar Core; a direct
   URL only for a compatible Core or proxy with explicit CORS support
 
@@ -34,11 +41,15 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 
 | Resource / behavior | TypeScript client | Initial UI | Notes |
 | --- | --- | --- | --- |
-| Saved Agents create/list | Yes | Yes | Dedicated setup covers model, name, instructions, bounded metadata, and the Session-safe text/medium/implicit-reasoning/auto-tier profile; the broader Saved Agent contract is not execution proof |
-| Saved Agents retrieve/update/delete | Yes | Yes | Agent details support viewing, editing, and deleting saved Agents |
-| Sessions create/list/retrieve | Yes | Yes | UI creates idle `environment:none` Sessions by default; the default-off operator flag can expose the pinned Codex-only, Session-scoped `self_hosted` request and safe response projection |
+| Saved Agents create/list | Yes | Yes | Dedicated setup covers model, name, instructions, bounded metadata, the Session-safe text/medium/implicit-reasoning/auto-tier profile, and the strictly bounded Function/service-origin HTTP MCP form profiles; the broader Saved Agent contract is not execution proof |
+| Saved Agents retrieve/update/delete | Yes | Yes | Agent details support viewing, editing, and deleting saved Agents; unsupported or saved-only Tool values remain read-only and are omitted from unrelated updates |
+| Function form profile | Yes | Yes | Web validates at most 64 non-deferred definitions, unique non-whitespace names of at most 512 UTF-8 bytes, descriptions, and object JSON-Schema parameters before writing |
+| HTTP MCP form profile | Yes | Yes | Web writes only HTTP(S), `transport.type:http`, and `connection_origin:service`, with optional allow-list and boolean `required`. Authentication is either anonymous or an exact catalog-resolved Vault static-bearer Credential; arbitrary headers, request metadata, OAuth, stdio, and browser-origin remain unavailable |
+| Sessions create/list/retrieve | Yes | Yes | With no meaningful initial input, UI sends a JSON `stream:false` create for `none`/`self_hosted` and receives an idle Session. With meaningful input, and for every `openai_hosted` create, it consumes the POST SSE while running the required durable refresh, then hands off to the normal events stream. List supports both an all-pages loaded result and a server-side root-Agent scope |
+| Root-Agent Session filter | Yes | Yes | Core applies `agent_id` before pagination, and every page and opaque continuation carries that same scope; **All Agents** omits it. Web rejects a returned Session whose root Agent does not match the requested scope |
+| Session-only Agent overrides | Yes | Yes, finite | Whole-field overrides can replace `model`, set/clear `instructions`, replace the supported plain-text configuration, reset saved-only `multi_agent`, `reasoning`, or `service_tier` values to Core defaults, and inherit, clear, or fully replace `tools` through the bounded Function/HTTP MCP editor. Untouched fields are omitted; there is no arbitrary Agent JSON or patch-style partial Tool update |
 | Sessions update/delete | Yes | Yes | Title/string metadata editing and one-Session confirmed deletion; no bulk or Workspace deletion |
-| Session live events | Yes | Yes | Authenticated `fetch` stream, not `EventSource` |
+| Session live events | Yes | Yes | Authenticated `fetch` stream, not `EventSource`; reconciles durable state, projects exact text and command-output deltas, and treats an in-band `error` as a retryable interruption rather than conversation data |
 | Input message / steering | Yes | Yes | Opens SSE before submitting `agent.session.input.message`; only HTTP 204 is durable admission, while Core errors or an unexpected 2xx remain visible and uncertain failures retain the in-memory payload/key for an explicit unchanged manual retry only |
 | Active Turn cancel | Yes | Yes | Submitted as a Session event, not a Turn-create endpoint |
 | Turn list | Yes | Yes, read-only | Selected Sessions load every page in ascending creation order; no Turn mutation UI |
@@ -46,15 +57,18 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 | Item list/recovery | Yes | Yes | Authoritative recovery after stream loss |
 | Parsar `apply_patch` Item presentation | Existing function Item fields | Yes, read-only | Parsar extension recognized only for the pinned `changes[].{path,kind,diff}` shape; not an OpenAI standard Item type |
 | Function result/error | Yes | Yes | Supports text `agent.session.input.tool_result` success/error handoff for exact `function_call` actions |
-| Initial-input creation stream | Later | No | Idle-create flow avoids the early-event race |
-| Artifacts/files | Later | No | Required Core resources are not implemented |
+| Initial-input creation stream | Yes | Yes, bounded text messages | Accepts an exact non-empty text string or an ordered array of user messages containing `input_text` parts only. Images, attachments, non-user roles, and other content parts are not supported |
+| Environment Files.list | Yes | Operator-gated, explicit read-only | Hidden unless the complete list + managed-create profile is qualified and `AGENTS_CORE_WEB_ENVIRONMENT_FILES=1`, because Core has no capability-discovery route. For a complete supported projection, lists direct regular-file path and size metadata only; `openai_hosted` uses `/workspace`, while `self_hosted` uses its exact `workspace_directory`; no automatic load, content, download, recursion, or snapshot guarantee |
+| Source Files upload/retrieve/content/delete | Yes | Yes, explicit by ID | Multipart purpose is fixed to `user_data`; metadata and binary responses are strictly projected; Core has no Source Files list; uncertain writes are never replayed |
+| Environment Files.create | Yes | Hosted-gated | The client supports the exact `inline`/`file_id` union. UI offers bounded inline or upload → durable `file_id` copy only after an exact current basic `openai_hosted` Session projection and same-ID resource read satisfy the non-terminal, empty-installation write gate |
+| Artifacts | No | Hidden | Source Files and Environment Files are not an Artifacts API |
 | Environment connection action | Yes | Guided, not submitted | `environment_connection` is distinct from a function call; Web can show an operator-run launcher template but sends no result and never opens the native transport |
 | Environment lifecycle events | Yes | Read-only | UI projects pinned pending, ready, connected, disconnected, and failed live snapshots; unknown/malformed status events clear prior live claims and render as unavailable |
-| Environment retrieve | Yes | Yes, read-only | For a valid `self_hosted` Session Environment ID, reads the exact public resource fields and durable status; there is no standalone Environment create/list/update/delete resource |
+| Environment retrieve | Yes | Yes, read-only | Strictly recognizes `self_hosted` and `openai_hosted` resource types. Session UI automatically reads the valid current Environment ID for either supported type; hosted write eligibility additionally requires the exact basic hosted projection and same-ID durable resource; there is no standalone Environment create/list/update/delete resource |
 | Environment overview | No public list API | No top-level UI | Web does not turn loaded Session projections into a catalog; a selected Session may still show its exact Environment data |
 | Environment templates | No | Hidden | No navigation or Create entry is shown without a Core contract |
 | Environment keys | No public browser API | Hidden | Operator-issued executor credentials stay on executor compute and never enter browser state, request previews, navigation, or Create actions |
-| Vaults | Later | No | Credentials must never be stored in browser metadata |
+| Vaults and static-bearer Credentials | Yes | Yes, when discovered | Web traverses the Vault and per-Vault Credential page chains to their Core end markers before publishing one loaded metadata result, provides safe lifecycle controls and write-only token create/replace, and deterministically attaches each selected Credential's owning Vault to Session creation. The reads are non-atomic and not a current Core total. Tokens are never returned; catalog success is not runtime proof |
 | Protocol Subagents / enabled multi-agent | Later | No | Distinct from storing multiple Agent configurations |
 | Usage/observability | Response types | Yes, scoped | Session aggregate and per-Turn token Usage are labelled separately; unavailable measurements remain unknown, not zero |
 
@@ -63,18 +77,75 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
 - The Web creates `environment: {"type":"none"}` Sessions by default. The
   non-secret `AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS=1` build/dev-server flag exposes
   a second, Codex-only `self_hosted` choice for an operator-reviewed Core deployment.
+  The independent `AGENTS_CORE_WEB_OPENAI_HOSTED_SESSIONS=1` flag exposes only the
+  pinned basic Codex/Docker `openai_hosted` request after an operator has qualified
+  Core's managed Runtime provider. Its network choice is omitted/default enabled,
+  explicitly enabled, or explicitly disabled; restricted domains are not exposed.
   The flag is off by default because Core has no public capability-discovery route.
-  It changes Web presentation only; it is not evidence that the connected Core has
+  Both flags change Web presentation only; neither is evidence that the connected Core has
   configured execution, an executor registry, a reachable executor origin, or a
-  ready native runtime, model, or provider.
+  ready managed Runtime, native harness, model, or provider.
+- Environment Files UI is independently hidden unless the operator has qualified the
+  connected Core and sets `AGENTS_CORE_WEB_ENVIRONMENT_FILES=1`. A 404
+  `unsupported_operation` is reported as an unsupported Core, never as an empty
+  Workspace. Managed reads use `/workspace`; self-hosted reads are constrained to and
+  send the exact frozen `workspace_directory` returned by the Session.
+- Start Session exposes an optional title only. The title is written as
+  `metadata.title`; additional creation metadata stays empty and is not exposed in
+  this form. The existing-Session action surface may edit additional string metadata;
+  the complete map follows the pinned 16-pair, 64-character key, and 512-character
+  value limits and must never contain secrets.
+  Initial input accepts an exact non-empty text string or an ordered array of user
+  messages containing `input_text` parts only. Message order and grouping are
+  preserved. Each message must contain non-whitespace joined text; images,
+  attachments, non-user roles, and other content parts are not supported. Empty or
+  whitespace-only simple text is omitted. Meaningful input selects streaming
+  `POST /agents/sessions`; an omitted input selects JSON `stream:false` for `none`
+  and `self_hosted`, while `openai_hosted` always uses creation SSE so provisioning
+  can be reconciled before the ordinary events-stream handoff.
+- Streaming creation must begin with a canonical `agent.session.created` snapshot.
+  Web buffers subsequent creation events while reconciling the durable Session, all
+  Item pages, and an eligible Environment projection and starts the all-pages Turn
+  read independently. After the POST SSE settles with a known Session, Web performs
+  the required durable refresh and hands live updates to
+  `GET /agents/sessions/{session_id}/events`; Turn pages apply separately only if their
+  fenced read remains current and do not block the handoff. A failure before a
+  canonical created snapshot leaves the create outcome unconfirmed; a later stream
+  failure reconciles and hands off instead of replaying the POST.
+- The optional inline `agent` object is a finite, whole-field Session-only override.
+  Web can replace `model`, set or clear `instructions`, replace the supported
+  plain-text configuration, reset saved-only `multi_agent`, `reasoning`, or
+  `service_tier` values to Core defaults, and inherit, clear, or fully replace
+  `tools` through the bounded Function/HTTP MCP editor. Untouched fields are omitted.
+  Admission and Vault derivation use the effective Agent snapshot after applying
+  that override. There is no arbitrary Agent JSON editor or patch-style partial Tool
+  update. Environment creation is limited to `none`,
+  the separately enabled `self_hosted` profile, and the separately enabled basic
+  `openai_hosted` profile. Managed creation is blocked before persistence when the
+  effective Agent contains MCP because hosted MCP is not qualified.
+- A failed create is never retried automatically. Its stable recursive fingerprint
+  contains `agent_id`, the finite `agent` override when present, `environment`, exact
+  optional `input`, normalized `metadata`, `stream`, and sorted derived `vault_ids`.
+  Object keys are normalized recursively and other array order remains significant.
+  Only an explicit retry with the same complete fingerprint reuses the in-memory
+  idempotency key; any projected request change rotates it.
+- The Sessions root-Agent filter is a Core query, not a client-side filter over one
+  loaded page. Core applies `agent_id` before pagination; the first request and every
+  continuation carry that same scope together with the preserved limit and order.
+  **All Agents** omits `agent_id`. Filter changes abort and fence stale reads, and an
+  accepted filtered page may not contain a Session whose Agent snapshot has another
+  ID.
 - Message, active-Turn steering, cancel, and function-result/error writes use the
   current `agents=v1` Session events contract. Web does not add a separate private
-  runtime-readiness gate. Only exact HTTP 204 denotes durable event admission;
-  every other status, including another 2xx, fails closed. HTTP acceptance, health,
-  Agent creation, and an open SSE stream still do not prove that execution will
-  complete; subsequent durable Session, Turn, and Item state is authoritative.
+  runtime-readiness gate. The caller creates and retains a non-blank, at-most-128-byte
+  idempotency key before the first event write; the client never retries automatically,
+  and an uncertain explicit retry must reuse the same payload and key. Only exact HTTP
+  204 denotes durable event admission; every other status, including another 2xx,
+  fails closed. HTTP acceptance, health, Agent creation, and an open SSE stream still
+  do not prove that execution will complete; subsequent durable Session, Turn, and
+  Item state is authoritative.
 - Product navigation and the global Create menu do not widen the protocol. Agent
-  and idle Session creation call the existing client methods. The top-level
+  and Session creation call the existing client methods. The top-level
   Environments destination and Environment template/key entries are absent because
   Core exposes no corresponding list or management APIs.
 - The Agent setup request preview is derived entirely from editable Agent fields and
@@ -82,32 +153,58 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
   `${AGENTS_CORE_API_KEY}` placeholder; it never reads or renders the connection's
   server-managed or current-tab bearer.
 - Saved Agent persistence and Session execution are separate contracts. Parsar
-  `2b34ea46` can store explicit reasoning, non-`auto` service tiers, and JSON-schema
+  `dadf64a7` can store explicit reasoning, non-`auto` service tiers, and JSON-schema
   text formats, but rejects each of them before creating a Session. Enabled
   multi-agent configuration, saved-only tool types, deferred/invalid/duplicate
   function or MCP identities, and MCP credentials without attached Vaults are
-  rejected at the same boundary. The Web never attaches Vaults in this flow, so it
-  treats a saved MCP `credential_id` as a deterministic blocker. The Web therefore
+  rejected at the same boundary. Web resolves every MCP `credential_id` against the
+  last successfully traversed Vault/Credential page-chain result, requires an exact
+  destination URL match, and
+  derives sorted unique owning `vault_ids`; missing, stale, URL-mismatched, or
+  ambiguous bindings are deterministic blockers. The Web therefore
   omits reasoning for new Agents, uses `service_tier:auto`, ordinary text, and
   medium verbosity, and blocks every Session-start entry point for a loaded Agent
   with a deterministic admission conflict. Existing saved-only values remain
   inspectable; fields exposed for editing are never silently rewritten.
+- The Agent form exposes exactly two Tool write profiles. Its Function profile is
+  always non-deferred and enforces a unique non-whitespace name of at most 512
+  UTF-8 bytes, a description, object JSON Schema parameters, and a maximum of 64
+  Functions. Function execution remains outside the browser; the existing result
+  handoff uses the exact durable Turn and call identity reported by Core.
+- The MCP form profile is service-origin HTTP(S). It supports anonymous access or a
+  Vault-backed static-bearer Credential selected from the last successfully
+  traversed Vault/Credential page-chain result.
+  Selecting a Credential locks the exact destination URL and writes only its
+  `credential_id`; the token never enters the Agent form. Arbitrary headers, request
+  metadata, OAuth, stdio, client-origin, unresolved Credentials, and malformed MCP
+  variants remain unsupported/read-only. MCP execution and discovery remain
+  Core-service-owned, including for a `self_hosted` Session whose Workspace commands
+  are executor-owned.
+- Other Tool definitions—including `tool_search`,
+  `programmatic_tool_calling`, deferred Functions, unresolved or malformed MCP,
+  and future variants—remain read-only. Web offers no Web Search or Code Mode
+  switch. An unrelated Agent edit omits `tools`; an attempted Tool edit while a
+  read-only definition remains fails closed instead of deleting, interpreting, or
+  resending unknown JSON. The public contract exposes no Function, MCP, model,
+  provider, or executor readiness resource.
 - Saved Agent names are limited to 128 Unicode characters. Agent metadata is limited
   to 16 string pairs, 64 Unicode characters per key, and 512 per value; the Web
   enforces those limits before a write.
 - A selected `environment:none` Session renders no Environment or Workspace panel;
   absence of that optional UI is not an error and does not block conversation use.
-  Read-only Environment status is shown only for a real `self_hosted` projection or
-  for an unsupported Environment variant that must fail closed.
+  Read-only Environment status is shown only for a complete supported `self_hosted`
+  or basic `openai_hosted` projection, or as an explicit unavailable state for an
+  unsupported Environment variant that must fail closed.
 - Parsar Core at the audited revision supports creating a `self_hosted` Environment
   only as part of a Codex Session. When the operator flag is enabled, Web can create
-  an idle Session with an absolute executor-host `workspace_directory` and exactly
-  empty `capability_directories`. It does not accept initial input in this setup flow,
-  create an Environment independently, choose an executor, or claim the requested
-  Workspace exists. A Core rejection leaves the setup visible and is never retried
-  automatically. The exact failed draft retains its in-memory idempotency key for an
-  explicit unchanged manual retry; changing its Agent or Environment fields creates
-  a new key and operation.
+  a Session with an absolute executor-host `workspace_directory` and exactly empty
+  `capability_directories`. It may carry the same optional text input, title metadata,
+  and finite Session-only Agent override as `environment:none`; it is idle only when
+  input is omitted. Web cannot create an Environment independently, choose an
+  executor, or claim the requested Workspace exists. A Core rejection leaves the
+  setup visible and is never retried automatically. The exact failed projected
+  request retains its in-memory idempotency key only for an explicit unchanged retry;
+  the complete fingerprint rules above determine every new operation.
 - The reusable client distinguishes the admitted `self_hosted` request fields
   (`workspace_directory` and optional `capability_directories`) from the safe Session
   response projection (`id`, `remote_url`, `workspace_directory`, and normalized
@@ -141,19 +238,73 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
   `disconnected`, and `failed`, with a nullable structured error. `expired` is
   therefore durable-only and `ready` is live-only; neither vocabulary is widened by
   an unchecked cast. Unknown or malformed values clear any older live claim.
-- Once a current Session read supplies a valid `self_hosted` Environment ID, the
+- Once a current Session read supplies a valid `self_hosted` or `openai_hosted`
+  Environment ID, the
   client issues one authenticated, abortable
   `GET /agents/environments/{encoded_environment_id}`. It accepts only HTTP 200 and
   strictly projects exactly `id`, `object`, `type`, `status`, `files`, `plugins`, and
-  `skills`, with the matching ID, `agent.environment` object, `self_hosted` type, a
-  supported durable status, and array-valued installation metadata. UUID comparison
+  `skills`, with the matching ID, `agent.environment` object, a known
+  `self_hosted` or `openai_hosted` type, a supported durable status, and array-valued
+  installation metadata. Session recovery consumes either supported branch; only
+  the exact basic `openai_hosted` branch can proceed to hosted write eligibility.
+  UUID comparison
   permits an uppercase request to match Core's lowercase canonical response, and the
   projected resource retains that canonical response ID. It never writes or retries
   this read.
 - Empty `files`, `plugins`, and `skills` arrays mean only that Core reports no
   API-managed installations. They are not the host filesystem, Workspace contents,
-  launcher capabilities, or executor inventory, and the Web does not expose them as
-  browsing UI.
+  launcher capabilities, executor inventory, or the data source for Files.list.
+- For a complete supported `self_hosted` or basic `openai_hosted` Session
+  Environment projection, Web
+  exposes a user-triggered, authenticated
+  `GET /agents/environments/{encoded_environment_id}/files` read. It never loads
+  files automatically. The UI supplies an absolute directory within the reported
+  Workspace, `limit=20`, the selected `asc` or `desc` order, and Core's opaque
+  `page` token for continuation while preserving the applied directory, order,
+  and limit.
+- The client accepts only HTTP 200 and the pinned Parsar page projection
+  `{data,next}`. Every entry must have the matching Environment ID,
+  `object:"agent.environment.file"`, a safe absolute path, and a non-negative
+  safe-integer `size_bytes`. A malformed success rejects the complete page; no
+  partial result is accepted or retried automatically.
+- Files.list is a live, non-recursive metadata read. Paths remain plain text. It
+  does not read file contents, follow browser links, upload, download, mutate, or
+  create files, and it does not create a Turn. Core may invalidate an opaque
+  continuation when directory paths or sizes change; Web then requires an explicit
+  refresh. Requests are abortable and fenced when the Environment or Workspace
+  changes.
+- Source Files are a separate project-owned lifecycle under `/v1/files`. Upload is
+  one multipart `file` plus fixed `purpose=user_data`, with a 512 MiB content bound;
+  metadata retrieve, complete binary download, and delete operate only by the
+  returned `file-…` ID. These routes use the caller bearer but never the Agents beta
+  header. There is no list, expiration, resumable upload, alternate purpose, or
+  browser-persisted inventory. The Web keeps the selected file and returned ID in
+  component memory only and never writes content or IDs to URL, storage, Agent or
+  Session metadata, fixtures, or logs.
+- Source download accepts only HTTP 200 with `application/octet-stream`, an
+  attachment disposition, valid exact `Content-Length`, `Cache-Control:no-store`,
+  and `X-Content-Type-Options:nosniff`; the complete received byte count must match.
+  JSON or truncated content is never saved as a file. Upload has no public
+  idempotency or list-based reconciliation path, so an uncertain outcome is shown
+  as unknown and is not replayed. An uncertain delete performs at most one metadata
+  GET to distinguish currently present from absent, never a second DELETE.
+- Environment Files.create is a single-attempt exact union: strict standard Base64
+  `inline` bytes or a project-owned Source `file_id`, plus one canonical file path
+  beneath `/workspace/`. Source upload is bounded at 512 MiB while destination copy
+  is bounded at 50 MiB. The Web's primary flow is upload → returned Source ID →
+  `file_id` copy; it never substitutes a local filename or path for that ID.
+  A missing response can outlive caller cancellation. Web performs at most one
+  read-only directory list as a clue; matching path and size cannot prove byte
+  identity, so the outcome remains unknown and the POST is not replayed.
+- A hosted write form appears only when the complete current Session projection is
+  the pinned basic `openai_hosted` shape and
+  `GET /agents/environments/{id}` itself returns the exact same Environment identity,
+  type, a non-terminal `pending`/`connected`/`disconnected` status, and empty
+  `files`, `plugins`, and `skills`. It is never inferred from a Session type,
+  connection event, health, Files.list, Docker configuration, or an error response.
+  Terminal `expired`/`failed`, wrong identity/type, populated installations,
+  templates, restricted networking, or future fields fail closed. `self_hosted`
+  Workspace listing remains read-only.
 - The durable `self_hosted` Session Environment projection has no connection-status
   or error field, so the separate Environment resource read is the only durable
   status source used by the UI. The UI renders the Session's ID, sanitized HTTP(S)
@@ -172,7 +323,7 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
   `environment_connection` notice remains separate from any simultaneous
   `function_call` result form and has no result submission control.
 - Workspace means the execution directory within this Environment. It is not a
-  top-level workspaces API, file browser, editor, or artifact capability. The UI
+  top-level workspaces API, file-content browser, editor, or artifact capability. The UI
   links to the immutable pinned Core and caller-started launcher setup documentation.
   The path must be absolute and already meaningful on the caller-managed Linux
   executor; it is not a browser, Web-server, or daemon-container path. The operator
@@ -190,7 +341,7 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
   missing-field, extra-field, and alternate same-name payloads retain the generic
   JSON function rendering. This is a Parsar extension, not an OpenAI standard Item
   type, and it grants no browser access to apply, edit, approve, reject, revert, or
-  read files from an executor Workspace.
+  read file contents from an executor Workspace.
 - The internal `parsar-daemon` WebSocket and the public `self_hosted` executor
   transport are different protocols. Neither is a generic Environment Provider.
 - Docker, E2B, and AWS Bedrock AgentCore Runtime each need an upstream lifecycle and
@@ -206,14 +357,72 @@ the Core key binding. Agents Core Web's local proxy owns the bearer server-side.
   Web never sends a paid Turn merely as a capability probe. Claude SDK accepts
   medium verbosity only.
 
-Environment creation and management beyond the narrow Session-scoped `self_hosted`
-creation flow, top-level list/CRUD, provider selection, Files, Plugins, Skills,
-Artifacts, Vault, hosted runtimes, templates, key management, and Workspace lifecycle
-controls remain unsupported or hidden. Parsar's additional pinned handlers are not
-Web-supported merely because they exist upstream.
+Environment creation and management beyond the narrow Session-scoped
+`self_hosted` and basic managed `openai_hosted` creation flows, top-level
+Environment list/CRUD, managed-provider selection/configuration, arbitrary
+Workspace content mutation, Plugins, Skills, Artifacts, Credential profiles beyond
+the bounded Vault static-bearer flow, templates, restricted-domain networking,
+hosted MCP, key management, and broader Workspace lifecycle controls remain
+unsupported or hidden. The bounded Source lifecycle and strictly gated
+Environment `file_id` copy described above do not imply those broader surfaces.
+Parsar's additional pinned handlers are not Web-supported merely because they exist
+upstream.
+
+## Dashboard and System boundary
+
+- Dashboard is a Web-derived view over the last successfully traversed Agent and
+  Session page-chain results for the configured Core access scope. Web follows every
+  continuation with `limit=100&order=desc`, rejects duplicate identities and
+  invalid or cyclic cursors, and allows at most 100 pages per collection. If Core
+  reports that page 101 is required, the refresh fails closed and does not publish
+  the partial result. Dashboard performs no additional Turn, Item, Environment,
+  or execution-readiness requests and makes no writes.
+- A ready Agent or Session result means pagination reached Core's end marker within
+  that safety limit. Loaded counts are exact only for that published page-chain
+  result. Pages may change while they are traversed, so neither count is an atomic
+  snapshot or a current Core total; the Agent and Session reads are also independent.
+  Session-admissible Agents pass Web's known request-shape checks; this does not
+  prove worker, executor, runtime, model, provider, Function, or MCP readiness.
+  Session status counts preserve exact known Core statuses, while unknown values
+  remain unavailable.
+- Reported aggregate tokens sum only complete canonical Session Usage snapshots
+  and state how many of the loaded Sessions reported Usage. Missing or malformed
+  Usage remains `Unknown`, never zero. Needs-attention rows are the five most
+  recent `requires_action` or `failed` Sessions; Recent Sessions contains
+  at most eight rows ordered by valid Core-reported `last_active_at`. A
+  `self_hosted` label identifies only the Session profile, not an executor
+  connection. Row actions navigate to the exact loaded Session.
+- Agent and Session collection states remain independent. A failed refresh may
+  leave an explicitly labelled prior loaded result visible, including a previously
+  confirmed empty result. An initial failed empty collection is unavailable
+  rather than a confirmed zero. Switching Core generations clears both snapshots in
+  the same state transition, and a collection response invalidated by a concurrent
+  local/live revision is reread before it may be labelled ready.
+- System presents browser-visible collection request state, the sanitized
+  configured Core base, the immutable `dadf64a7` public capability matrix, and
+  ownership boundaries. Its counts apply only to the last successfully traversed
+  page-chain results and are explicitly not atomic snapshots or current Core totals.
+  Its Core summary is derived from collection reachability;
+  it is not an independent `/healthz`, build-version, capability-discovery, or
+  execution-readiness probe. Refresh is explicit and user-triggered; System does
+  not poll. The matrix separates restricted Function/MCP configuration and
+  Function result handoff from Vault attachment and unavailable runtime-readiness
+  proof.
+- System always reports execution readiness as `Not exposed`. The self-hosted and
+  managed-hosted build flags control Web presentation only. The optional
+  self-hosted Docker command is an operator launcher aid; Parsar's distinct managed
+  Docker adapter is Core-owned execution placement behind `openai_hosted`, never
+  browser Docker control. E2B and AgentCore profiles remain hidden without a
+  supported public admission contract.
 
 ## Session metadata and deletion
 
+- Start Session exposes only the optional display title and writes it as
+  `metadata.title`; it does not expose additional creation metadata. The
+  existing-Session action surface can edit additional metadata, where every value
+  must be a string. Web enforces Parsar's pinned limit of 16 pairs, 64 Unicode
+  characters per key, and 512 per value before either write, and explicitly warns
+  that metadata must never contain credentials or secrets.
 - The Session action surface retrieves the latest durable Session when it opens and
   again immediately before an update. Every action read must return a complete
   canonical Session with the exact requested ID; a wrong-ID or malformed HTTP 200
@@ -221,10 +430,7 @@ Web-supported merely because they exist upstream.
   unlock an uncertain deletion retry. Runtime validation covers the Agent snapshot,
   known Environment shapes, required-action variants, Usage counters, metadata, and
   timestamps while preserving a structurally safe unknown Environment type as
-  unavailable. `metadata.title` supplies the optional display
-  title; the remaining arbitrary metadata values must be strings. The Web enforces
-  Parsar's pinned limit of 16 pairs, 64 Unicode characters per key, and 512 per value,
-  and explicitly warns that metadata must never contain credentials or secrets.
+  unavailable.
 - `POST /agents/sessions/{session_id}` replaces the complete metadata map. To avoid
   silently erasing concurrent additions, the Web computes the user's changes from
   the form baseline, applies only non-conflicting changes to the latest retrieved map,
@@ -267,7 +473,7 @@ Every accepted replacement stream follows this order:
 1. reconnect the stream and buffer newly arriving events;
 2. retrieve the persisted Session and every page of Items while independently
    starting the all-pages Turn read;
-3. after the current Session supplies a valid `self_hosted` ID, retrieve its durable
+3. after the current Session supplies a valid supported Environment ID, retrieve its durable
    Environment resource;
 4. apply the durable Session, Items, and Environment snapshot without making a slow
    or unavailable Turn endpoint block conversation recovery, then release buffered
@@ -280,7 +486,11 @@ Every accepted replacement stream follows this order:
 At replacement-stream acceptance the Web clears the previous live Environment
 observation before the durable reads. Supported Environment events arriving during
 those reads are buffered and applied afterward, so a newer live state wins over the
-earlier durable snapshot. A late stream callback or read is fenced by Core
+earlier durable snapshot. Within the same identity and stream epoch, a terminal
+`failed` live observation or terminal `failed`/`expired` durable observation is not
+regressed by a later valid but stale non-terminal durable read. A malformed,
+unavailable, wrong-ID, or wrong-type read still clears the observation to unavailable
+instead of retaining a stale claim. A late stream callback or read is fenced by Core
 generation, Session ID, Environment ID, Session and Environment request revisions,
 Turn and Item event revisions, stream epoch, selection, and abort signal. A missing, unauthorized,
 failed, or malformed Environment response clears stale connection claims and renders
@@ -345,7 +555,7 @@ read keeps the existing conversation usable.
 
 ## Trace workbench boundary
 
-- Against the immutable Parsar `2b34ea46` capability baseline, the trace workbench
+- Against the immutable Parsar `dadf64a7` capability baseline, the trace workbench
   is a read-only projection of the selected Session's Agent snapshot, all loaded
   Turn and Item snapshots, and accepted newer lifecycle events. A Turn can contribute
   its exact status, start/completion timestamps, and available token totals. An Item
@@ -355,6 +565,16 @@ read keeps the existing conversation usable.
   unavailable. Unknown Item types and known discriminants with malformed required
   fields retain a generic inspectable presentation rather than acquiring a known
   semantic label.
+- Conversation uses the same fail-closed discriminator boundary. Unknown
+  non-message Items render only an inert `Unsupported <type> Item` row; their
+  arbitrary arguments/output are not treated as Function, MCP, command, or search
+  data and do not create an interactive control.
+- Exact `agent.output.command_execution_output.delta` events append only to an
+  already observed, same-Turn, in-progress `command_execution` Item whose current
+  output is string-compatible. Orphan, cross-Turn, malformed, non-string, empty,
+  or late fragments are ignored. A terminal Item snapshot remains authoritative.
+  An in-band SSE `error` becomes a transient stream failure, triggers the existing
+  durable reconciliation/reconnect path, and is never forwarded as an Item.
 - Turn rows follow the durable all-pages creation order with the existing exact live
   status merge. Items retain their durable order and group under a Turn only by an
   exact `turn_id`; unmatched Items remain explicit. A function result may be paired

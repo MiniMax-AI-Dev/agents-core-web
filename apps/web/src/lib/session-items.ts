@@ -1,4 +1,4 @@
-import type { SessionItem } from "@agents-core-web/agents-client";
+import type { SessionEvent, SessionItem } from "@agents-core-web/agents-client";
 
 const TERMINAL_ITEM_STATUSES = new Set<SessionItem["status"]>([
   "completed",
@@ -40,6 +40,41 @@ export function updateLiveSessionItems(
   update: (items: SessionItem[]) => SessionItem[],
 ): SessionItem[] {
   return update(currentSessionId === eventSessionId ? current : []);
+}
+
+/**
+ * Apply Parsar's live command-output fragment only to its existing in-progress
+ * command Item. The initial item.added event (or the reconciliation read) owns
+ * command identity; an orphan, cross-Turn, non-string, or late fragment is
+ * ignored instead of inventing a new Item or changing a terminal snapshot.
+ */
+export function appendCommandOutputDelta(
+  items: SessionItem[],
+  event: SessionEvent,
+): SessionItem[] {
+  if (
+    event.type !== "agent.output.command_execution_output.delta" ||
+    typeof event.item_id !== "string" ||
+    event.item_id.length === 0 ||
+    typeof event.turn_id !== "string" ||
+    event.turn_id.length === 0 ||
+    typeof event.delta !== "string" ||
+    event.delta.length === 0
+  ) return items;
+
+  const index = items.findIndex((item) => item.id === event.item_id);
+  const current = index === -1 ? undefined : items[index];
+  if (
+    !current ||
+    current.type !== "command_execution" ||
+    current.turn_id !== event.turn_id ||
+    current.status !== "in_progress" ||
+    !(current.output === undefined || current.output === null || typeof current.output === "string")
+  ) return items;
+
+  const next = [...items];
+  next[index] = { ...current, output: `${current.output ?? ""}${event.delta}` };
+  return next;
 }
 
 /**

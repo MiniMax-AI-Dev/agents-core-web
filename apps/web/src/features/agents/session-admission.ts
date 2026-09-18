@@ -1,4 +1,6 @@
-import type { SavedAgent } from "@agents-core-web/agents-client";
+import type { InlineAgentInput, SavedAgent } from "@agents-core-web/agents-client";
+
+import { deriveSessionVaultPlan, type VaultCatalog } from "../vaults/vault-catalog";
 
 // Go strings.TrimSpace uses unicode.IsSpace, whose White_Space set includes U+0085.
 export function isCoreWhitespaceOnly(value: string): boolean {
@@ -69,6 +71,46 @@ function isCanonicalExecutionMcp(tool: Record<string, unknown>): boolean {
 }
 
 /**
+ * Mirrors Core's whole-field saved-Agent override resolution for the bounded
+ * fields exposed by the Session form. It is used only for fail-closed Web
+ * admission and Vault projection; Core remains the durable authority.
+ */
+export function effectiveSessionAgent(
+  saved: SavedAgent,
+  override?: InlineAgentInput,
+): SavedAgent {
+  if (!override) return saved;
+  const supplied = (key: keyof InlineAgentInput) => Object.hasOwn(override, key);
+  const multiAgent = supplied("multi_agent")
+    ? override.multi_agent == null
+      ? { enabled: false, max_concurrent_subagents: null }
+      : {
+          enabled: override.multi_agent.enabled,
+          max_concurrent_subagents: override.multi_agent.enabled
+            ? override.multi_agent.max_concurrent_subagents ?? 6
+            : null,
+        }
+    : saved.multi_agent;
+  const text = supplied("text")
+    ? {
+        format: override.text?.format ?? { type: "text" as const },
+        verbosity: override.text?.verbosity ?? "medium" as const,
+      }
+    : saved.text;
+
+  return {
+    ...saved,
+    model: supplied("model") ? override.model ?? saved.model : saved.model,
+    instructions: supplied("instructions") ? override.instructions ?? null : saved.instructions,
+    multi_agent: multiAgent,
+    reasoning: supplied("reasoning") ? override.reasoning ?? {} : saved.reasoning,
+    service_tier: supplied("service_tier") ? override.service_tier ?? "auto" : saved.service_tier,
+    text,
+    tools: supplied("tools") ? override.tools ?? [] : saved.tools,
+  };
+}
+
+/**
  * Deterministic Saved Agent blockers enforced by Parsar before Session persistence.
  * A null result is not execution-readiness proof: model, provider, host, tools, and
  * non-default verbosity can still require runtime validation.
@@ -131,4 +173,30 @@ export function knownSessionAdmissionBlockers(agent: SavedAgent): string[] {
 export function knownSessionAdmissionBlocker(agent: SavedAgent): string | null {
   const blockers = knownSessionAdmissionBlockers(agent);
   return blockers.length ? `Current Core Session admission requires ${blockers.join(", ")}.` : null;
+}
+
+const legacyCredentialBlocker = "attached MCP credentials are unavailable in this Web Session flow";
+
+/**
+ * Full Web admission gate. The legacy helper intentionally remains fail-closed
+ * for callers that have not supplied a complete, current Vault catalog.
+ */
+export function sessionAdmissionBlocker(agent: SavedAgent, catalog: VaultCatalog | null): string | null {
+  const blockers = knownSessionAdmissionBlockers(agent).filter((blocker) => blocker !== legacyCredentialBlocker);
+  if (blockers.length) return `Current Core Session admission requires ${blockers.join(", ")}.`;
+  const plan = deriveSessionVaultPlan(agent, catalog);
+  return plan.blocker ? `Session Vault attachment is unavailable. ${plan.blocker}` : null;
+}
+
+/** The pinned basic managed Runtime has not qualified service-origin HTTP MCP. */
+export function sessionEnvironmentAdmissionBlocker(
+  agent: SavedAgent,
+  environmentType: unknown,
+): string | null {
+  if (environmentType !== "openai_hosted") return null;
+  return agent.tools.some((tool) => (
+    tool !== null && typeof tool === "object" && !Array.isArray(tool) && (tool as Record<string, unknown>).type === "mcp"
+  ))
+    ? "Managed hosted Sessions do not yet support MCP tools. Choose no Environment or self-hosted, or use a Function-only Agent."
+    : null;
 }
