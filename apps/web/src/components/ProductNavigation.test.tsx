@@ -12,9 +12,20 @@ describe("Product navigation", () => {
     expect(html).toContain('aria-label="Agents product"');
     expect(html).toContain('class="main-nav product-navigation"');
     expect(html).toContain("Workspace");
+    expect(html).toContain("Dashboard");
     expect(html).toContain("Agents");
     expect(html).toContain("Sessions");
+    expect(html).not.toContain("Vaults");
     expect(html).not.toContain("Environments");
+    expect(html).toContain('aria-current="page"');
+  });
+
+  it("shows Vaults only after Core capability discovery succeeds", () => {
+    const html = renderToStaticMarkup(
+      <ProductNavigation active="vaults" showVaults onSelect={() => undefined} />,
+    );
+
+    expect(html).toContain("Vaults");
     expect(html).toContain('aria-current="page"');
   });
 });

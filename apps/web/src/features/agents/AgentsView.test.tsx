@@ -31,6 +31,7 @@ describe("Agents view", () => {
     expect(html).toContain("Updated");
     expect(html).toContain("Metadata");
     expect(html).toContain("Tools");
+    expect(html).toContain("tool_search is saved-only and cannot run in a Session");
     expect(html).toContain("Reasoning");
     expect(html).toContain("Text");
     expect(html).toContain("Service tier");
@@ -48,10 +49,46 @@ describe("Agents view", () => {
     expect(html).toContain('data-agent-initial-focus="true"');
     expect(html).toContain("Web-side suggestions, not a discovered Core catalog");
     expect(html).toContain("Never store secrets in Agent metadata");
+    expect(html).toContain("Read-only saved tool");
+    expect(html).toContain("tool_search is saved-only and cannot run in a Session");
     expect(html).toContain("provider/model");
   });
 
-  it("fails closed for a saved-only Agent configuration", () => {
+  it("strictly summarizes supported tools and hides malformed or credentialed raw values", () => {
+    const protectedAgent: SavedAgent = {
+      ...agent,
+      tools: [
+        { type: "function", name: "lookup", description: "Lookup", parameters: { type: "object" }, defer_loading: false },
+        {
+          type: "mcp",
+          server_label: "docs",
+          transport: { type: "http", server_url: "https://mcp.example/tools" },
+          connection_origin: "service",
+          allowed_tools: null,
+          required: true,
+        },
+        { type: "function", name: "unsafe", description: "", parameters: {}, defer_loading: false, extra: "secret-value" },
+        { type: "mcp", credential_id: "vault_opaque", request_metadata: { authorization: "secret-value" } },
+        { type: "future_tool", opaque: "secret-value" },
+      ],
+    };
+    const details = renderToStaticMarkup(<AgentDetails agent={protectedAgent} />);
+    const form = renderToStaticMarkup(
+      <AgentForm agent={protectedAgent} formId="edit-protected-agent" knownModels={[agent.model]} onSubmit={async () => undefined} />,
+    );
+
+    expect(details).toContain("Function <code>lookup</code>");
+    expect(details).toContain("Anonymous service-origin HTTP MCP <code>docs</code>");
+    expect(details).toContain("Unsupported Function tool definition · read only");
+    expect(details).toContain("Credentialed MCP is unresolved or URL-mismatched in the current Vault catalog · read only");
+    expect(details).toContain("Unsupported saved tool definition · read only");
+    expect(form).toContain("Credentialed MCP is unresolved or URL-mismatched in the current Vault catalog");
+    expect(details + form).not.toContain("vault_opaque");
+    expect(details + form).not.toContain("secret-value");
+    expect(details + form).not.toContain("future_tool");
+  });
+
+  it("opens saved Agents through the edit affordance and fails closed for an unsupported Session profile", () => {
     const html = renderToStaticMarkup(
       <AgentsView
         agents={[agent]}
@@ -64,9 +101,11 @@ describe("Agents view", () => {
       />,
     );
 
-    expect(html).toContain('type="button" aria-label="Open details for this Agent"');
-    expect(html).toContain('aria-disabled="true" aria-label="Start a Session with this Agent"');
-    expect(html).toContain('<span class="ledger-session-header" role="columnheader">Session</span>');
+    expect(html).toContain('role="list" aria-label="Agents"');
+    expect(html).toContain('type="button" aria-label="Edit Untitled Agent (agent_1)"');
+    expect(html).toContain('aria-disabled="true" aria-label="Start a Session with Untitled Agent (agent_1)"');
+    expect(html).toContain("Create agent");
+    expect(html).toContain("Starter templates");
     expect(html).toContain('<span>Unavailable</span>');
     expect(html).toContain("Session unavailable: Current Core Session admission requires");
   });
@@ -92,7 +131,7 @@ describe("Agents view", () => {
       />,
     );
 
-    expect(html).toContain('type="button" aria-label="Start a Session with this Agent"');
+    expect(html).toContain('type="button" aria-label="Start a Session with Untitled Agent (agent_1)"');
     expect(html).toContain('<span>Start Session</span>');
     expect(html).not.toContain("Session unavailable:");
   });
@@ -101,6 +140,7 @@ describe("Agents view", () => {
     const html = renderToStaticMarkup(<AgentDeleteConfirmation agent={agent} />);
 
     expect(html).toContain("Delete <strong>Untitled Agent</strong> from Agent Core?");
+    expect(html).toContain("Exact Agent ID: <code>agent_1</code>");
     expect(html).toContain("only after Core confirms success");
     expect(html).toContain("Existing Sessions keep their durable Agent snapshots");
   });

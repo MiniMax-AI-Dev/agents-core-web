@@ -2,6 +2,8 @@ import type {
   AgentEnvironmentResource,
   AgentSession,
   EnvironmentResourceStatus,
+  OpenAIHostedAgentEnvironment,
+  OpenAIHostedAgentEnvironmentResource,
   SessionEnvironmentStatus,
   SessionEvent,
   StreamError,
@@ -29,9 +31,20 @@ function isSessionEnvironmentStatus(value: string): value is SessionEnvironmentS
   return value === "pending" || value === "ready" || value === "connected" || value === "disconnected" || value === "failed";
 }
 
-interface EnvironmentObservationBase {
+export type SupportedEnvironmentType = "self_hosted" | "openai_hosted";
+
+const writableHostedResourceStatuses = new Set<EnvironmentResourceStatus>([
+  "pending",
+  "connected",
+  "disconnected",
+]);
+
+export interface EnvironmentIdentity {
   environmentId: string;
-  environmentType: "self_hosted";
+  environmentType: SupportedEnvironmentType;
+}
+
+interface EnvironmentObservationBase extends EnvironmentIdentity {
 }
 
 export interface LiveEnvironmentObservation extends EnvironmentObservationBase {
@@ -39,6 +52,8 @@ export interface LiveEnvironmentObservation extends EnvironmentObservationBase {
   status: SessionEnvironmentStatus;
   error: StreamError | null;
   eventId: string;
+  /** Retained only after an exact same-identity durable retrieve qualified it. */
+  durableResource?: AgentEnvironmentResource;
 }
 
 export interface DurableEnvironmentObservation extends EnvironmentObservationBase {
@@ -57,6 +72,12 @@ export type EnvironmentObservation =
   | DurableEnvironmentObservation
   | UnavailableEnvironmentObservation;
 
+function isTerminalEnvironmentObservation(
+  observation: EnvironmentObservation | null | undefined,
+): observation is LiveEnvironmentObservation | DurableEnvironmentObservation {
+  return observation?.status === "failed" || observation?.status === "expired";
+}
+
 export interface ScopedEnvironmentObservation {
   observation: EnvironmentObservation;
   sessionId: string;
@@ -67,6 +88,7 @@ export interface EnvironmentReadFence {
   coreGeneration: number;
   sessionId: string;
   environmentId: string;
+  environmentType: SupportedEnvironmentType;
   sessionRequest: number;
   environmentRequest: number;
   streamEpoch: number;
@@ -86,6 +108,7 @@ export function environmentReadIsCurrent(
     read.sessionId === current.sessionId &&
     read.sessionId === current.selectedSessionId &&
     environmentIdsMatch(read.environmentId, current.environmentId) &&
+    read.environmentType === current.environmentType &&
     read.sessionRequest === current.sessionRequest &&
     read.environmentRequest === current.environmentRequest &&
     read.streamEpoch === current.streamEpoch &&
@@ -114,6 +137,67 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function exactFields(value: Record<string, unknown>, fields: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === fields.length && keys.every((key) => fields.includes(key));
+}
+
+function emptyArray(value: unknown): value is [] {
+  return Array.isArray(value) && value.length === 0;
+}
+
+/**
+ * Recognizes only the basic managed Session projection implemented at the
+ * pinned Core revision. Future templates, restricted networking or populated
+ * startup installations remain unsupported instead of being partially shown.
+ */
+export function isSupportedOpenAIHostedEnvironmentProjection(
+  value: unknown,
+): value is OpenAIHostedAgentEnvironment {
+  const environment = record(value);
+  if (!environment || environment.type !== "openai_hosted") return false;
+  const network = record(environment.network);
+  const packages = record(environment.packages);
+  return exactFields(environment, [
+    "type",
+    "id",
+    "capability_directories",
+    "network",
+    "packages",
+    "files",
+    "plugins",
+    "skills",
+  ]) &&
+    typeof environment.id === "string" && environment.id.length > 0 &&
+    emptyArray(environment.capability_directories) &&
+    network !== null && exactFields(network, ["access", "allowed_domains"]) &&
+    (network.access === "enabled" || network.access === "disabled") &&
+    emptyArray(network.allowed_domains) &&
+    packages !== null && exactFields(packages, ["npm", "python", "system"]) &&
+    emptyArray(packages.npm) && emptyArray(packages.python) && emptyArray(packages.system) &&
+    emptyArray(environment.files) && emptyArray(environment.plugins) && emptyArray(environment.skills);
+}
+
+/**
+ * A managed Workspace mutation is offered only after the exact current
+ * Environment resource confirms the basic profile is non-terminal and exposes
+ * no unsupported installation metadata. A Session snapshot, live event, health
+ * check or successful list request is never substituted for this durable read.
+ */
+export function isWritableBasicHostedEnvironmentResource(
+  resource: AgentEnvironmentResource | null | undefined,
+  expectedEnvironmentId: string | null | undefined,
+): resource is OpenAIHostedAgentEnvironmentResource {
+  return resource?.object === "agent.environment" &&
+    resource.type === "openai_hosted" &&
+    typeof expectedEnvironmentId === "string" && expectedEnvironmentId.length > 0 &&
+    environmentIdsMatch(resource.id, expectedEnvironmentId) &&
+    writableHostedResourceStatuses.has(resource.status) &&
+    emptyArray(resource.files) &&
+    emptyArray(resource.plugins) &&
+    emptyArray(resource.skills);
+}
+
 function safeError(value: unknown): StreamError | null {
   if (value === null || value === undefined) return null;
   const error = record(value);
@@ -129,7 +213,7 @@ function safeError(value: unknown): StreamError | null {
  * Admits only the pinned Environment event vocabulary. Future event/status
  * variants remain unknown instead of being projected as a supported state.
  */
-export function environmentObservationFromEvent(event: SessionEvent): EnvironmentObservation | null {
+export function environmentObservationFromEvent(event: SessionEvent): LiveEnvironmentObservation | null {
   const type = typeof event.type === "string" ? event.type : "";
   const prefix = "agent.session.environment.";
   if (!type.startsWith(prefix)) return null;
@@ -141,16 +225,18 @@ export function environmentObservationFromEvent(event: SessionEvent): Environmen
   const environment = record("environment" in event ? event.environment : undefined);
   if (
     !environment ||
+    Object.keys(environment).length !== 4 ||
+    !Object.keys(environment).every((key) => ["id", "type", "status", "error"].includes(key)) ||
     typeof environment.id !== "string" ||
     !environment.id ||
-    environment.type !== "self_hosted" ||
+    (environment.type !== "self_hosted" && environment.type !== "openai_hosted") ||
     environment.status !== status
   ) return null;
 
   return {
     source: "live",
     environmentId: environment.id,
-    environmentType: "self_hosted",
+    environmentType: environment.type,
     status,
     error: safeError(environment.error),
     eventId: event.event_id,
@@ -159,25 +245,43 @@ export function environmentObservationFromEvent(event: SessionEvent): Environmen
 
 export function environmentObservationFromResource(
   resource: AgentEnvironmentResource,
-  expectedEnvironmentId: string,
+  expected: EnvironmentIdentity,
 ): DurableEnvironmentObservation | null {
-  if (!environmentIdsMatch(resource.id, expectedEnvironmentId) || resource.type !== "self_hosted") return null;
+  if (!environmentIdsMatch(resource.id, expected.environmentId) || resource.type !== expected.environmentType) return null;
   return {
     source: "durable",
     environmentId: resource.id,
-    environmentType: "self_hosted",
+    environmentType: resource.type,
     status: resource.status,
     resource,
   };
 }
 
-export function unavailableEnvironmentObservation(environmentId: string): UnavailableEnvironmentObservation {
+export function unavailableEnvironmentObservation(identity: EnvironmentIdentity): UnavailableEnvironmentObservation {
   return {
     source: "unavailable",
-    environmentId,
-    environmentType: "self_hosted",
+    ...identity,
     status: null,
   };
+}
+
+/**
+ * A terminal observation is monotonic for one Environment identity. A refresh
+ * triggered by a terminal event can briefly read an older pending resource; that
+ * stale read must not restore write controls or replace the terminal claim.
+ */
+export function mergeDurableEnvironmentObservation(
+  current: EnvironmentObservation | null | undefined,
+  durable: EnvironmentObservation,
+): EnvironmentObservation {
+  if (
+    current &&
+    environmentIdentitiesMatch(current, durable) &&
+    isTerminalEnvironmentObservation(current) &&
+    durable.source === "durable" &&
+    !isTerminalEnvironmentObservation(durable)
+  ) return current;
+  return durable;
 }
 
 /**
@@ -189,7 +293,7 @@ export function reduceEnvironmentObservation(
   current: EnvironmentObservation | null,
   event: SessionEvent,
   expectedSessionId?: string,
-  expectedEnvironmentId?: string | null,
+  expectedEnvironment?: EnvironmentIdentity | null,
 ): EnvironmentObservation | null {
   const type = typeof event.type === "string" ? event.type : "";
   if (!type.startsWith("agent.session.environment.")) return current;
@@ -200,15 +304,42 @@ export function reduceEnvironmentObservation(
     event.session_id !== expectedSessionId
   ) return current;
   const next = environmentObservationFromEvent(event);
-  if (next && expectedEnvironmentId && !environmentIdsMatch(next.environmentId, expectedEnvironmentId)) return null;
-  if (expectedEnvironmentId === null) return null;
-  return next;
+  if (next && expectedEnvironment && !environmentIdentitiesMatch(next, expectedEnvironment)) return null;
+  if (expectedEnvironment === null) return null;
+  if (!next) return null;
+  if (
+    current &&
+    environmentIdentitiesMatch(current, next) &&
+    isTerminalEnvironmentObservation(current) &&
+    !isTerminalEnvironmentObservation(next)
+  ) return current;
+  const durableResource = current?.source === "durable"
+    ? current.resource
+    : current?.source === "live"
+      ? current.durableResource
+      : undefined;
+  return durableResource && environmentIdentitiesMatch(next, {
+    environmentId: durableResource.id,
+    environmentType: durableResource.type,
+  })
+    ? { ...next, durableResource }
+    : next;
 }
 
-export function selfHostedEnvironmentId(environment: unknown): string | null {
+export function supportedEnvironmentIdentity(environment: unknown): EnvironmentIdentity | null {
   const value = record(environment);
-  if (!value || value.type !== "self_hosted") return null;
-  return typeof value.id === "string" && value.id ? value.id : null;
+  if (!value || (value.type !== "self_hosted" && value.type !== "openai_hosted")) return null;
+  return typeof value.id === "string" && value.id
+    ? { environmentId: value.id, environmentType: value.type }
+    : null;
+}
+
+export function environmentIdentitiesMatch(
+  left: EnvironmentIdentity | null | undefined,
+  right: EnvironmentIdentity | null | undefined,
+): boolean {
+  if (!left || !right) return left === right;
+  return left.environmentType === right.environmentType && environmentIdsMatch(left.environmentId, right.environmentId);
 }
 
 export function matchingSessionSnapshot(
@@ -225,8 +356,8 @@ export function reconcileEnvironmentObservation(
   session: AgentSession,
 ): EnvironmentObservation | null {
   if (!observation) return null;
-  const environmentId = selfHostedEnvironmentId(session.environment);
-  return environmentIdsMatch(environmentId, observation.environmentId) && observation.environmentType === "self_hosted"
+  const identity = supportedEnvironmentIdentity(session.environment);
+  return environmentIdentitiesMatch(identity, observation)
     ? observation
     : null;
 }

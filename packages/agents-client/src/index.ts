@@ -1,4 +1,4 @@
-export { AgentCoreError, OpenAIAgentsClient } from "./client";
+export { AgentCoreError, createIdempotencyKey, OpenAIAgentsClient } from "./client";
 export type { OpenAIAgentsClientOptions } from "./client";
 export { createSSEDecoder } from "./sse";
 export type { SSEDecoder, SSEMessage } from "./sse";

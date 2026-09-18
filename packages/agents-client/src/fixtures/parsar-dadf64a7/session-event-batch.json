@@ -1,0 +1,36 @@
+{
+  "revision": "dadf64a76bde58255281f3b6c3e939f8b556be09",
+  "request": {
+    "events": [
+      {
+        "type": "agent.session.input.message",
+        "input": [
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              { "type": "input_text", "text": "First" },
+              { "type": "input_text", "text": " message" }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [{ "type": "input_text", "text": "Second message" }]
+          }
+        ]
+      },
+      { "type": "agent.session.input.cancel" },
+      {
+        "type": "agent.session.input.tool_result",
+        "call_id": "call_1",
+        "turn_id": "11111111-1111-4111-8111-111111111111",
+        "success": false,
+        "output": [
+          { "type": "input_text", "text": "" },
+          { "type": "input_image", "image_url": "data:image/png;base64,AA==" }
+        ],
+        "error": "failed"
+      }
+    ]
+  }
+}

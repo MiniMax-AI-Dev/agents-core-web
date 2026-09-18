@@ -1,7 +1,7 @@
 import { Info } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
-import type { CreateAgentInput, SavedAgent } from "@agents-core-web/agents-client";
+import type { SavedAgent } from "@agents-core-web/agents-client";
 
 import {
   buildModelOptionGroups,
@@ -9,25 +9,29 @@ import {
   modelIdFromOption,
   modelOptionValue,
 } from "../../lib/model-options";
-import { validateAgentForm, valuesFromAgent } from "./agent-form";
+import type { VaultCatalog } from "../vaults/vault-catalog";
+import { vaultName } from "../vaults/vault-catalog";
+import { type AgentFormSubmitInput, type AgentFormValues, type AgentToolDraft, validateAgentForm, valuesFromAgent } from "./agent-form";
 
 interface AgentFormProps {
   agent?: SavedAgent;
   disabled?: boolean;
   formId: string;
+  initialValues?: AgentFormValues;
   knownModels: string[];
-  onDraftChange?: (values: ReturnType<typeof valuesFromAgent>) => void;
-  onSubmit: (input: CreateAgentInput) => Promise<unknown>;
+  vaultCatalog?: VaultCatalog | null;
+  onDraftChange?: (values: AgentFormValues) => void;
+  onSubmit: (input: AgentFormSubmitInput) => Promise<unknown>;
 }
 
-export function AgentForm({ agent, disabled = false, formId, knownModels, onDraftChange, onSubmit }: AgentFormProps) {
+export function AgentForm({ agent, disabled = false, formId, initialValues, knownModels, vaultCatalog = null, onDraftChange, onSubmit }: AgentFormProps) {
   const nameRef = useRef<HTMLInputElement>(null);
+  const initial = agent ? valuesFromAgent(agent, vaultCatalog) : initialValues ?? valuesFromAgent(undefined, vaultCatalog);
   const options = buildModelOptionGroups(
     knownModels,
     import.meta.env.VITE_AGENT_MODEL_PRESETS,
-    agent?.model ?? import.meta.env.VITE_AGENT_DEFAULT_MODEL,
+    initial.model || import.meta.env.VITE_AGENT_DEFAULT_MODEL,
   );
-  const initial = valuesFromAgent(agent);
   const initialIsSuggested = [...options.configured, ...options.previouslyUsed].includes(initial.model);
   const [name, setName] = useState(initial.name);
   const [modelChoice, setModelChoice] = useState(
@@ -41,11 +45,20 @@ export function AgentForm({ agent, disabled = false, formId, knownModels, onDraf
   const [serviceTier, setServiceTier] = useState(initial.serviceTier);
   const [textFormat] = useState(initial.textFormat);
   const [textVerbosity, setTextVerbosity] = useState(initial.textVerbosity);
+  const [tools, setTools] = useState(initial.tools);
+  const [toolsModified, setToolsModified] = useState(initial.toolsModified);
   const [configurationError, setConfigurationError] = useState<string | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [nameError, setNameError] = useState<string | null>(null);
+  const [toolsError, setToolsError] = useState<string | null>(null);
   const model = modelChoice === CUSTOM_MODEL_OPTION ? customModel : modelIdFromOption(modelChoice) ?? "";
+
+  const updateTools = (update: (current: AgentToolDraft[]) => AgentToolDraft[]) => {
+    setTools((current) => update(current));
+    setToolsModified(true);
+    if (toolsError) setToolsError(null);
+  };
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => nameRef.current?.focus());
@@ -63,8 +76,10 @@ export function AgentForm({ agent, disabled = false, formId, knownModels, onDraf
       serviceTier,
       textFormat,
       textVerbosity,
+      tools,
+      toolsModified,
     });
-  }, [instructions, metadata, model, name, onDraftChange, reasoningEffort, reasoningSummary, serviceTier, textFormat, textVerbosity]);
+  }, [instructions, metadata, model, name, onDraftChange, reasoningEffort, reasoningSummary, serviceTier, textFormat, textVerbosity, tools, toolsModified]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -78,11 +93,14 @@ export function AgentForm({ agent, disabled = false, formId, knownModels, onDraf
       serviceTier,
       textFormat,
       textVerbosity,
-    }, agent ? "update" : "create");
+      tools,
+      toolsModified,
+    }, agent ? "update" : "create", vaultCatalog);
     setConfigurationError(result.configurationError ?? null);
     setModelError(result.modelError ?? null);
     setMetadataError(result.metadataError ?? null);
     setNameError(result.nameError ?? null);
+    setToolsError(result.toolsError ?? null);
     if (!result.input) return;
     await onSubmit(result.input);
   };
@@ -172,7 +190,7 @@ export function AgentForm({ agent, disabled = false, formId, knownModels, onDraf
       <section className="agent-form-section" aria-labelledby={`${formId}-generation-title`}>
         <div className="agent-form-section-heading">
           <h3 id={`${formId}-generation-title`}>Generation</h3>
-          <span>Saved configuration, not runtime discovery</span>
+          <span>{agent ? "Advanced saved settings" : "Session-compatible defaults"}</span>
         </div>
         <div className="agent-form-grid">
           <label className="field">
@@ -242,9 +260,77 @@ export function AgentForm({ agent, disabled = false, formId, knownModels, onDraf
           </label>
         </div>
         <p className="agent-form-capability-note" id={`${formId}-generation-profile-help`}>
-          New Agents use the current cross-engine Session profile: implicit reasoning, medium verbosity, service tier auto, and text format. Existing saved-only values remain visible; reasoning, verbosity, and tier stay editable, while known incompatible settings block Session start. Model and provider compatibility still require a real Turn.
+          {agent
+            ? "Agent Core can save these settings, but the current Session contract rejects explicit reasoning, non-auto service tiers, and non-text formats. Low or high verbosity also needs a compatible Codex model. Saving an incompatible value disables Start Session in this Web."
+            : "Creation is locked to the current Session-compatible profile: text format, Core-default reasoning, medium verbosity, and service tier auto. Agent Core can store other values, but this Web cannot start a Session with most of them yet."}
         </p>
         {configurationError ? <p className="field-error" role="alert">{configurationError}</p> : null}
+      </section>
+      <section className="agent-form-section agent-tools-section" aria-labelledby={`${formId}-tools-title`}>
+        <div className="agent-form-section-heading">
+          <h3 id={`${formId}-tools-title`}>Tools</h3>
+          <span>Core-owned execution only</span>
+        </div>
+        <p className="agent-form-capability-note">
+          Functions cause Core to emit a <code>function_call</code>. An external application, or the existing Function result form, must perform the business action and submit <code>agent.session.input.tool_result</code> with the exact Turn and call identity. This Web does not execute Functions.
+        </p>
+        <p className="agent-form-capability-note">
+          HTTP MCP discovery and calls run on trusted Core service compute. A <code>self_hosted</code> Workspace can run executor commands, but MCP never runs in this browser or that executor. Anonymous and Vault-backed static bearer service-origin HTTP MCP are configurable when the complete Core catalog is loaded.
+        </p>
+        <div className="agent-tools-list">
+          {tools.map((tool, index) => tool.kind === "read-only" ? (
+            <article className="agent-tool-card agent-tool-read-only" key={`read-only-${index}`} aria-label="Read-only saved tool">
+              <div><strong>Read-only saved tool</strong><span>{tool.label}</span></div>
+              <small>It is preserved unchanged. Web Search, Code Mode commands/files, credentials, OAuth, stdio, headers, and unknown tool variants cannot be enabled or edited here.</small>
+            </article>
+          ) : tool.kind === "function" ? (
+            <article className="agent-tool-card" key={`function-${index}`}>
+              <header><strong>Function</strong><button className="button outline" type="button" onClick={() => updateTools((current) => current.filter((_, candidate) => candidate !== index))}>Remove</button></header>
+              <div className="agent-tool-grid">
+                <label className="field"><span>Name</span><input value={tool.name} onChange={(event) => updateTools((current) => current.map((candidate, position) => position === index ? { ...tool, name: event.target.value } : candidate))} placeholder="lookup_customer" /></label>
+                <label className="field"><span>Description</span><input value={tool.description} onChange={(event) => updateTools((current) => current.map((candidate, position) => position === index ? { ...tool, description: event.target.value } : candidate))} placeholder="Look up a customer record" /></label>
+              </div>
+              <label className="field"><span>Parameters JSON Schema</span><textarea value={tool.parameters} onChange={(event) => updateTools((current) => current.map((candidate, position) => position === index ? { ...tool, parameters: event.target.value } : candidate))} rows={7} spellCheck={false} /><small>Must be a JSON object. Functions are always non-deferred; at most 64 unique Function names are allowed, with each name limited to 512 UTF-8 bytes.</small></label>
+            </article>
+          ) : (
+            <article className="agent-tool-card" key={`mcp-${index}`}>
+              <header><strong>{tool.credentialId ? "Vault bearer HTTP MCP" : "Anonymous HTTP MCP"}</strong><button className="button outline" type="button" onClick={() => updateTools((current) => current.filter((_, candidate) => candidate !== index))}>Remove</button></header>
+              <div className="agent-tool-grid">
+                <label className="field"><span>Server label</span><input value={tool.serverLabel} onChange={(event) => updateTools((current) => current.map((candidate, position) => position === index ? { ...tool, serverLabel: event.target.value } : candidate))} placeholder="docs" /></label>
+                <label className="field"><span>Authentication</span><select value={tool.credentialId ?? ""} onChange={(event) => {
+                  const credentialId = event.target.value || null;
+                  const credential = credentialId ? vaultCatalog?.credentials.find((candidate) => candidate.id === credentialId) : null;
+                  updateTools((current) => current.map((candidate, position) => position === index ? {
+                    ...tool,
+                    credentialId,
+                    serverUrl: credential?.auth.mcp_server_url ?? tool.serverUrl,
+                  } : candidate));
+                }}>
+                  <option value="">Anonymous</option>
+                  {vaultCatalog?.vaults.map((vault) => {
+                    const credentials = vaultCatalog.credentials.filter((credential) => credential.vault_id === vault.id);
+                    return credentials.length ? <optgroup label={vaultName(vault)} key={vault.id}>{credentials.map((credential) => <option value={credential.id} key={credential.id}>{credential.name} · {credential.auth.mcp_server_url}</option>)}</optgroup> : null;
+                  })}
+                </select><small>{vaultCatalog ? "A selected Credential determines and locks the exact MCP destination." : "Credential catalog unavailable. Only anonymous MCP can be configured."}</small></label>
+                <label className="field"><span>Server URL</span><input value={tool.serverUrl} onChange={(event) => updateTools((current) => current.map((candidate, position) => position === index ? { ...tool, serverUrl: event.target.value } : candidate))} placeholder="https://mcp.example/tools" inputMode="url" spellCheck={false} readOnly={Boolean(tool.credentialId)} /></label>
+              </div>
+              <fieldset className="agent-mcp-allowed-tools">
+                <legend>Allowed tools</legend>
+                <label><input type="radio" checked={tool.allowedToolsMode === "all"} onChange={() => updateTools((current) => current.map((candidate, position) => position === index ? { ...tool, allowedToolsMode: "all", allowedToolsValue: null } : candidate))} /> All advertised tools</label>
+                <label><input type="radio" checked={tool.allowedToolsMode === "list"} onChange={() => updateTools((current) => current.map((candidate, position) => position === index ? { ...tool, allowedToolsMode: "list" } : candidate))} /> Only the listed tools</label>
+                {tool.allowedToolsMode === "list" ? <textarea value={tool.allowedTools} onChange={(event) => updateTools((current) => current.map((candidate, position) => position === index ? { ...tool, allowedTools: event.target.value } : candidate))} rows={4} placeholder={'search\nread_document'} spellCheck={false} aria-label={`Allowed tools for ${tool.serverLabel || "MCP server"}`} /> : null}
+                <small>Omitted or null permits all advertised tools. An empty listed value serializes as an empty list and permits none.</small>
+              </fieldset>
+              <label className="agent-mcp-required"><input type="checkbox" checked={tool.required === true} onChange={(event) => updateTools((current) => current.map((candidate, position) => position === index ? { ...tool, required: event.target.checked } : candidate))} /> Require this server for Core execution</label>
+              <small>Writes always use <code>transport.type=http</code> and <code>connection_origin=service</code>. Tokens are managed write-only in Vaults and never enter this form. Headers, request metadata, OAuth, stdio, and client-origin connections remain unsupported.</small>
+            </article>
+          ))}
+        </div>
+        <div className="agent-tool-actions">
+          <button className="button outline" type="button" onClick={() => updateTools((current) => [...current, { kind: "function", name: "", description: "", parameters: "{\n  \"type\": \"object\"\n}" }])}>Add Function</button>
+          <button className="button outline" type="button" onClick={() => updateTools((current) => [...current, { kind: "mcp", serverLabel: "", serverUrl: "", allowedToolsMode: "all", allowedTools: "", allowedToolsValue: null, required: false, credentialId: null }])}>Add HTTP MCP</button>
+        </div>
+        {toolsError ? <p className="field-error" role="alert">{toolsError}</p> : null}
       </section>
       <label className="field">
         <span>Metadata</span>

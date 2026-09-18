@@ -12,7 +12,10 @@ import {
   environmentObservationFromEvent,
   environmentObservationFromResource,
   environmentReadIsCurrent,
+  isSupportedOpenAIHostedEnvironmentProjection,
+  isWritableBasicHostedEnvironmentResource,
   matchingSessionSnapshot,
+  mergeDurableEnvironmentObservation,
   reduceEnvironmentObservation,
   reconcileEnvironmentObservation,
   unavailableEnvironmentObservation,
@@ -20,6 +23,7 @@ import {
 } from "./environment-state";
 
 const canonicalEnvironmentUuid = "0f745b0d-b545-49cd-8d7e-4c31c80dc564";
+const selfHostedIdentity = { environmentId: "environment_1", environmentType: "self_hosted" as const };
 
 function event(status: string, environment: Record<string, unknown> = {}): SessionEvent {
   return {
@@ -63,6 +67,75 @@ describe("Environment live state", () => {
     },
   );
 
+  it("admits exact managed events and rejects cross-type identity reuse", () => {
+    const hosted = event("connected", { type: "openai_hosted" });
+    expect(environmentObservationFromEvent(hosted)).toMatchObject({
+      environmentId: "environment_1",
+      environmentType: "openai_hosted",
+      status: "connected",
+    });
+    expect(reduceEnvironmentObservation(
+      null,
+      hosted,
+      "session_1",
+      { environmentId: "environment_1", environmentType: "self_hosted" },
+    )).toBeNull();
+  });
+
+  it("recognizes only the pinned empty-install managed Session projection", () => {
+    const hosted = {
+      type: "openai_hosted",
+      id: canonicalEnvironmentUuid,
+      capability_directories: [],
+      network: { access: "enabled", allowed_domains: [] },
+      packages: { npm: [], python: [], system: [] },
+      files: [],
+      plugins: [],
+      skills: [],
+    };
+    expect(isSupportedOpenAIHostedEnvironmentProjection(hosted)).toBe(true);
+    expect(isSupportedOpenAIHostedEnvironmentProjection({
+      ...hosted,
+      packages: { ...hosted.packages, npm: ["future-package"] },
+    })).toBe(false);
+    expect(isSupportedOpenAIHostedEnvironmentProjection({
+      ...hosted,
+      network: { access: "restricted", allowed_domains: ["example.test"] },
+    })).toBe(false);
+    expect(isSupportedOpenAIHostedEnvironmentProjection({ ...hosted, template_id: "future" })).toBe(false);
+  });
+
+  it("qualifies managed Workspace writes only from an exact non-terminal empty-install resource", () => {
+    const resource: AgentEnvironmentResource = {
+      id: canonicalEnvironmentUuid,
+      object: "agent.environment",
+      type: "openai_hosted",
+      status: "pending",
+      files: [],
+      plugins: [],
+      skills: [],
+    };
+    expect(isWritableBasicHostedEnvironmentResource(resource, canonicalEnvironmentUuid.toUpperCase())).toBe(true);
+    expect(isWritableBasicHostedEnvironmentResource({ ...resource, status: "connected" }, canonicalEnvironmentUuid)).toBe(true);
+    expect(isWritableBasicHostedEnvironmentResource({ ...resource, status: "disconnected" }, canonicalEnvironmentUuid)).toBe(true);
+    expect(isWritableBasicHostedEnvironmentResource({ ...resource, status: "expired" }, canonicalEnvironmentUuid)).toBe(false);
+    expect(isWritableBasicHostedEnvironmentResource({ ...resource, status: "failed" }, canonicalEnvironmentUuid)).toBe(false);
+    expect(isWritableBasicHostedEnvironmentResource(
+      { ...resource, files: [{}] } as unknown as AgentEnvironmentResource,
+      canonicalEnvironmentUuid,
+    )).toBe(false);
+    expect(isWritableBasicHostedEnvironmentResource(
+      { ...resource, plugins: [{}] } as unknown as AgentEnvironmentResource,
+      canonicalEnvironmentUuid,
+    )).toBe(false);
+    expect(isWritableBasicHostedEnvironmentResource(
+      { ...resource, skills: [{}] } as unknown as AgentEnvironmentResource,
+      canonicalEnvironmentUuid,
+    )).toBe(false);
+    expect(isWritableBasicHostedEnvironmentResource(resource, "another-environment")).toBe(false);
+    expect(isWritableBasicHostedEnvironmentResource({ ...resource, type: "self_hosted" }, canonicalEnvironmentUuid)).toBe(false);
+  });
+
   it("fails closed for future, mismatched, and missing event fields", () => {
     expect(environmentObservationFromEvent(event("expired"))).toBeNull();
     expect(environmentObservationFromEvent(event("paused"))).toBeNull();
@@ -89,14 +162,14 @@ describe("Environment live state", () => {
         plugins: [],
         skills: [],
       };
-      expect(environmentObservationFromResource(resource, "environment_1")).toEqual({
+      expect(environmentObservationFromResource(resource, selfHostedIdentity)).toEqual({
         source: "durable",
         environmentId: "environment_1",
         environmentType: "self_hosted",
         status,
         resource,
       });
-      expect(environmentObservationFromResource(resource, "another_environment")).toBeNull();
+      expect(environmentObservationFromResource(resource, { ...selfHostedIdentity, environmentId: "another_environment" })).toBeNull();
     },
   );
 
@@ -110,11 +183,81 @@ describe("Environment live state", () => {
       plugins: [],
       skills: [],
     };
-    expect(environmentObservationFromResource(resource, canonicalEnvironmentUuid.toUpperCase())).toMatchObject({
+    expect(environmentObservationFromResource(resource, {
+      ...selfHostedIdentity,
+      environmentId: canonicalEnvironmentUuid.toUpperCase(),
+    })).toMatchObject({
       source: "durable",
       environmentId: canonicalEnvironmentUuid,
       status: "connected",
     });
+  });
+
+  it("projects and retains an exact managed durable resource across same-identity live events", () => {
+    const resource: AgentEnvironmentResource = {
+      id: canonicalEnvironmentUuid,
+      object: "agent.environment",
+      type: "openai_hosted",
+      status: "pending",
+      files: [],
+      plugins: [],
+      skills: [],
+    };
+    const identity = { environmentId: canonicalEnvironmentUuid, environmentType: "openai_hosted" as const };
+    const durable = environmentObservationFromResource(resource, identity);
+    expect(durable).toMatchObject({ environmentType: "openai_hosted", resource });
+    const live = reduceEnvironmentObservation(
+      durable,
+      event("connected", { id: canonicalEnvironmentUuid, type: "openai_hosted" }),
+      "session_1",
+      identity,
+    );
+    expect(live).toMatchObject({
+      source: "live",
+      environmentType: "openai_hosted",
+      durableResource: resource,
+    });
+    expect(environmentObservationFromResource(resource, { ...identity, environmentType: "self_hosted" })).toBeNull();
+  });
+
+  it("does not let a stale non-terminal durable read regress a same-identity terminal observation", () => {
+    const pendingResource: AgentEnvironmentResource = {
+      id: canonicalEnvironmentUuid,
+      object: "agent.environment",
+      type: "openai_hosted",
+      status: "pending",
+      files: [],
+      plugins: [],
+      skills: [],
+    };
+    const identity = { environmentId: canonicalEnvironmentUuid, environmentType: "openai_hosted" as const };
+    const pending = environmentObservationFromResource(pendingResource, identity)!;
+    const failed = reduceEnvironmentObservation(
+      pending,
+      event("failed", { id: canonicalEnvironmentUuid, type: "openai_hosted" }),
+      "session_1",
+      identity,
+    )!;
+
+    expect(mergeDurableEnvironmentObservation(failed, pending)).toBe(failed);
+    expect(reduceEnvironmentObservation(
+      failed,
+      event("connected", { id: canonicalEnvironmentUuid, type: "openai_hosted" }),
+      "session_1",
+      identity,
+    )).toBe(failed);
+
+    const durableFailed = environmentObservationFromResource(
+      { ...pendingResource, status: "failed" },
+      identity,
+    )!;
+    expect(mergeDurableEnvironmentObservation(failed, durableFailed)).toBe(durableFailed);
+    const unavailable = unavailableEnvironmentObservation(identity);
+    expect(mergeDurableEnvironmentObservation(failed, unavailable)).toBe(unavailable);
+    expect(mergeDurableEnvironmentObservation(failed, unavailableEnvironmentObservation({
+      environmentId: "another_environment",
+      environmentType: "openai_hosted",
+    }))).toMatchObject({ environmentId: "another_environment", source: "unavailable" });
   });
 
   it("clears a prior connected claim on expired, future, or malformed Environment events", () => {
@@ -141,7 +284,7 @@ describe("Environment live state", () => {
       connected,
       event("failed", { id: "another_environment" }),
       "session_1",
-      "environment_1",
+      selfHostedIdentity,
     )).toBeNull();
     expect(reduceEnvironmentObservation(connected, event("failed"), "session_1", null)).toBeNull();
     expect(reduceEnvironmentObservation(connected, {
@@ -159,7 +302,7 @@ describe("Environment live state", () => {
   });
 
   it("models an unavailable durable read without retaining a readiness claim", () => {
-    expect(unavailableEnvironmentObservation("environment_1")).toEqual({
+    expect(unavailableEnvironmentObservation(selfHostedIdentity)).toEqual({
       source: "unavailable",
       environmentId: "environment_1",
       environmentType: "self_hosted",
@@ -172,6 +315,7 @@ describe("Environment live state", () => {
       coreGeneration: 1,
       sessionId: "session_1",
       environmentId: "environment_1",
+      environmentType: "self_hosted" as const,
       sessionRequest: 2,
       environmentRequest: 3,
       streamEpoch: 4,
@@ -184,6 +328,7 @@ describe("Environment live state", () => {
       { ...current, coreGeneration: 2 },
       { ...current, selectedSessionId: "session_2" },
       { ...current, environmentId: "environment_2" },
+      { ...current, environmentType: "openai_hosted" as const },
       { ...current, sessionRequest: 3 },
       { ...current, environmentRequest: 4 },
       { ...current, streamEpoch: 5 },

@@ -24,6 +24,26 @@ const selfHosted: AgentEnvironment = {
   capability_directories: ["/capabilities/one", `/capabilities/${"long/".repeat(80)}`],
 };
 const canonicalEnvironmentUuid = "0f745b0d-b545-49cd-8d7e-4c31c80dc564";
+const hostedEnvironmentUuid = "7a263c51-6bf0-4d53-8518-c792eb1f0d21";
+const managedHosted: AgentEnvironment = {
+  type: "openai_hosted",
+  id: hostedEnvironmentUuid,
+  capability_directories: [],
+  network: { access: "disabled", allowed_domains: [] },
+  packages: { npm: [], python: [], system: [] },
+  files: [],
+  plugins: [],
+  skills: [],
+};
+const managedResource: AgentEnvironmentResource = {
+  id: hostedEnvironmentUuid,
+  object: "agent.environment",
+  type: "openai_hosted",
+  status: "pending",
+  files: [],
+  plugins: [],
+  skills: [],
+};
 
 function observation(status: SessionEnvironmentStatus): LiveEnvironmentObservation {
   return {
@@ -78,6 +98,126 @@ function render(
 }
 
 describe("EnvironmentPanel", () => {
+  it("renders the exact managed profile, Workspace list and durable-gated write without a launcher", () => {
+    const html = renderToStaticMarkup(
+      <EnvironmentPanel
+        environment={managedHosted}
+        observation={{
+          source: "durable",
+          environmentId: hostedEnvironmentUuid,
+          environmentType: "openai_hosted",
+          status: "pending",
+          resource: managedResource,
+        }}
+        connectionActions={[{ type: "environment_connection", environment_id: hostedEnvironmentUuid }]}
+        environmentFilesEnabled
+        onListFiles={async () => ({ data: [], next: null })}
+        onCreateFile={async (_environmentId, input) => ({
+          environment_id: hostedEnvironmentUuid,
+          object: "agent.environment.file",
+          path: input.path,
+          size_bytes: 0,
+        })}
+      />,
+    );
+
+    expect(html).toContain("Managed hosted Environment");
+    expect(html).toContain(hostedEnvironmentUuid);
+    expect(html).toContain("Network access");
+    expect(html).toContain("Disabled");
+    expect(html).toContain('value="/workspace"');
+    expect(html).toContain("Workspace root <code>/workspace</code>");
+    expect(html).toContain("None installed by the basic profile");
+    expect(html).toContain("0 capability directories · 0 files · 0 plugins · 0 skills");
+    expect(html).toContain("Workspace files");
+    expect(html).toContain("Add inline Workspace file");
+    expect(html).not.toContain("Connect Environment");
+    expect(html).not.toContain("Remote URL");
+    expect(html).not.toContain("Linux / VM");
+  });
+
+  it("does not expose managed writes until exact same-type durable retrieval qualifies them", () => {
+    const renderManaged = (observationValue: EnvironmentObservation | null) => renderToStaticMarkup(
+      <EnvironmentPanel
+        environment={managedHosted}
+        observation={observationValue}
+        connectionActions={[]}
+        environmentFilesEnabled
+        onCreateFile={async () => ({
+          environment_id: hostedEnvironmentUuid,
+          object: "agent.environment.file",
+          path: "/workspace/input.txt",
+          size_bytes: 0,
+        })}
+      />,
+    );
+    expect(renderManaged(null)).not.toContain("Add inline Workspace file");
+    expect(renderManaged({
+      source: "live",
+      environmentId: hostedEnvironmentUuid,
+      environmentType: "openai_hosted",
+      status: "connected",
+      error: null,
+      eventId: "event-hosted",
+    })).not.toContain("Add inline Workspace file");
+    expect(renderManaged({
+      source: "live",
+      environmentId: hostedEnvironmentUuid,
+      environmentType: "openai_hosted",
+      status: "failed",
+      error: null,
+      eventId: "event-hosted-failed",
+      durableResource: managedResource,
+    })).not.toContain("Add inline Workspace file");
+    expect(renderManaged({
+      source: "durable",
+      environmentId: hostedEnvironmentUuid,
+      environmentType: "self_hosted",
+      status: "pending",
+      resource: { ...managedResource, type: "self_hosted" },
+    })).not.toContain("Add inline Workspace file");
+    expect(renderManaged({
+      source: "durable",
+      environmentId: hostedEnvironmentUuid,
+      environmentType: "openai_hosted",
+      status: "expired",
+      resource: { ...managedResource, status: "expired" },
+    })).not.toContain("Add inline Workspace file");
+    expect(renderManaged({
+      source: "durable",
+      environmentId: hostedEnvironmentUuid,
+      environmentType: "openai_hosted",
+      status: "pending",
+      resource: { ...managedResource, files: [{}] } as unknown as AgentEnvironmentResource,
+    })).not.toContain("Add inline Workspace file");
+  });
+
+  it("does not expose managed Workspace operations for an unsupported populated Session projection", () => {
+    const html = renderToStaticMarkup(
+      <EnvironmentPanel
+        environment={{ ...managedHosted, packages: { npm: ["future-package"], python: [], system: [] } } as unknown as AgentEnvironment}
+        observation={{
+          source: "durable",
+          environmentId: hostedEnvironmentUuid,
+          environmentType: "openai_hosted",
+          status: "pending",
+          resource: managedResource,
+        }}
+        connectionActions={[]}
+        environmentFilesEnabled
+        onListFiles={async () => ({ data: [], next: null })}
+        onCreateFile={async () => ({
+          environment_id: hostedEnvironmentUuid,
+          object: "agent.environment.file",
+          path: "/workspace/input.txt",
+          size_bytes: 0,
+        })}
+      />,
+    );
+    expect(html).not.toContain("Workspace files");
+    expect(html).not.toContain("Add inline Workspace file");
+  });
+
   it("projects one fail-closed status for both the header trigger and detail panel", () => {
     expect(resolveEnvironmentPresentation({ type: "none" }, null, [])).toMatchObject({
       visible: false,
@@ -115,6 +255,82 @@ describe("EnvironmentPanel", () => {
   it("does not render Environment or Workspace UI for environment:none", () => {
     const html = render({ type: "none" });
     expect(html).toBe("");
+  });
+
+  it("shows Workspace files only for a complete known Environment and an explicit list capability", () => {
+    const complete = renderToStaticMarkup(
+      <EnvironmentPanel
+        environment={{
+          ...selfHosted,
+          id: canonicalEnvironmentUuid,
+          remote_url: "https://executor.example.test",
+          workspace_directory: "/executor/workspace",
+          capability_directories: [],
+        }}
+        observation={null}
+        connectionActions={[]}
+        environmentFilesEnabled
+        onListFiles={async () => ({ data: [], next: null })}
+      />,
+    );
+    expect(complete).toContain("Workspace files");
+    expect(complete).toContain("Files are loaded only when requested");
+    expect(complete).toContain("/executor/workspace");
+    expect(complete).toContain('value="/executor/workspace"');
+
+    const buildDisabled = renderToStaticMarkup(
+      <EnvironmentPanel
+        environment={{
+          ...selfHosted,
+          id: canonicalEnvironmentUuid,
+          remote_url: "https://executor.example.test",
+          workspace_directory: "/executor/workspace",
+          capability_directories: [],
+        }}
+        observation={null}
+        connectionActions={[]}
+        environmentFilesEnabled={false}
+        onListFiles={async () => ({ data: [], next: null })}
+      />,
+    );
+    expect(buildDisabled).not.toContain("Workspace files");
+
+    const withoutCapability = render({
+      ...selfHosted,
+      id: canonicalEnvironmentUuid,
+      remote_url: "https://executor.example.test",
+      workspace_directory: "/workspace/project",
+      capability_directories: [],
+    });
+    expect(withoutCapability).not.toContain("Workspace files");
+
+    const incomplete = renderToStaticMarkup(
+      <EnvironmentPanel
+        environment={{ type: "self_hosted", id: "environment_01" } as AgentEnvironment}
+        observation={null}
+        connectionActions={[]}
+        environmentFilesEnabled
+        onListFiles={async () => ({ data: [], next: null })}
+      />,
+    );
+    expect(incomplete).not.toContain("Workspace files");
+
+    const unsupportedProfile = renderToStaticMarkup(
+      <EnvironmentPanel
+        environment={{
+          ...selfHosted,
+          id: canonicalEnvironmentUuid,
+          remote_url: "https://executor.example.test",
+          workspace_directory: "/workspace/project",
+          capability_directories: ["/capabilities/unsupported"],
+        }}
+        observation={null}
+        connectionActions={[]}
+        environmentFilesEnabled
+        onListFiles={async () => ({ data: [], next: null })}
+      />,
+    );
+    expect(unsupportedProfile).not.toContain("Workspace files");
   });
 
   it("renders a canonical durable UUID for an uppercase Session Environment identity", () => {
@@ -339,5 +555,5 @@ describe("EnvironmentPanel", () => {
 });
 
 function parsarBaselineForAssertion(): string {
-  return "2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e";
+  return "dadf64a76bde58255281f3b6c3e939f8b556be09";
 }

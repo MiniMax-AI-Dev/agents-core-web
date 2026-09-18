@@ -21,7 +21,9 @@ import { StatusIcon } from "./components/StatusIcon";
 import { ThemeMenu } from "./components/ThemeMenu";
 import { useToast } from "./components/Toast";
 import { AgentsView } from "./features/agents/AgentsView";
-import { knownSessionAdmissionBlocker } from "./features/agents/session-admission";
+import {
+  sessionEnvironmentAdmissionBlocker,
+} from "./features/agents/session-admission";
 import {
   removeSavedAgent,
   replaceSavedAgent,
@@ -29,13 +31,16 @@ import {
   requestAgentDetail,
   requestAgentUpdate,
 } from "./features/agents/agent-actions";
+import { DashboardView } from "./features/dashboard/DashboardView";
 import {
   SessionsView,
   type SessionDetailState,
   type StreamState,
 } from "./features/sessions/SessionsView";
 import type { SessionStartInput } from "./features/sessions/create/SessionStartDialog";
-import { sessionEnvironmentInput } from "./features/sessions/create/session-environment";
+import { sessionCreateRequestPayload } from "./features/sessions/create/session-create-attempt";
+import { normalizeSessionEnvironmentInput } from "./features/sessions/create/session-environment";
+import { validateSessionAgentSubmission } from "./features/sessions/create/session-start-draft";
 import {
   removeSession,
   reconcileUnknownSessionDelete,
@@ -49,11 +54,13 @@ import {
 } from "./features/sessions/actions/session-actions";
 import {
   environmentObservationFromResource,
-  environmentIdsMatch,
+  environmentIdentitiesMatch,
   environmentReadIsCurrent,
+  mergeDurableEnvironmentObservation,
   matchingSessionSnapshot,
   reduceEnvironmentObservation,
-  selfHostedEnvironmentId,
+  supportedEnvironmentIdentity,
+  type EnvironmentIdentity,
   type EnvironmentObservation,
   type ScopedEnvironmentObservation,
   unavailableEnvironmentObservation,
@@ -67,6 +74,10 @@ import {
   upsertTurn,
 } from "./features/sessions/turns/turn-state";
 import { SystemView } from "./features/system/SystemView";
+import type { SourceFilesOperations } from "./features/system/SourceFilesPanel";
+import { VaultsView, type VaultOperations } from "./features/vaults/VaultsView";
+import { deriveSessionVaultPlan, loadVaultCatalog, type VaultCatalog } from "./features/vaults/vault-catalog";
+import { requestVaultCreate } from "./features/vaults/vault-operations";
 import {
   createCore,
   loadConnection,
@@ -75,12 +86,20 @@ import {
   type CoreConnectionState,
 } from "./lib/connection";
 import { settleCollection } from "./lib/collection-load";
+import { listStableCollectionPages } from "./lib/collection-pagination";
+import {
+  beginPendingFunctionResult,
+  failPendingFunctionResult,
+  functionResultActionKey,
+  type FailedPendingFunctionResult,
+} from "./lib/pending-function-result";
 import {
   beginPendingSend,
   failPendingSend,
   type FailedPendingSend,
 } from "./lib/pending-send";
 import {
+  appendCommandOutputDelta,
   mergeDurableAndLiveItems,
   updateLiveSessionItems,
   upsertSessionItem,
@@ -117,6 +136,23 @@ interface SessionCreateRequest {
   agentId: string | null;
   requestId: number;
 }
+
+interface CreationStreamOwner {
+  controller: AbortController;
+  coreGeneration: number;
+  sessionId: string | null;
+  streamEpoch: number | null;
+  startReconciliation?: () => void;
+}
+
+interface LiveSessionEventContext {
+  sessionId: string;
+  streamEpoch: number;
+  isCurrent: () => boolean;
+  refreshCoordinator: DurableRefreshCoordinator | null;
+}
+
+const COLLECTION_RECONCILIATION_ATTEMPTS = 3;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "The Agent core request failed.";
@@ -182,6 +218,10 @@ export function App() {
   const [connection, setConnection] = useState<CoreConnection>(() => loadConnection());
   const [connectionOpen, setConnectionOpen] = useState(false);
   const [agents, setAgents] = useState<SavedAgent[]>([]);
+  const [vaultCatalog, setVaultCatalog] = useState<VaultCatalog | null>(null);
+  const [vaultCollectionState, setVaultCollectionState] = useState<CoreConnectionState>("connecting");
+  const [vaultCollectionError, setVaultCollectionError] = useState<string | null>(null);
+  const [vaultSupported, setVaultSupported] = useState<boolean | null>(null);
   const [sessions, setSessions] = useState<AgentSession[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [items, setItems] = useState<SessionItem[]>([]);
@@ -198,8 +238,14 @@ export function App() {
   );
   const [agentCollectionState, setAgentCollectionState] = useState<CoreConnectionState>("connecting");
   const [agentCollectionError, setAgentCollectionError] = useState<string | null>(null);
+  const [agentCollectionHasSnapshot, setAgentCollectionHasSnapshot] = useState(false);
   const [sessionCollectionState, setSessionCollectionState] = useState<CoreConnectionState>("connecting");
   const [sessionCollectionError, setSessionCollectionError] = useState<string | null>(null);
+  const [sessionCollectionHasSnapshot, setSessionCollectionHasSnapshot] = useState(false);
+  const [sessionAgentFilter, setSessionAgentFilter] = useState<string | null>(null);
+  const [filteredSessions, setFilteredSessions] = useState<AgentSession[]>([]);
+  const [filteredSessionCollectionState, setFilteredSessionCollectionState] = useState<CoreConnectionState>("connecting");
+  const [filteredSessionCollectionError, setFilteredSessionCollectionError] = useState<string | null>(null);
   const [selectedSessionLoad, setSelectedSessionLoad] = useState<SelectedSessionLoad>({
     sessionId: null,
     state: "idle",
@@ -214,6 +260,8 @@ export function App() {
   const [sessionSendFailures, setSessionSendFailures] = useState<Map<string, FailedPendingSend>>(
     () => new Map(),
   );
+  const cancelFailureRef = useRef<FailedPendingSend | undefined>(undefined);
+  const functionResultFailuresRef = useRef(new Map<string, FailedPendingFunctionResult>());
   const [busy, setBusy] = useState(false);
   const [agentCreateRequest, setAgentCreateRequest] = useState<number | null>(null);
   const [sessionCreateRequest, setSessionCreateRequest] = useState<SessionCreateRequest | null>(null);
@@ -221,11 +269,19 @@ export function App() {
   const sessionCreateSequenceRef = useRef(0);
   const selectedIdRef = useRef<string | null>(selectedId);
   const sessionsRef = useRef<AgentSession[]>(sessions);
+  const filteredSessionsRef = useRef<AgentSession[]>(filteredSessions);
   const itemsSessionIdRef = useRef<string | null>(itemsSessionId);
   const turnsSessionIdRef = useRef<string | null>(turnsSessionId);
   const connectionGenerationRef = useRef(0);
   const agentCollectionRequestRef = useRef(0);
   const sessionCollectionRequestRef = useRef(0);
+  const agentCollectionAbortRef = useRef<AbortController | null>(null);
+  const sessionCollectionAbortRef = useRef<AbortController | null>(null);
+  const filteredSessionCollectionAbortRef = useRef<AbortController | null>(null);
+  const filteredSessionCollectionRequestRef = useRef(0);
+  const sessionAgentFilterRef = useRef<string | null>(sessionAgentFilter);
+  const vaultCollectionAbortRef = useRef<AbortController | null>(null);
+  const vaultCollectionRequestRef = useRef(0);
   const agentCollectionRevisionRef = useRef(0);
   const sessionCollectionRevisionRef = useRef(0);
   const sessionRequestRef = useRef(new Map<string, number>());
@@ -234,22 +290,40 @@ export function App() {
   const turnEventRevisionRef = useRef(new Map<string, number>());
   const environmentEventRevisionRef = useRef(new Map<string, number>());
   const environmentRequestRef = useRef(new Map<string, number>());
-  const sessionEnvironmentIdRef = useRef(new Map<string, string | null>());
+  const sessionEnvironmentIdentityRef = useRef(new Map<string, EnvironmentIdentity | null>());
   const operationRequestRef = useRef(0);
   const streamEpochRef = useRef(0);
   const selectedSessionReadAbortRef = useRef<AbortController | null>(null);
   const selectedStreamAbortRef = useRef<AbortController | null>(null);
+  const creationStreamOwnerRef = useRef<CreationStreamOwner | null>(null);
   selectedIdRef.current = selectedId;
   sessionsRef.current = sessions;
+  filteredSessionsRef.current = filteredSessions;
+  sessionAgentFilterRef.current = sessionAgentFilter;
 
   const core = useMemo(() => createCore(connection), [connection]);
+  const sourceFilesOperations = useMemo<SourceFilesOperations>(() => ({
+    uploadSourceFile: (input, options) => core.uploadSourceFile(input, options),
+    retrieveSourceFile: (fileId, options) => core.retrieveSourceFile(fileId, options),
+    downloadSourceFile: (fileId, options) => core.downloadSourceFile(fileId, options),
+    deleteSourceFile: (fileId, options) => core.deleteSourceFile(fileId, options),
+    retrieveEnvironment: (environmentId, options) => core.retrieveEnvironment(environmentId, options),
+    createEnvironmentFile: (environmentId, input, options) => core.createEnvironmentFile(environmentId, input, options),
+    listEnvironmentFiles: (environmentId, options) => core.listEnvironmentFiles(environmentId, options),
+  }), [core]);
   const coreGeneration = connectionGenerationRef.current;
   const coreState: CoreConnectionState = agentCollectionState === "ready" || sessionCollectionState === "ready"
     ? "ready"
     : agentCollectionState === "failed" && sessionCollectionState === "failed"
       ? "failed"
       : "connecting";
-  const selected = selectedId ? sessions.find((session) => session.id === selectedId) ?? null : null;
+  const sessionVaultCatalog = vaultCollectionState === "ready" ? vaultCatalog : null;
+  const sessionBrowserSessions = sessionAgentFilter ? filteredSessions : sessions;
+  const sessionBrowserState = sessionAgentFilter ? filteredSessionCollectionState : sessionCollectionState;
+  const sessionBrowserError = sessionAgentFilter ? filteredSessionCollectionError : sessionCollectionError;
+  const selected = selectedId
+    ? sessionBrowserSessions.find((session) => session.id === selectedId) ?? null
+    : null;
   const detailState: SessionDetailState = !selectedId
     ? "idle"
     : selectedSessionLoad.sessionId === selectedId
@@ -284,92 +358,244 @@ export function App() {
 
   const refreshAgents = useCallback(async () => {
     if (coreGeneration !== connectionGenerationRef.current) return false;
-    const agentRevision = agentCollectionRevisionRef.current;
-    const request = agentCollectionRequestRef.current + 1;
-    agentCollectionRequestRef.current = request;
+    agentCollectionAbortRef.current?.abort();
+    const controller = new AbortController();
+    agentCollectionAbortRef.current = controller;
     setAgentCollectionState("connecting");
     setAgentCollectionError(null);
-    const result = await settleCollection(() => core.listAgents({ limit: 100, order: "desc" }));
-    if (
-      coreGeneration !== connectionGenerationRef.current ||
-      request !== agentCollectionRequestRef.current
-    ) return false;
-    if (result.status === "fulfilled") {
-      if (agentRevision === agentCollectionRevisionRef.current) setAgents(result.value.data);
+    try {
+      const request = agentCollectionRequestRef.current + 1;
+      agentCollectionRequestRef.current = request;
+      const result = await settleCollection(() => listStableCollectionPages(
+        (options) => core.listAgents(options),
+        () => agentCollectionRevisionRef.current,
+        controller.signal,
+        COLLECTION_RECONCILIATION_ATTEMPTS,
+      ));
+      if (
+        coreGeneration !== connectionGenerationRef.current ||
+        request !== agentCollectionRequestRef.current
+      ) return false;
+      if (result.status === "rejected") {
+        if (isAbort(result.reason)) return false;
+        const message = errorMessage(result.reason);
+        setAgentCollectionState("failed");
+        setAgentCollectionError(message);
+        notify(message, "error");
+        return false;
+      }
+      if (result.value === null) {
+        const message = "Agent data changed while the collection was loading. Refresh again to reconcile all loaded pages.";
+        setAgentCollectionState("failed");
+        setAgentCollectionError(message);
+        notify(message, "error");
+        return false;
+      }
+      setAgents(result.value);
+      setAgentCollectionHasSnapshot(true);
       setAgentCollectionState("ready");
       return true;
+    } finally {
+      if (agentCollectionAbortRef.current === controller) agentCollectionAbortRef.current = null;
     }
-    const message = errorMessage(result.reason);
-    setAgentCollectionState("failed");
-    setAgentCollectionError(message);
-    notify(message, "error");
-    return false;
   }, [core, coreGeneration, notify]);
 
   const refreshSessions = useCallback(async () => {
     if (coreGeneration !== connectionGenerationRef.current) return false;
-    const sessionRevision = sessionCollectionRevisionRef.current;
-    const request = sessionCollectionRequestRef.current + 1;
-    sessionCollectionRequestRef.current = request;
+    sessionCollectionAbortRef.current?.abort();
+    const controller = new AbortController();
+    sessionCollectionAbortRef.current = controller;
     setSessionCollectionState("connecting");
     setSessionCollectionError(null);
-    const result = await settleCollection(() => core.listSessions({ limit: 100, order: "desc" }));
-    if (
-      coreGeneration !== connectionGenerationRef.current ||
-      request !== sessionCollectionRequestRef.current
-    ) return false;
-    if (result.status === "fulfilled") {
-      if (sessionRevision === sessionCollectionRevisionRef.current) {
-        const nextEnvironmentIds = new Map(
-          result.value.data.map((session) => [session.id, selfHostedEnvironmentId(session.environment)]),
+    try {
+      const request = sessionCollectionRequestRef.current + 1;
+      sessionCollectionRequestRef.current = request;
+      const result = await settleCollection(() => listStableCollectionPages(
+        (options) => core.listSessions(options),
+        () => sessionCollectionRevisionRef.current,
+        controller.signal,
+        COLLECTION_RECONCILIATION_ATTEMPTS,
+      ));
+      if (
+        coreGeneration !== connectionGenerationRef.current ||
+        request !== sessionCollectionRequestRef.current
+      ) return false;
+      if (result.status === "rejected") {
+        if (isAbort(result.reason)) return false;
+        const message = errorMessage(result.reason);
+        setSessionCollectionState("failed");
+        setSessionCollectionError(message);
+        notify(message, "error");
+        return false;
+      }
+      if (result.value === null) {
+        const message = "Session data changed while the collection was loading. Refresh again to reconcile all loaded pages.";
+        setSessionCollectionState("failed");
+        setSessionCollectionError(message);
+        notify(message, "error");
+        return false;
+      }
+      const stableSessions = result.value;
+
+      const nextEnvironmentIdentities = new Map(
+        stableSessions.map((session) => [session.id, supportedEnvironmentIdentity(session.environment)]),
+      );
+      const changedEnvironmentSessions = new Set<string>();
+      for (const [sessionId, identity] of nextEnvironmentIdentities) {
+        if (!environmentIdentitiesMatch(sessionEnvironmentIdentityRef.current.get(sessionId), identity)) {
+          changedEnvironmentSessions.add(sessionId);
+        }
+      }
+      for (const sessionId of sessionEnvironmentIdentityRef.current.keys()) {
+        if (!nextEnvironmentIdentities.has(sessionId)) changedEnvironmentSessions.add(sessionId);
+      }
+      for (const sessionId of changedEnvironmentSessions) {
+        environmentRequestRef.current.set(
+          sessionId,
+          (environmentRequestRef.current.get(sessionId) ?? 0) + 1,
         );
-        const changedEnvironmentSessions = new Set<string>();
-        for (const [sessionId, environmentId] of nextEnvironmentIds) {
-          if (!environmentIdsMatch(sessionEnvironmentIdRef.current.get(sessionId), environmentId)) {
-            changedEnvironmentSessions.add(sessionId);
-          }
-        }
-        for (const sessionId of sessionEnvironmentIdRef.current.keys()) {
-          if (!nextEnvironmentIds.has(sessionId)) changedEnvironmentSessions.add(sessionId);
-        }
-        for (const sessionId of changedEnvironmentSessions) {
-          environmentRequestRef.current.set(
-            sessionId,
-            (environmentRequestRef.current.get(sessionId) ?? 0) + 1,
-          );
-          environmentEventRevisionRef.current.set(
-            sessionId,
-            (environmentEventRevisionRef.current.get(sessionId) ?? 0) + 1,
-          );
-        }
-        sessionEnvironmentIdRef.current = nextEnvironmentIds;
-        if (changedEnvironmentSessions.size) {
-          setEnvironmentObservations((current) => {
-            if (![...changedEnvironmentSessions].some((sessionId) => current.has(sessionId))) return current;
-            const next = new Map(current);
-            for (const sessionId of changedEnvironmentSessions) next.delete(sessionId);
-            return next;
-          });
-        }
-        setSessions(result.value.data);
+        environmentEventRevisionRef.current.set(
+          sessionId,
+          (environmentEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+        );
+      }
+      sessionEnvironmentIdentityRef.current = nextEnvironmentIdentities;
+      if (changedEnvironmentSessions.size) {
+        setEnvironmentObservations((current) => {
+          if (![...changedEnvironmentSessions].some((sessionId) => current.has(sessionId))) return current;
+          const next = new Map(current);
+          for (const sessionId of changedEnvironmentSessions) next.delete(sessionId);
+          return next;
+        });
+      }
+      sessionsRef.current = stableSessions;
+      setSessions(stableSessions);
+      setSessionCollectionHasSnapshot(true);
+      if (!sessionAgentFilterRef.current) {
         setSelectedId((current) => {
-          if (current && result.value.data.some((session) => session.id === current)) return current;
-          return result.value.data[0]?.id ?? null;
+          const next = current && stableSessions.some((session) => session.id === current)
+            ? current
+            : stableSessions[0]?.id ?? null;
+          selectedIdRef.current = next;
+          return next;
         });
       }
       setSessionCollectionState("ready");
       return true;
+    } finally {
+      if (sessionCollectionAbortRef.current === controller) sessionCollectionAbortRef.current = null;
     }
-    const message = errorMessage(result.reason);
-    setSessionCollectionState("failed");
-    setSessionCollectionError(message);
-    notify(message, "error");
-    return false;
   }, [core, coreGeneration, notify]);
+
+  const refreshFilteredSessions = useCallback(async (agentId: string) => {
+    if (
+      coreGeneration !== connectionGenerationRef.current ||
+      sessionAgentFilterRef.current !== agentId
+    ) return false;
+    filteredSessionCollectionAbortRef.current?.abort();
+    const controller = new AbortController();
+    filteredSessionCollectionAbortRef.current = controller;
+    const request = filteredSessionCollectionRequestRef.current + 1;
+    filteredSessionCollectionRequestRef.current = request;
+    setFilteredSessionCollectionState("connecting");
+    setFilteredSessionCollectionError(null);
+    try {
+      const result = await settleCollection(() => listStableCollectionPages(
+        (options) => core.listSessions({ ...options, agentId }),
+        () => sessionCollectionRevisionRef.current,
+        controller.signal,
+        COLLECTION_RECONCILIATION_ATTEMPTS,
+      ));
+      if (
+        coreGeneration !== connectionGenerationRef.current ||
+        request !== filteredSessionCollectionRequestRef.current ||
+        sessionAgentFilterRef.current !== agentId
+      ) return false;
+      if (result.status === "rejected") {
+        if (isAbort(result.reason)) return false;
+        const message = errorMessage(result.reason);
+        setFilteredSessionCollectionState("failed");
+        setFilteredSessionCollectionError(message);
+        notify(message, "error");
+        return false;
+      }
+      if (result.value === null) {
+        const message = "Filtered Session data changed while the collection was loading. Refresh again to reconcile all loaded pages.";
+        setFilteredSessionCollectionState("failed");
+        setFilteredSessionCollectionError(message);
+        notify(message, "error");
+        return false;
+      }
+      const stableFilteredSessions = result.value;
+      if (stableFilteredSessions.some((session) => session.agent.id !== agentId)) {
+        const message = "Agent Core returned a Session outside the requested Agent filter.";
+        setFilteredSessionCollectionState("failed");
+        setFilteredSessionCollectionError(message);
+        notify(message, "error");
+        return false;
+      }
+      filteredSessionsRef.current = stableFilteredSessions;
+      setFilteredSessions(stableFilteredSessions);
+      setSelectedId((current) => {
+        const next = current && stableFilteredSessions.some((session) => session.id === current)
+          ? current
+          : stableFilteredSessions[0]?.id ?? null;
+        selectedIdRef.current = next;
+        return next;
+      });
+      setFilteredSessionCollectionState("ready");
+      return true;
+    } finally {
+      if (filteredSessionCollectionAbortRef.current === controller) {
+        filteredSessionCollectionAbortRef.current = null;
+      }
+    }
+  }, [core, coreGeneration, notify]);
+
+  const refreshVaults = useCallback(async () => {
+    if (coreGeneration !== connectionGenerationRef.current) return false;
+    vaultCollectionAbortRef.current?.abort();
+    const controller = new AbortController();
+    vaultCollectionAbortRef.current = controller;
+    const request = vaultCollectionRequestRef.current + 1;
+    vaultCollectionRequestRef.current = request;
+    setVaultCollectionState("connecting");
+    setVaultCollectionError(null);
+    try {
+      const catalog = await loadVaultCatalog(core, controller.signal);
+      if (
+        coreGeneration !== connectionGenerationRef.current ||
+        request !== vaultCollectionRequestRef.current
+      ) return false;
+      setVaultCatalog(catalog);
+      setVaultSupported(true);
+      setVaultCollectionState("ready");
+      return true;
+    } catch (error) {
+      if (
+        coreGeneration !== connectionGenerationRef.current ||
+        request !== vaultCollectionRequestRef.current ||
+        isAbort(error)
+      ) return false;
+      if (error instanceof AgentCoreError && (error.status === 404 || error.status === 405)) {
+        setVaultCatalog(null);
+        setVaultSupported(false);
+        setVaultCollectionState("ready");
+        setVaultCollectionError(null);
+        return false;
+      }
+      setVaultCollectionState("failed");
+      setVaultCollectionError(errorMessage(error));
+      return false;
+    } finally {
+      if (vaultCollectionAbortRef.current === controller) vaultCollectionAbortRef.current = null;
+    }
+  }, [core, coreGeneration]);
 
   const refreshSession = useCallback(
     async (sessionId: string, signal?: AbortSignal): Promise<boolean> => {
       if (coreGeneration !== connectionGenerationRef.current) return false;
+      const sessionScopeAgentId = sessionAgentFilterRef.current;
       const request = (sessionRequestRef.current.get(sessionId) ?? 0) + 1;
       const sessionRevision = sessionEventRevisionRef.current.get(sessionId) ?? 0;
       const itemRevision = itemEventRevisionRef.current.get(sessionId) ?? 0;
@@ -421,18 +647,34 @@ export function App() {
           coreGeneration !== connectionGenerationRef.current ||
           request !== sessionRequestRef.current.get(sessionId)
         ) return false;
+        if (sessionScopeAgentId && session.agent.id !== sessionScopeAgentId) {
+          throw new Error("Agent Core returned Session details outside the active Agent filter.");
+        }
         const currentSessionRevision = sessionEventRevisionRef.current.get(sessionId) ?? 0;
         const sessionIsCurrent = sessionRevision === currentSessionRevision;
-        const environmentId = selfHostedEnvironmentId(session.environment);
+        const environmentIdentity = supportedEnvironmentIdentity(session.environment);
         if (sessionIsCurrent) {
-          sessionEnvironmentIdRef.current.set(sessionId, environmentId);
+          sessionEnvironmentIdentityRef.current.set(sessionId, environmentIdentity);
           sessionCollectionRevisionRef.current += 1;
           setSessions((current) => {
             const found = current.some((value) => value.id === session.id);
-            return found
+            const next = found
               ? current.map((value) => (value.id === session.id ? session : value))
-              : [session, ...current];
+              : sessionScopeAgentId ? current : [session, ...current];
+            sessionsRef.current = next;
+            return next;
           });
+          if (
+            sessionScopeAgentId &&
+            sessionAgentFilterRef.current === sessionScopeAgentId
+          ) {
+            setFilteredSessions((current) => {
+              if (!current.some((value) => value.id === session.id)) return current;
+              const next = current.map((value) => (value.id === session.id ? session : value));
+              filteredSessionsRef.current = next;
+              return next;
+            });
+          }
         }
         if (selectedIdRef.current === sessionId) {
           const liveRevisionChanged = itemRevision !== (itemEventRevisionRef.current.get(sessionId) ?? 0);
@@ -453,7 +695,7 @@ export function App() {
         }
 
         if (!sessionIsCurrent) return true;
-        if (!environmentId) {
+        if (!environmentIdentity) {
           if (environmentRevision === (environmentEventRevisionRef.current.get(sessionId) ?? 0)) {
             setEnvironmentObservations((current) => {
               if (!current.has(sessionId)) return current;
@@ -472,7 +714,7 @@ export function App() {
         const environmentRead = {
           coreGeneration,
           sessionId,
-          environmentId,
+          ...environmentIdentity,
           sessionRequest: request,
           environmentRequest,
           streamEpoch: environmentStreamEpoch,
@@ -481,17 +723,19 @@ export function App() {
         };
         let observation: EnvironmentObservation;
         try {
-          const resource = await core.retrieveEnvironment(environmentId, { signal });
-          observation = environmentObservationFromResource(resource, environmentId)
-            ?? unavailableEnvironmentObservation(environmentId);
+          const resource = await core.retrieveEnvironment(environmentIdentity.environmentId, { signal });
+          observation = environmentObservationFromResource(resource, environmentIdentity)
+            ?? unavailableEnvironmentObservation(environmentIdentity);
         } catch (error) {
           if (isAbort(error)) return false;
-          observation = unavailableEnvironmentObservation(environmentId);
+          observation = unavailableEnvironmentObservation(environmentIdentity);
         }
+        const currentEnvironmentIdentity = sessionEnvironmentIdentityRef.current.get(sessionId);
         if (signal?.aborted || !environmentReadIsCurrent(environmentRead, {
           coreGeneration: connectionGenerationRef.current,
           sessionId,
-          environmentId: sessionEnvironmentIdRef.current.get(sessionId) ?? "",
+          environmentId: currentEnvironmentIdentity?.environmentId ?? "",
+          environmentType: currentEnvironmentIdentity?.environmentType ?? environmentIdentity.environmentType,
           sessionRequest: sessionRequestRef.current.get(sessionId) ?? 0,
           environmentRequest: environmentRequestRef.current.get(sessionId) ?? 0,
           streamEpoch: streamEpochRef.current,
@@ -501,7 +745,11 @@ export function App() {
         })) return false;
         setEnvironmentObservations((current) => {
           const next = new Map(current);
-          next.set(sessionId, { observation, sessionId, streamEpoch: environmentStreamEpoch });
+          const existing = current.get(sessionId);
+          const merged = existing?.streamEpoch === environmentStreamEpoch
+            ? mergeDurableEnvironmentObservation(existing.observation, observation)
+            : observation;
+          next.set(sessionId, { observation: merged, sessionId, streamEpoch: environmentStreamEpoch });
           return next;
         });
         return true;
@@ -538,14 +786,57 @@ export function App() {
       void refreshAgents();
       const refreshed = await refreshSessions();
       if (!refreshed || generation !== connectionGenerationRef.current) return;
+      const filter = sessionAgentFilterRef.current;
+      if (filter) await refreshFilteredSessions(filter);
+      if (generation !== connectionGenerationRef.current) return;
       const sessionId = selectedIdRef.current;
       if (sessionId) await refreshSelectedSession(sessionId);
     })();
-  }, [coreGeneration, refreshAgents, refreshSelectedSession, refreshSessions]);
+  }, [coreGeneration, refreshAgents, refreshFilteredSessions, refreshSelectedSession, refreshSessions]);
+
+  const refreshDashboard = useCallback(() => {
+    void refreshAgents();
+    void refreshSessions();
+    void refreshVaults();
+    const filter = sessionAgentFilterRef.current;
+    if (filter) void refreshFilteredSessions(filter);
+  }, [refreshAgents, refreshFilteredSessions, refreshSessions, refreshVaults]);
+
+  const changeSessionAgentFilter = useCallback((agentId: string | null) => {
+    if (sessionAgentFilterRef.current === agentId) return;
+    filteredSessionCollectionAbortRef.current?.abort();
+    filteredSessionCollectionAbortRef.current = null;
+    filteredSessionCollectionRequestRef.current += 1;
+    sessionAgentFilterRef.current = agentId;
+    filteredSessionsRef.current = [];
+    setFilteredSessions([]);
+    setFilteredSessionCollectionError(null);
+    setFilteredSessionCollectionState(agentId ? "connecting" : "ready");
+    const current = selectedIdRef.current;
+    const nextSelectedId = agentId
+      ? null
+      : current && sessionsRef.current.some((session) => session.id === current)
+        ? current
+        : sessionsRef.current[0]?.id ?? null;
+    selectedIdRef.current = nextSelectedId;
+    setSelectedId(nextSelectedId);
+    setSessionAgentFilter(agentId);
+  }, []);
+
+  useEffect(() => {
+    cancelFailureRef.current = undefined;
+    functionResultFailuresRef.current.clear();
+  }, [coreGeneration, selectedId]);
 
   useEffect(() => {
     setAgents([]);
+    setVaultCatalog(null);
+    setVaultCollectionState("connecting");
+    setVaultCollectionError(null);
+    setVaultSupported(null);
     setSessions([]);
+    setAgentCollectionHasSnapshot(false);
+    setSessionCollectionHasSnapshot(false);
     setItems([]);
     setTurns([]);
     setEnvironmentObservations(new Map());
@@ -557,7 +848,31 @@ export function App() {
     setSelectedId(null);
     void refreshAgents();
     void refreshSessions();
-  }, [refreshAgents, refreshSessions]);
+    void refreshVaults();
+  }, [refreshAgents, refreshSessions, refreshVaults]);
+
+  useEffect(() => {
+    filteredSessionCollectionAbortRef.current?.abort();
+    filteredSessionCollectionAbortRef.current = null;
+    filteredSessionCollectionRequestRef.current += 1;
+    filteredSessionsRef.current = [];
+    setFilteredSessions([]);
+    setFilteredSessionCollectionError(null);
+    if (!sessionAgentFilter) {
+      setFilteredSessionCollectionState("ready");
+      return;
+    }
+    setFilteredSessionCollectionState("connecting");
+    void refreshFilteredSessions(sessionAgentFilter);
+    return () => {
+      filteredSessionCollectionAbortRef.current?.abort();
+      filteredSessionCollectionAbortRef.current = null;
+    };
+  }, [refreshFilteredSessions, sessionAgentFilter]);
+
+  useEffect(() => {
+    if (vaultSupported === false && view === "vaults") setView("dashboard");
+  }, [vaultSupported, view]);
 
   useEffect(() => {
     selectedSessionReadAbortRef.current?.abort();
@@ -596,16 +911,172 @@ export function App() {
       next.delete(selectedId);
       return next;
     });
-    void refreshSelectedSession(selectedId);
+    const creationOwner = creationStreamOwnerRef.current;
+    if (
+      creationOwner &&
+      creationOwner.coreGeneration === coreGeneration &&
+      creationOwner.sessionId === selectedId &&
+      !creationOwner.controller.signal.aborted
+    ) creationOwner.startReconciliation?.();
+    else void refreshSelectedSession(selectedId);
     return () => {
       selectedSessionReadAbortRef.current?.abort();
       selectedSessionReadAbortRef.current = null;
     };
-  }, [refreshSelectedSession, selectedId]);
+  }, [coreGeneration, refreshSelectedSession, selectedId]);
+
+  const applyLiveSessionEvent = useCallback((
+    event: SessionEvent,
+    context: LiveSessionEventContext,
+  ) => {
+    const { sessionId, streamEpoch, isCurrent, refreshCoordinator } = context;
+    if (!isCurrent()) return;
+    if (typeof event.session_id === "string" && event.session_id && event.session_id !== sessionId) return;
+    const eventType = typeof event.type === "string" ? event.type : "";
+    const eventSession = matchingSessionSnapshot(event, sessionId);
+    if (eventSession) {
+      const nextEnvironmentIdentity = supportedEnvironmentIdentity(eventSession.environment);
+      const previousEnvironmentIdentity = sessionEnvironmentIdentityRef.current.get(sessionId);
+      if (!environmentIdentitiesMatch(previousEnvironmentIdentity, nextEnvironmentIdentity)) {
+        sessionEnvironmentIdentityRef.current.set(sessionId, nextEnvironmentIdentity);
+        environmentRequestRef.current.set(
+          sessionId,
+          (environmentRequestRef.current.get(sessionId) ?? 0) + 1,
+        );
+        environmentEventRevisionRef.current.set(
+          sessionId,
+          (environmentEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+        );
+        setEnvironmentObservations((current) => {
+          if (!current.has(sessionId)) return current;
+          const next = new Map(current);
+          next.delete(sessionId);
+          return next;
+        });
+      }
+    }
+    const isEnvironmentEvent = eventType.startsWith("agent.session.environment.");
+    if (isEnvironmentEvent) {
+      environmentEventRevisionRef.current.set(
+        sessionId,
+        (environmentEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+      );
+      setEnvironmentObservations((current) => {
+        const next = new Map(current);
+        const existing = current.get(sessionId);
+        const previous = existing?.streamEpoch === streamEpoch ? existing.observation : null;
+        const reduced = reduceEnvironmentObservation(
+          previous,
+          event,
+          sessionId,
+          sessionEnvironmentIdentityRef.current.get(sessionId) ?? null,
+        );
+        if (reduced) next.set(sessionId, { observation: reduced, sessionId, streamEpoch });
+        else next.delete(sessionId);
+        return next;
+      });
+    }
+    if (eventSession) {
+      sessionEventRevisionRef.current.set(
+        sessionId,
+        (sessionEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+      );
+      sessionCollectionRevisionRef.current += 1;
+      setSessions((current) => {
+        const next = current.map((session) => (session.id === eventSession.id ? eventSession : session));
+        sessionsRef.current = next;
+        return next;
+      });
+      setFilteredSessions((current) => {
+        if (!current.some((session) => session.id === eventSession.id)) return current;
+        const next = current.map((session) => (session.id === eventSession.id ? eventSession : session));
+        filteredSessionsRef.current = next;
+        return next;
+      });
+    }
+    const eventTurn = matchingTurnSnapshot(event, sessionId);
+    if (eventTurn) {
+      turnEventRevisionRef.current.set(
+        sessionId,
+        (turnEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+      );
+      if (selectedIdRef.current === sessionId) {
+        const currentTurnsSessionId = turnsSessionIdRef.current;
+        turnsSessionIdRef.current = sessionId;
+        setTurnsSessionId(sessionId);
+        setTurns((current) => upsertTurn(
+          currentTurnsSessionId === sessionId ? current : [],
+          eventTurn,
+        ));
+      }
+    }
+    const isCommandOutputDelta = eventType === "agent.output.command_execution_output.delta";
+    if (event.item || eventType.includes(".output_text.") || isCommandOutputDelta) {
+      itemEventRevisionRef.current.set(
+        sessionId,
+        (itemEventRevisionRef.current.get(sessionId) ?? 0) + 1,
+      );
+    }
+    if (event.item && selectedIdRef.current === sessionId) {
+      const currentItemsSessionId = itemsSessionIdRef.current;
+      itemsSessionIdRef.current = sessionId;
+      setItemsSessionId(sessionId);
+      setItems((current) => {
+        const sessionItems = updateLiveSessionItems(
+          current,
+          currentItemsSessionId,
+          sessionId,
+          (value) => value,
+        );
+        const withoutTemporary = sessionItems.filter((item) => (
+          event.item?.type !== "message" || event.item.role !== "assistant" || !item.id.startsWith(`stream:${event.item.turn_id}:`)
+        ));
+        return upsertSessionItem(withoutTemporary, event.item as SessionItem);
+      });
+    }
+    if (eventType.includes(".output_text.") && selectedIdRef.current === sessionId) {
+      const currentItemsSessionId = itemsSessionIdRef.current;
+      itemsSessionIdRef.current = sessionId;
+      setItemsSessionId(sessionId);
+      setItems((current) => updateLiveSessionItems(
+        current,
+        currentItemsSessionId,
+        sessionId,
+        (sessionItems) => projectTextEvent(sessionItems, event),
+      ));
+    }
+    if (isCommandOutputDelta && selectedIdRef.current === sessionId) {
+      const currentItemsSessionId = itemsSessionIdRef.current;
+      itemsSessionIdRef.current = sessionId;
+      setItemsSessionId(sessionId);
+      setItems((current) => updateLiveSessionItems(
+        current,
+        currentItemsSessionId,
+        sessionId,
+        (sessionItems) => appendCommandOutputDelta(sessionItems, event),
+      ));
+    }
+    refreshCoordinator?.accept(event);
+  }, []);
 
   useEffect(() => {
     selectedStreamAbortRef.current?.abort();
-    if (!selectedId) return;
+    const creationOwner = creationStreamOwnerRef.current;
+    if (!selectedId) {
+      creationOwner?.controller.abort();
+      if (creationStreamOwnerRef.current === creationOwner) creationStreamOwnerRef.current = null;
+      return;
+    }
+    if (
+      creationOwner &&
+      !creationOwner.controller.signal.aborted &&
+      creationOwner.coreGeneration === coreGeneration &&
+      creationOwner.sessionId === selectedId
+    ) return;
+    if (creationOwner?.sessionId && creationOwner.sessionId !== selectedId) {
+      creationOwner.controller.abort();
+      if (creationStreamOwnerRef.current === creationOwner) creationStreamOwnerRef.current = null;
+    }
 
     const sessionId = selectedId;
     const controller = new AbortController();
@@ -632,113 +1103,12 @@ export function App() {
       ));
     };
 
-    const applyEvent = (event: SessionEvent) => {
-      if (!isCurrentStream()) return;
-      if (typeof event.session_id === "string" && event.session_id && event.session_id !== sessionId) return;
-      const eventType = typeof event.type === "string" ? event.type : "";
-      const eventSession = matchingSessionSnapshot(event, sessionId);
-      if (eventSession) {
-        const nextEnvironmentId = selfHostedEnvironmentId(eventSession.environment);
-        const previousEnvironmentId = sessionEnvironmentIdRef.current.get(sessionId);
-        if (!environmentIdsMatch(previousEnvironmentId, nextEnvironmentId)) {
-          sessionEnvironmentIdRef.current.set(sessionId, nextEnvironmentId);
-          environmentRequestRef.current.set(
-            sessionId,
-            (environmentRequestRef.current.get(sessionId) ?? 0) + 1,
-          );
-          environmentEventRevisionRef.current.set(
-            sessionId,
-            (environmentEventRevisionRef.current.get(sessionId) ?? 0) + 1,
-          );
-          setEnvironmentObservations((current) => {
-            if (!current.has(sessionId)) return current;
-            const next = new Map(current);
-            next.delete(sessionId);
-            return next;
-          });
-        }
-      }
-      const isEnvironmentEvent = eventType.startsWith("agent.session.environment.");
-      if (isEnvironmentEvent) {
-        environmentEventRevisionRef.current.set(
-          sessionId,
-          (environmentEventRevisionRef.current.get(sessionId) ?? 0) + 1,
-        );
-        setEnvironmentObservations((current) => {
-          const next = new Map(current);
-          const existing = current.get(sessionId);
-          const previous = existing?.streamEpoch === streamEpoch ? existing.observation : null;
-          const reduced = reduceEnvironmentObservation(
-            previous,
-            event,
-            sessionId,
-            sessionEnvironmentIdRef.current.get(sessionId) ?? null,
-          );
-          if (reduced) next.set(sessionId, { observation: reduced, sessionId, streamEpoch });
-          else next.delete(sessionId);
-          return next;
-        });
-      }
-      if (eventSession) {
-        sessionEventRevisionRef.current.set(
-          sessionId,
-          (sessionEventRevisionRef.current.get(sessionId) ?? 0) + 1,
-        );
-        sessionCollectionRevisionRef.current += 1;
-        setSessions((current) => current.map((session) => (session.id === eventSession.id ? eventSession : session)));
-      }
-      const eventTurn = matchingTurnSnapshot(event, sessionId);
-      if (eventTurn) {
-        turnEventRevisionRef.current.set(
-          sessionId,
-          (turnEventRevisionRef.current.get(sessionId) ?? 0) + 1,
-        );
-        if (selectedIdRef.current === sessionId) {
-          const currentTurnsSessionId = turnsSessionIdRef.current;
-          turnsSessionIdRef.current = sessionId;
-          setTurnsSessionId(sessionId);
-          setTurns((current) => upsertTurn(
-            currentTurnsSessionId === sessionId ? current : [],
-            eventTurn,
-          ));
-        }
-      }
-      if (event.item || eventType.includes(".output_text.")) {
-        itemEventRevisionRef.current.set(
-          sessionId,
-          (itemEventRevisionRef.current.get(sessionId) ?? 0) + 1,
-        );
-      }
-      if (event.item && selectedIdRef.current === sessionId) {
-        const currentItemsSessionId = itemsSessionIdRef.current;
-        itemsSessionIdRef.current = sessionId;
-        setItemsSessionId(sessionId);
-        setItems((current) => {
-          const sessionItems = updateLiveSessionItems(
-            current,
-            currentItemsSessionId,
-            sessionId,
-            (value) => value,
-          );
-          const withoutTemporary = sessionItems.filter((item) => (
-            event.item?.type !== "message" || event.item.role !== "assistant" || !item.id.startsWith(`stream:${event.item.turn_id}:`)
-          ));
-          return upsertSessionItem(withoutTemporary, event.item as SessionItem);
-        });
-      }
-      if (eventType.includes(".output_text.") && selectedIdRef.current === sessionId) {
-        const currentItemsSessionId = itemsSessionIdRef.current;
-        itemsSessionIdRef.current = sessionId;
-        setItemsSessionId(sessionId);
-        setItems((current) => updateLiveSessionItems(
-          current,
-          currentItemsSessionId,
-          sessionId,
-          (sessionItems) => projectTextEvent(sessionItems, event),
-        ));
-      }
-      refreshCoordinator?.accept(event);
-    };
+    const applyEvent = (event: SessionEvent) => applyLiveSessionEvent(event, {
+      sessionId,
+      streamEpoch,
+      isCurrent: isCurrentStream,
+      refreshCoordinator,
+    });
 
     refreshCoordinator = createDurableRefreshCoordinator(
       () => refreshSession(sessionId, controller.signal),
@@ -817,7 +1187,7 @@ export function App() {
       controller.abort();
       if (selectedStreamAbortRef.current === controller) selectedStreamAbortRef.current = null;
     };
-  }, [core, coreGeneration, notify, refreshSession, selectedId, streamRetryRevision]);
+  }, [applyLiveSessionEvent, core, coreGeneration, notify, refreshSession, selectedId, streamRetryRevision]);
 
   const retryCurrentStream = useCallback(() => {
     requestCurrentStreamRetry(selectedIdRef.current, (sessionId) => {
@@ -875,11 +1245,152 @@ export function App() {
     setAgents((current) => removeSavedAgent(current, agentId));
   };
 
+  const runVaultMutation = async <T,>(operation: () => Promise<T>): Promise<T> => {
+    if (coreGeneration !== connectionGenerationRef.current) {
+      throw new Error("The Core connection changed before the Vault operation started.");
+    }
+    const operationRequest = operationRequestRef.current + 1;
+    operationRequestRef.current = operationRequest;
+    setBusy(true);
+    try {
+      const result = await operation();
+      if (coreGeneration !== connectionGenerationRef.current) {
+        throw new Error("The Core connection changed before the Vault operation was confirmed.");
+      }
+      return result;
+    } finally {
+      if (
+        coreGeneration === connectionGenerationRef.current &&
+        operationRequest === operationRequestRef.current
+      ) setBusy(false);
+    }
+  };
+
+  const refreshAfterVaultMutation = async () => {
+    if (coreGeneration === connectionGenerationRef.current) await refreshVaults();
+  };
+
+  const vaultOperations: VaultOperations = {
+    async createVault(name, metadata) {
+      try {
+        await runVaultMutation(() => requestVaultCreate(core, name, metadata));
+        notify("Vault created.", "success");
+      } catch (error) {
+        await refreshAfterVaultMutation();
+        throw error;
+      }
+      await refreshAfterVaultMutation();
+    },
+    async createCredential(vaultId, name, serverURL, token) {
+      try {
+        const created = await runVaultMutation(() => core.createVaultCredential(vaultId, {
+          name,
+          auth: { type: "static_bearer", mcp_server_url: serverURL, token },
+        }));
+        if (created.vault_id !== vaultId || created.name !== name || created.auth.mcp_server_url !== serverURL) {
+          throw new Error("Agent Core returned mismatched Credential metadata.");
+        }
+        notify("Credential created. Token remains hidden.", "success");
+      } catch (error) {
+        await refreshAfterVaultMutation();
+        throw error;
+      }
+      await refreshAfterVaultMutation();
+    },
+    async replaceCredential(vaultId, credentialId, token) {
+      const baseline = vaultCatalog?.credentials.find((credential) => (
+        credential.vault_id === vaultId && credential.id === credentialId
+      ));
+      if (!baseline || vaultCollectionState !== "ready") {
+        throw new Error("The latest Credential metadata is unavailable. Refresh before replacing its token.");
+      }
+      try {
+        const updated = await runVaultMutation(() => core.replaceVaultCredentialToken(vaultId, credentialId, {
+          auth: { type: "static_bearer", token },
+        }));
+        if (
+          updated.id !== baseline.id || updated.vault_id !== baseline.vault_id ||
+          updated.name !== baseline.name || updated.auth.mcp_server_url !== baseline.auth.mcp_server_url ||
+          updated.created_at !== baseline.created_at || updated.updated_at < baseline.updated_at
+        ) throw new Error("Agent Core returned mismatched Credential metadata after replacement.");
+        notify("Credential token replaced. Running work may still hold the previous token.", "success");
+      } catch (error) {
+        await refreshAfterVaultMutation();
+        throw error;
+      }
+      await refreshAfterVaultMutation();
+    },
+    async deleteCredential(vaultId, credentialId) {
+      try {
+        await runVaultMutation(() => core.deleteVaultCredential(vaultId, credentialId));
+        notify("Credential deleted. Provider-side token was not revoked.", "success");
+      } catch (error) {
+        let confirmedDeleted = false;
+        try {
+          await core.retrieveVaultCredential(vaultId, credentialId);
+        } catch (readError) {
+          confirmedDeleted = readError instanceof AgentCoreError && readError.status === 404;
+        }
+        await refreshAfterVaultMutation();
+        if (confirmedDeleted) {
+          notify("Credential deletion reconciled from Core.", "success");
+          return;
+        }
+        throw error;
+      }
+      await refreshAfterVaultMutation();
+    },
+    async deleteVault(vaultId) {
+      try {
+        await runVaultMutation(() => core.deleteVault(vaultId));
+        notify("Vault and its Credentials deleted. Provider-side tokens were not revoked.", "success");
+      } catch (error) {
+        let confirmedDeleted = false;
+        try {
+          await core.retrieveVault(vaultId);
+        } catch (readError) {
+          confirmedDeleted = readError instanceof AgentCoreError && readError.status === 404;
+        }
+        await refreshAfterVaultMutation();
+        if (confirmedDeleted) {
+          notify("Vault deletion reconciled from Core.", "success");
+          return;
+        }
+        throw error;
+      }
+      await refreshAfterVaultMutation();
+    },
+    refresh() {
+      void refreshVaults();
+    },
+  };
+
   const createSession = async (input: SessionStartInput) => {
-    const savedAgent = agents.find((agent) => agent.id === input.agentId);
-    const admissionBlocker = savedAgent ? knownSessionAdmissionBlocker(savedAgent) : "The selected saved Agent is not loaded.";
-    if (admissionBlocker) {
-      const error = new Error(`Session was not created. ${admissionBlocker}`);
+    const submittedAgent = validateSessionAgentSubmission(
+      input.agentMode,
+      input.agentId,
+      input.agent,
+      agents,
+      sessionVaultCatalog,
+    );
+    if (submittedAgent.error || !submittedAgent.effectiveAgent || !submittedAgent.requestAgent && input.agentMode === "inline") {
+      const error = new Error(`Session was not created. ${submittedAgent.error ?? "The Agent request is invalid."}`);
+      notify(error.message, "error");
+      throw error;
+    }
+    const effectiveAgent = submittedAgent.effectiveAgent;
+    const vaultPlan = deriveSessionVaultPlan(
+      effectiveAgent,
+      sessionVaultCatalog,
+      input.manualVaultIds,
+    );
+    const expectedVaultIds = [...input.vaultIds].sort();
+    if (
+      vaultPlan.blocker ||
+      vaultPlan.vaultIds.length !== expectedVaultIds.length ||
+      vaultPlan.vaultIds.some((vaultId, index) => vaultId !== expectedVaultIds[index])
+    ) {
+      const error = new Error(`Session was not created. ${vaultPlan.blocker ?? "The derived Vault attachments changed before submission."}`);
       notify(error.message, "error");
       throw error;
     }
@@ -888,37 +1399,197 @@ export function App() {
       notify(error.message, "error");
       throw error;
     }
-    const rawEnvironment = input.environment as unknown as Record<string, unknown>;
-    const environmentType = rawEnvironment.type;
-    const workspaceDirectory = typeof rawEnvironment.workspace_directory === "string"
-      ? rawEnvironment.workspace_directory
-      : "";
-    const normalizedEnvironment = environmentType === "self_hosted"
-      ? sessionEnvironmentInput("self_hosted", workspaceDirectory)
-      : environmentType === "none"
-        ? sessionEnvironmentInput("none", "")
-        : sessionEnvironmentInput(environmentType, "");
+    if (input.environment.type === "openai_hosted" && !__AGENTS_CORE_WEB_OPENAI_HOSTED_SESSIONS__) {
+      const error = new Error("Session was not created. Managed hosted Sessions are not enabled for this Web build.");
+      notify(error.message, "error");
+      throw error;
+    }
+    const normalizedEnvironment = normalizeSessionEnvironmentInput(input.environment);
     const environmentInput = normalizedEnvironment.input;
     if (!environmentInput) {
       const error = new Error(`Session was not created. ${normalizedEnvironment.error ?? "The Environment input is invalid."}`);
       notify(error.message, "error");
       throw error;
     }
-    const session = await run(() => core.createSession(
-      { agent_id: input.agentId, environment: environmentInput, stream: false },
-      input.idempotencyKey,
-    ));
-    if (!session || coreGeneration !== connectionGenerationRef.current) {
-      throw new Error("The Session creation outcome could not be confirmed.");
+    const environmentAdmissionBlocker = sessionEnvironmentAdmissionBlocker(effectiveAgent, environmentInput.type);
+    if (environmentAdmissionBlocker) {
+      const error = new Error(`Session was not created. ${environmentAdmissionBlocker}`);
+      notify(error.message, "error");
+      throw error;
     }
-    sessionCollectionRevisionRef.current += 1;
-    setSessions((current) => [session, ...current.filter((value) => value.id !== session.id)]);
-    setSelectedId(session.id);
-    setItems([]);
-    itemsSessionIdRef.current = session.id;
-    setItemsSessionId(session.id);
-    setView("sessions");
-    notify("Idle Session created. Opening live events…", "success");
+    const request = sessionCreateRequestPayload({
+      ...(input.agentMode === "saved" ? { agentId: input.agentId } : {}),
+      ...(submittedAgent.requestAgent ? { agent: submittedAgent.requestAgent } : {}),
+      environment: environmentInput,
+      ...(input.input !== undefined ? { input: input.input } : {}),
+      metadata: input.metadata,
+      stream: input.stream,
+      vaultIds: vaultPlan.vaultIds,
+    });
+
+    const openSession = (session: AgentSession) => {
+      sessionCollectionRevisionRef.current += 1;
+      sessionEnvironmentIdentityRef.current.set(session.id, supportedEnvironmentIdentity(session.environment));
+      setSessions((current) => {
+        const next = [session, ...current.filter((value) => value.id !== session.id)];
+        sessionsRef.current = next;
+        return next;
+      });
+      changeSessionAgentFilter(null);
+      selectedIdRef.current = session.id;
+      setSelectedId(session.id);
+      setItems([]);
+      itemsSessionIdRef.current = session.id;
+      setItemsSessionId(session.id);
+      setTurns([]);
+      turnsSessionIdRef.current = session.id;
+      setTurnsSessionId(session.id);
+      setView("sessions");
+    };
+
+    if (!input.stream) {
+      const session = await run(() => core.createSession(
+        { ...request, stream: false },
+        input.idempotencyKey,
+      ));
+      if (!session || coreGeneration !== connectionGenerationRef.current) {
+        throw new Error("The Session creation outcome could not be confirmed.");
+      }
+      openSession(session);
+      notify("Idle Session created. Opening live events…", "success");
+      return;
+    }
+
+    const generation = coreGeneration;
+    const operationRequest = operationRequestRef.current + 1;
+    operationRequestRef.current = operationRequest;
+    setBusy(true);
+    creationStreamOwnerRef.current?.controller.abort();
+    const owner: CreationStreamOwner = {
+      controller: new AbortController(),
+      coreGeneration: generation,
+      sessionId: null,
+      streamEpoch: null,
+    };
+    creationStreamOwnerRef.current = owner;
+    const recovery = createStreamRecoveryBuffer();
+    let refreshCoordinator: DurableRefreshCoordinator | null = null;
+    let recoveryPromise: Promise<unknown> | null = null;
+    let resolveCreated: (session: AgentSession) => void = () => undefined;
+    let rejectCreated: (error: unknown) => void = () => undefined;
+    const created = new Promise<AgentSession>((resolve, reject) => {
+      resolveCreated = resolve;
+      rejectCreated = reject;
+    });
+    const isCurrentCreationStream = () => (
+      creationStreamOwnerRef.current === owner &&
+      !owner.controller.signal.aborted &&
+      generation === connectionGenerationRef.current &&
+      owner.sessionId !== null &&
+      owner.streamEpoch !== null &&
+      streamEpochRef.current === owner.streamEpoch &&
+      selectedIdRef.current === owner.sessionId
+    );
+    const applyCreationEvent = (event: SessionEvent) => {
+      if (!owner.sessionId || owner.streamEpoch === null) return;
+      applyLiveSessionEvent(event, {
+        sessionId: owner.sessionId,
+        streamEpoch: owner.streamEpoch,
+        isCurrent: isCurrentCreationStream,
+        refreshCoordinator,
+      });
+    };
+    const handoffToGetStream = async () => {
+      const sessionId = owner.sessionId;
+      if (!sessionId) return;
+      owner.startReconciliation?.();
+      await recoveryPromise;
+      if (!isCurrentCreationStream()) return;
+      setStreamConnection({ sessionId, state: "recovering", error: null });
+      await refreshSession(sessionId, owner.controller.signal);
+      if (!isCurrentCreationStream()) return;
+      refreshCoordinator?.dispose();
+      recovery.invalidate();
+      if (creationStreamOwnerRef.current === owner) creationStreamOwnerRef.current = null;
+      owner.controller.abort();
+      setStreamRetryRevision((current) => current + 1);
+    };
+
+    void core.createSessionStream(request, input.idempotencyKey, {
+      signal: owner.controller.signal,
+      onSession: (session) => {
+        if (
+          creationStreamOwnerRef.current !== owner ||
+          owner.controller.signal.aborted ||
+          generation !== connectionGenerationRef.current
+        ) return;
+        owner.sessionId = session.id;
+        owner.streamEpoch = streamEpochRef.current + 1;
+        streamEpochRef.current = owner.streamEpoch;
+        const token = recovery.begin();
+        refreshCoordinator = createDurableRefreshCoordinator(
+          () => refreshSession(session.id, owner.controller.signal),
+        );
+        owner.startReconciliation = () => {
+          if (recoveryPromise || !isCurrentCreationStream()) return;
+          recoveryPromise = refreshSession(session.id, owner.controller.signal)
+            .finally(() => recovery.finish(token, isCurrentCreationStream, applyCreationEvent));
+        };
+        openSession(session);
+        setStreamConnection({ sessionId: session.id, state: "listening", error: null });
+        owner.startReconciliation();
+        resolveCreated(session);
+      },
+      onOpen: () => undefined,
+      onEvent: (event) => {
+        if (event.type === "agent.session.created") return;
+        recovery.accept(event, applyCreationEvent);
+      },
+    }).then(
+      () => handoffToGetStream(),
+      (error: unknown) => {
+        if (!owner.sessionId) {
+          recovery.invalidate();
+          refreshCoordinator?.dispose();
+          if (creationStreamOwnerRef.current === owner) creationStreamOwnerRef.current = null;
+          owner.controller.abort();
+          rejectCreated(error);
+          return;
+        }
+        return handoffToGetStream();
+      },
+    ).catch((error: unknown) => {
+      if (
+        generation === connectionGenerationRef.current &&
+        owner.sessionId &&
+        selectedIdRef.current === owner.sessionId
+      ) {
+        setStreamConnection({ sessionId: owner.sessionId, state: "failed", error: errorMessage(error) });
+      }
+    });
+
+    try {
+      await created;
+      if (generation !== connectionGenerationRef.current) {
+        throw new Error("The Session creation outcome could not be confirmed after the Core connection changed.");
+      }
+      notify(
+        input.input === undefined
+          ? input.environment.type === "openai_hosted"
+            ? "Managed hosted Session created. Live creation events are connected."
+            : "Idle Session created. Live creation events are connected."
+          : "Session created with initial input. Live creation events are connected.",
+        "success",
+      );
+    } catch (error) {
+      if (generation === connectionGenerationRef.current) notify(errorMessage(error), "error");
+      throw error;
+    } finally {
+      if (
+        generation === connectionGenerationRef.current &&
+        operationRequest === operationRequestRef.current
+      ) setBusy(false);
+    }
   };
 
   const retrieveSessionForAction = useCallback(async (sessionId: string) => {
@@ -949,7 +1620,16 @@ export function App() {
           sessionId,
           (sessionEventRevisionRef.current.get(sessionId) ?? 0) + 1,
         );
-        setSessions((current) => replaceSessionMetadata(current, error.latestSession as AgentSession));
+        setSessions((current) => {
+          const next = replaceSessionMetadata(current, error.latestSession as AgentSession);
+          sessionsRef.current = next;
+          return next;
+        });
+        setFilteredSessions((current) => {
+          const next = replaceSessionMetadata(current, error.latestSession as AgentSession);
+          filteredSessionsRef.current = next;
+          return next;
+        });
       }
       throw error;
     }
@@ -962,7 +1642,16 @@ export function App() {
       sessionId,
       (sessionEventRevisionRef.current.get(sessionId) ?? 0) + 1,
     );
-    setSessions((current) => replaceSessionMetadata(current, updated));
+    setSessions((current) => {
+      const next = replaceSessionMetadata(current, updated);
+      sessionsRef.current = next;
+      return next;
+    });
+    setFilteredSessions((current) => {
+      const next = replaceSessionMetadata(current, updated);
+      filteredSessionsRef.current = next;
+      return next;
+    });
     notify("Session metadata updated.", "success");
     return updated;
   };
@@ -971,7 +1660,7 @@ export function App() {
     const selectedAtCompletion = selectedIdRef.current;
     const deletingSelected = selectedAtCompletion === sessionId;
     const nextSelectedId = selectionAfterSessionDelete(
-      sessionsRef.current,
+      sessionAgentFilterRef.current ? filteredSessionsRef.current : sessionsRef.current,
       selectedAtCompletion,
       sessionId,
     );
@@ -985,11 +1674,16 @@ export function App() {
     increment(turnEventRevisionRef.current);
     increment(environmentEventRevisionRef.current);
     increment(environmentRequestRef.current);
-    sessionEnvironmentIdRef.current.delete(sessionId);
+    sessionEnvironmentIdentityRef.current.delete(sessionId);
 
     setSessions((current) => {
       const next = removeSession(current, sessionId);
       sessionsRef.current = next;
+      return next;
+    });
+    setFilteredSessions((current) => {
+      const next = removeSession(current, sessionId);
+      filteredSessionsRef.current = next;
       return next;
     });
     setSessionSendFailures((current) => {
@@ -1012,6 +1706,10 @@ export function App() {
       selectedSessionReadAbortRef.current = null;
       selectedStreamAbortRef.current?.abort();
       selectedStreamAbortRef.current = null;
+      if (creationStreamOwnerRef.current?.sessionId === sessionId) {
+        creationStreamOwnerRef.current.controller.abort();
+        creationStreamOwnerRef.current = null;
+      }
       itemsSessionIdRef.current = null;
       turnsSessionIdRef.current = null;
       setItems([]);
@@ -1104,24 +1802,79 @@ export function App() {
   const cancel = async () => {
     const sessionId = selectedId;
     if (!sessionId) return;
-    await run(() => core.cancelTurn(sessionId), "Cancellation requested.");
+    const pending = beginPendingSend(
+      sessionId,
+      "agent.session.input.cancel",
+      cancelFailureRef.current,
+    );
+    cancelFailureRef.current = undefined;
+    try {
+      await run(
+        () => core.cancelTurn(sessionId, pending.idempotencyKey),
+        "Cancellation requested.",
+      );
+    } catch (error) {
+      if (
+        coreGeneration === connectionGenerationRef.current &&
+        selectedIdRef.current === sessionId
+      ) cancelFailureRef.current = failPendingSend(pending, error, errorMessage(error));
+      throw error;
+    }
     if (coreGeneration !== connectionGenerationRef.current || selectedIdRef.current !== sessionId) return;
+    cancelFailureRef.current = undefined;
     await refreshSelectedSession(sessionId);
   };
 
   const submitFunctionResult = async (input: FunctionResultInput) => {
     const sessionId = selectedId;
     if (!sessionId) return;
-    await run(() => core.submitFunctionResult(sessionId, input), "Function result submitted.");
+    const actionKey = functionResultActionKey(sessionId, input);
+    const pending = beginPendingFunctionResult(
+      sessionId,
+      input,
+      functionResultFailuresRef.current.get(actionKey),
+    );
+    functionResultFailuresRef.current.delete(actionKey);
+    try {
+      await run(
+        () => core.submitFunctionResult(sessionId, input, pending.idempotencyKey),
+        "Function result submitted.",
+      );
+    } catch (error) {
+      if (
+        coreGeneration === connectionGenerationRef.current &&
+        selectedIdRef.current === sessionId
+      ) {
+        functionResultFailuresRef.current.set(
+          actionKey,
+          failPendingFunctionResult(pending, error, errorMessage(error)),
+        );
+      }
+      throw error;
+    }
     if (coreGeneration !== connectionGenerationRef.current || selectedIdRef.current !== sessionId) return;
+    functionResultFailuresRef.current.delete(actionKey);
     await refreshSelectedSession(sessionId);
   };
+
+  const listEnvironmentFiles = useCallback((
+    environmentId: string,
+    options: Parameters<AgentCore["listEnvironmentFiles"]>[1],
+  ) => core.listEnvironmentFiles(environmentId, options), [core]);
+
+  const createEnvironmentFile = useCallback<AgentCore["createEnvironmentFile"]>((
+    environmentId,
+    input,
+    options,
+  ) => core.createEnvironmentFile(environmentId, input, options), [core]);
 
   const applyConnection = (next: CoreConnection) => {
     const normalized = { ...next, baseUrl: next.baseUrl.trim() || "/v1", token: next.token.trim() };
     connectionGenerationRef.current += 1;
     agentCollectionRequestRef.current += 1;
     sessionCollectionRequestRef.current += 1;
+    filteredSessionCollectionRequestRef.current += 1;
+    vaultCollectionRequestRef.current += 1;
     agentCollectionRevisionRef.current = 0;
     sessionCollectionRevisionRef.current = 0;
     sessionRequestRef.current.clear();
@@ -1130,24 +1883,51 @@ export function App() {
     turnEventRevisionRef.current.clear();
     environmentEventRevisionRef.current.clear();
     environmentRequestRef.current.clear();
-    sessionEnvironmentIdRef.current.clear();
+    sessionEnvironmentIdentityRef.current.clear();
     operationRequestRef.current += 1;
     streamEpochRef.current += 1;
     selectedSessionReadAbortRef.current?.abort();
     selectedSessionReadAbortRef.current = null;
     selectedStreamAbortRef.current?.abort();
     selectedStreamAbortRef.current = null;
+    creationStreamOwnerRef.current?.controller.abort();
+    creationStreamOwnerRef.current = null;
+    agentCollectionAbortRef.current?.abort();
+    agentCollectionAbortRef.current = null;
+    sessionCollectionAbortRef.current?.abort();
+    sessionCollectionAbortRef.current = null;
+    filteredSessionCollectionAbortRef.current?.abort();
+    filteredSessionCollectionAbortRef.current = null;
+    vaultCollectionAbortRef.current?.abort();
+    vaultCollectionAbortRef.current = null;
     saveConnection(normalized);
     setBusy(false);
     setAgentCollectionState("connecting");
     setAgentCollectionError(null);
+    setAgentCollectionHasSnapshot(false);
     setSessionCollectionState("connecting");
     setSessionCollectionError(null);
+    setSessionCollectionHasSnapshot(false);
+    sessionAgentFilterRef.current = null;
+    filteredSessionsRef.current = [];
+    setSessionAgentFilter(null);
+    setFilteredSessions([]);
+    setFilteredSessionCollectionState("connecting");
+    setFilteredSessionCollectionError(null);
+    setVaultCollectionState("connecting");
+    setVaultCollectionError(null);
+    setVaultSupported(null);
+    setVaultCatalog(null);
+    setAgents([]);
+    setSessions([]);
+    setItems([]);
     setSelectedId(null);
     setSelectedSessionLoad({ sessionId: null, state: "idle", error: null });
     setTurnCollectionLoad({ sessionId: null, state: "idle", error: null });
     setStreamConnection({ sessionId: null, state: "idle", error: null });
     setSessionSendFailures(new Map());
+    cancelFailureRef.current = undefined;
+    functionResultFailuresRef.current.clear();
     setEnvironmentObservations(new Map());
     itemsSessionIdRef.current = null;
     setItemsSessionId(null);
@@ -1165,13 +1945,9 @@ export function App() {
   };
 
   const openSessionSetup = (agentId?: string) => {
-    if (agentId) {
-      const agent = agents.find((candidate) => candidate.id === agentId);
-      const blocker = agent ? knownSessionAdmissionBlocker(agent) : "The selected saved Agent is not loaded.";
-      if (blocker) {
-        notify(`Session was not created. ${blocker}`, "error");
-        return;
-      }
+    if (agentId && !agents.some((candidate) => candidate.id === agentId)) {
+      notify("Session setup could not open because the selected saved Agent is not loaded.", "error");
+      return;
     }
     setView("sessions");
     sessionCreateSequenceRef.current += 1;
@@ -1201,6 +1977,7 @@ export function App() {
         <ProductNavigation
           active={view === "system" ? null : view}
           onSelect={(nextView) => setView(nextView)}
+          showVaults={vaultSupported === true}
         />
 
         <nav className="main-nav" aria-label="System navigation">
@@ -1209,11 +1986,11 @@ export function App() {
             type="button"
             className={view === "system" ? "active" : ""}
             onClick={() => setView("system")}
-            aria-label="Architecture"
+            aria-label="System"
             aria-current={view === "system" ? "page" : undefined}
           >
             <Layers3 size={15} strokeWidth={1.5} />
-            <span>Architecture</span>
+            <span>System</span>
           </button>
         </nav>
 
@@ -1242,23 +2019,43 @@ export function App() {
         <header className="product-header">
           <CreateMenu
             canCreateAgent={agentCollectionState === "ready" && !busy}
-            canStartSession={sessionCollectionState === "ready" && agents.some((agent) => !knownSessionAdmissionBlocker(agent)) && !busy}
+            canStartSession={sessionCollectionState === "ready" && !busy}
             onCreateAgent={openAgentSetup}
             onStartSession={() => openSessionSetup()}
           />
         </header>
         <div className="page-transition" key={view}>
+          {view === "dashboard" ? (
+            <DashboardView
+              agents={agents}
+              sessions={sessions}
+              agentCollectionState={agentCollectionState}
+              agentCollectionError={agentCollectionError}
+              agentCollectionHasSnapshot={agentCollectionHasSnapshot}
+              sessionCollectionState={sessionCollectionState}
+              sessionCollectionError={sessionCollectionError}
+              sessionCollectionHasSnapshot={sessionCollectionHasSnapshot}
+              onRefresh={refreshDashboard}
+              onOpenSession={(sessionId) => {
+                changeSessionAgentFilter(null);
+                selectedIdRef.current = sessionId;
+                setSelectedId(sessionId);
+                setView("sessions");
+              }}
+            />
+          ) : null}
           {view === "sessions" ? (
             <SessionsView
               key={`sessions:${coreGeneration}`}
               agents={agents}
-              sessions={sessions}
+              agentFilter={sessionAgentFilter}
+              sessions={sessionBrowserSessions}
               selected={selected}
               items={itemsSessionId === selectedId ? items : []}
               turns={turnsSessionId === selectedId ? turns : []}
               busy={busy}
-              coreError={sessionCollectionError}
-              coreState={sessionCollectionState}
+              coreError={sessionBrowserError}
+              coreState={sessionBrowserState}
               createRequest={sessionCreateRequest}
               onCreateRequestConsumed={consumeSessionCreateRequest}
               detailError={detailError}
@@ -1270,10 +2067,15 @@ export function App() {
               streamError={streamError}
               streamState={streamState}
               selfHostedEnabled={__AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS__}
+              openAIHostedEnabled={__AGENTS_CORE_WEB_OPENAI_HOSTED_SESSIONS__}
+              vaultCatalog={sessionVaultCatalog}
               onCancel={cancel}
+              onAgentFilterChange={changeSessionAgentFilter}
               onCreateSession={createSession}
               onDeleteSession={deleteSessionFromCore}
               onFunctionResult={submitFunctionResult}
+              onListEnvironmentFiles={listEnvironmentFiles}
+              onCreateEnvironmentFile={createEnvironmentFile}
               onRefresh={recoverSessionWorkspace}
               onRetrySession={() => {
                 if (selectedId) void refreshSelectedSession(selectedId);
@@ -1293,6 +2095,7 @@ export function App() {
               coreBaseUrl={connection.baseUrl}
               coreError={agentCollectionError}
               coreState={agentCollectionState}
+              vaultCatalog={sessionVaultCatalog}
               createRequest={agentCreateRequest ?? 0}
               onCreateRequestConsumed={consumeAgentCreateRequest}
               onCreate={createAgent}
@@ -1303,7 +2106,33 @@ export function App() {
               onUpdate={updateAgent}
             />
           ) : null}
-          {view === "system" ? <SystemView /> : null}
+          {view === "vaults" && vaultSupported === true ? (
+            <VaultsView
+              key={`vaults:${coreGeneration}`}
+              busy={busy}
+              catalog={vaultCatalog}
+              coreError={vaultCollectionError}
+              coreState={vaultCollectionState}
+              operations={vaultOperations}
+            />
+          ) : null}
+          {view === "system" ? (
+            <SystemView
+              key={`system:${coreGeneration}`}
+              coreState={coreState}
+              coreBaseUrl={connection.baseUrl}
+              selfHostedEnabled={__AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS__}
+              vaultCollectionState={vaultCollectionState}
+              vaultSupported={vaultSupported}
+              sourceFilesOperations={sourceFilesOperations}
+              refreshing={
+                agentCollectionState === "connecting" ||
+                sessionCollectionState === "connecting" ||
+                vaultCollectionState === "connecting"
+              }
+              onRefresh={refreshDashboard}
+            />
+          ) : null}
         </div>
       </main>
 

@@ -93,7 +93,7 @@ describe("Agent Core connection modes", () => {
     expect(markup).toContain("Legacy troubleshooting · 043 snapshot");
     expect(markup).toContain("Parsar Core setup");
     expect(markup).toContain("98c5b3312ad33e1fae8b94283a011eb3e5f4ee2c");
-    expect(markup).toContain("2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e");
+    expect(markup).toContain("c31f81677a8b16c53b665de9075181df837a0032");
     expect(markup).not.toContain("0438880ab21aa16d05cb91a4c7f91cc0abc12358");
     expect(markup).not.toContain("f7cdf591396529880d80f8211fc7a0f4768fdf46");
     expect(markup).not.toContain("8cc2898ca42b272cb3771234ee6a0ad0d2e932ba");

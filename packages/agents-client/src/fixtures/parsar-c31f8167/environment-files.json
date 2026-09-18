@@ -1,0 +1,32 @@
+{
+  "revision": "c31f81677a8b16c53b665de9075181df837a0032",
+  "request": {
+    "environment_id": "0f745b0d-b545-49cd-8d7e-4c31c80dc564",
+    "path": "/workspace/project",
+    "limit": 2,
+    "order": "asc"
+  },
+  "pages": [
+    {
+      "data": [
+        {
+          "environment_id": "0f745b0d-b545-49cd-8d7e-4c31c80dc564",
+          "object": "agent.environment.file",
+          "path": "/workspace/project/README.md",
+          "size_bytes": 128
+        },
+        {
+          "environment_id": "0f745b0d-b545-49cd-8d7e-4c31c80dc564",
+          "object": "agent.environment.file",
+          "path": "/workspace/project/report.json",
+          "size_bytes": 2048
+        }
+      ],
+      "next": "opaque-page-token"
+    },
+    {
+      "data": [],
+      "next": null
+    }
+  ]
+}

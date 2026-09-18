@@ -2,24 +2,241 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 
 import fixture from "./fixtures/parsar-8cc2898c/environment-protocol.json";
 import environmentResources from "./fixtures/parsar-0438880a/environment-resources.json";
+import environmentFiles from "./fixtures/parsar-c31f8167/environment-files.json";
+import files182d from "./fixtures/parsar-182d333d/files.json";
+import hostedDadf64 from "./fixtures/parsar-dadf64a7/openai-hosted.json";
+import selfHostedFilesDadf64 from "./fixtures/parsar-dadf64a7/environment-files-self-hosted.json";
+import eventBatchDadf64 from "./fixtures/parsar-dadf64a7/session-event-batch.json";
+import vaultCredentials182d from "./fixtures/parsar-182d333d/vault-credentials.json";
 import turnResources from "./fixtures/parsar-0438880a/turn-resources.json";
+import toolProfiles from "./fixtures/parsar-2b34ea46/tool-profiles.json";
 import type {
+  AnonymousHttpMcpToolInput,
+  AgentCore,
+  AgentSession,
   AgentEnvironmentResource,
   AgentEnvironment,
   AgentTurn,
   AgentSessionEnvironmentEvent,
+  CreateAgentInput,
   EnvironmentConnectionAction,
+  EnvironmentFileList,
+  EnvironmentFileCreateInput,
   EnvironmentResourceStatus,
   FunctionCallAction,
+  InlineAgentInput,
+  OpenAIHostedAgentEnvironment,
+  OpenAIHostedAgentEnvironmentInput,
+  OpenAIHostedAgentEnvironmentResource,
   RequiredAction,
   SelfHostedAgentEnvironment,
+  SavedAgentToolInput,
+  SourceFile,
+  SourceFileDeleted,
   UnknownAgentEnvironment,
   UnknownSessionEvent,
   UnknownSessionItem,
+  SessionItem,
+  SessionInputEvent,
+  SessionMessageInputEvent,
+  SessionToolResultInputEvent,
   SessionEnvironmentStatus,
   TokenUsage,
   TurnStatus,
+  UpdateAgentInput,
+  Vault,
+  VaultCredential,
 } from "./types";
+
+describe("Parsar dadf64a7 basic managed Environment profile", () => {
+  it("pins omitted/default, explicit-enabled, and explicit-disabled network input", () => {
+    const inputs = hostedDadf64.inputs as Record<string, OpenAIHostedAgentEnvironmentInput>;
+
+    expect(hostedDadf64.revision).toBe("dadf64a76bde58255281f3b6c3e939f8b556be09");
+    expect(inputs.default_enabled).toEqual({ type: "openai_hosted" });
+    expect(inputs.explicit_enabled?.network?.access).toBe("enabled");
+    expect(inputs.explicit_disabled?.network?.access).toBe("disabled");
+    expectTypeOf<NonNullable<OpenAIHostedAgentEnvironmentInput["network"]>["access"]>()
+      .toEqualTypeOf<"enabled" | "disabled">();
+  });
+
+  it("pins the exact empty-installation Session output separately from the seven-field resource", () => {
+    const environment = hostedDadf64.session_environment as OpenAIHostedAgentEnvironment;
+    const resource = hostedDadf64.environment_resource as AgentEnvironmentResource;
+
+    expect(Object.keys(environment).sort()).toEqual([
+      "capability_directories", "files", "id", "network", "packages", "plugins", "skills", "type",
+    ]);
+    expect(environment.network).toEqual({ access: "enabled", allowed_domains: [] });
+    expect(environment.packages).toEqual({ npm: [], python: [], system: [] });
+    expect(Object.keys(resource).sort()).toEqual([
+      "files", "id", "object", "plugins", "skills", "status", "type",
+    ]);
+    expectTypeOf<OpenAIHostedAgentEnvironmentResource["files"]>().toEqualTypeOf<[]>();
+    expectTypeOf<OpenAIHostedAgentEnvironmentResource["plugins"]>().toEqualTypeOf<[]>();
+    expectTypeOf<OpenAIHostedAgentEnvironmentResource["skills"]>().toEqualTypeOf<[]>();
+  });
+});
+
+describe("Parsar dadf64a7 ordered Session input batch", () => {
+  it("pins the three exact public wire variants and their ordered nested inputs", () => {
+    const events = eventBatchDadf64.request.events as SessionInputEvent[];
+    const message = events[0] as SessionMessageInputEvent;
+    const result = events[2] as SessionToolResultInputEvent;
+
+    expect(eventBatchDadf64.revision).toBe("dadf64a76bde58255281f3b6c3e939f8b556be09");
+    expect(events.map((event) => event.type)).toEqual([
+      "agent.session.input.message",
+      "agent.session.input.cancel",
+      "agent.session.input.tool_result",
+    ]);
+    expect(message.input.map((input) => input.content.map((part) => part.text).join(""))).toEqual([
+      "First message",
+      "Second message",
+    ]);
+    expect(result.output).toEqual([
+      { type: "input_text", text: "" },
+      { type: "input_image", image_url: "data:image/png;base64,AA==" },
+    ]);
+    expectTypeOf<SessionMessageInputEvent["input"]>().toEqualTypeOf<import("./types").InputMessage[]>();
+    expectTypeOf<SessionToolResultInputEvent["output"]>()
+      .toEqualTypeOf<string | import("./types").FunctionResultContent[] | null | undefined>();
+  });
+
+  it("requires caller-owned idempotency keys for every event write helper", () => {
+    expectTypeOf<Parameters<AgentCore["submitEvents"]>[2]>().toEqualTypeOf<string>();
+    expectTypeOf<Parameters<AgentCore["sendMessage"]>[2]>().toEqualTypeOf<string>();
+    expectTypeOf<Parameters<AgentCore["cancelTurn"]>[1]>().toEqualTypeOf<string>();
+    expectTypeOf<Parameters<AgentCore["submitFunctionResult"]>[2]>().toEqualTypeOf<string>();
+  });
+});
+
+describe("Parsar 2b34ea46 bounded tool profiles", () => {
+  it("keeps saved-only tools in create/update while limiting inline execution profiles", () => {
+    expectTypeOf<CreateAgentInput["tools"]>().toEqualTypeOf<SavedAgentToolInput[] | null | undefined>();
+    expectTypeOf<UpdateAgentInput["tools"]>().toEqualTypeOf<SavedAgentToolInput[] | null | undefined>();
+    expectTypeOf<NonNullable<InlineAgentInput["tools"]>[number]>().not.toEqualTypeOf<SavedAgentToolInput>();
+  });
+
+  it("captures the two Web-configurable write shapes without credentials or browser MCP", () => {
+    const functionTool = toolProfiles.write_profiles.function;
+    const mcpTool = toolProfiles.write_profiles.anonymous_http_mcp as AnonymousHttpMcpToolInput;
+
+    expect(functionTool.defer_loading).toBe(false);
+    expect(functionTool.parameters.type).toBe("object");
+    expect(mcpTool).toEqual({
+      type: "mcp",
+      server_label: "docs",
+      transport: { type: "http", server_url: "https://mcp.example/tools" },
+      allowed_tools: [],
+      connection_origin: "service",
+      required: true,
+    });
+    expect("credential_id" in mcpTool).toBe(false);
+    expect("headers" in mcpTool.transport).toBe(false);
+  });
+
+  it("pins Function identity and nullable MCP result fields without inventing Function errors", () => {
+    const items = Object.values(toolProfiles.items) as SessionItem[];
+    const functions = items.filter((item) => item.type === "function_call");
+    const mcp = items.filter((item) => item.type === "mcp_call");
+
+    expect(items.map((item) => [item.type, item.status])).toEqual([
+      ["function_call", "completed"],
+      ["function_call", "failed"],
+      ["mcp_call", "completed"],
+      ["mcp_call", "failed"],
+    ]);
+    expect(functions.every((item) => item.call_id === item.id)).toBe(true);
+    expect(functions.every((item) => !("error" in item))).toBe(true);
+    expect(mcp.map((item) => [item.output, item.error])).toEqual([
+      [{ title: "Guide" }, null],
+      [null, { message: "Core could not call the MCP server." }],
+    ]);
+  });
+});
+
+describe("Parsar c31f8167 Environment files list", () => {
+  it("pins the direct-file metadata page and opaque cursor shape", () => {
+    const first = environmentFiles.pages[0] as EnvironmentFileList;
+    const final = environmentFiles.pages[1] as EnvironmentFileList;
+
+    expect(environmentFiles.revision).toBe("c31f81677a8b16c53b665de9075181df837a0032");
+    expect(first.data.map((file) => [file.path, file.size_bytes])).toEqual([
+      ["/workspace/project/README.md", 128],
+      ["/workspace/project/report.json", 2048],
+    ]);
+    expect(first.next).toBe("opaque-page-token");
+    expect(final).toEqual({ data: [], next: null });
+  });
+});
+
+describe("Parsar dadf64a7 self-hosted Environment files list", () => {
+  it("pins the physical workspace_directory as the current self-hosted API root", () => {
+    const page = selfHostedFilesDadf64.page as EnvironmentFileList;
+
+    expect(selfHostedFilesDadf64.revision).toBe("dadf64a76bde58255281f3b6c3e939f8b556be09");
+    expect(selfHostedFilesDadf64.workspace_directory).toBe("/test");
+    expect(selfHostedFilesDadf64.request.path).toBe("/test");
+    expect(page.data.map((file) => file.path)).toEqual(["/test/README.md"]);
+  });
+});
+
+describe("Parsar 182d333d Source and Environment Files", () => {
+  it("pins the complete Source File metadata and deletion shapes", () => {
+    const file = files182d.source_file as SourceFile;
+    const deleted = files182d.deleted as SourceFileDeleted;
+
+    expect(files182d.revision).toBe("182d333db6681e3e1ea7de26672f43daceef793d");
+    expect(Object.keys(file).sort()).toEqual([
+      "bytes", "created_at", "expires_at", "filename", "id", "object", "purpose", "status", "status_details",
+    ]);
+    expect(file.purpose).toBe("user_data");
+    expect(file.expires_at).toBeNull();
+    expect(deleted).toEqual({ id: file.id, object: "file", deleted: true });
+  });
+
+  it("pins file_id copy separately from local paths and hosted discovery", () => {
+    const request = files182d.environment_create.request as EnvironmentFileCreateInput;
+    const hosted = files182d.hosted_environment as AgentEnvironmentResource;
+
+    expect(request).toEqual({
+      type: "file_id",
+      file_id: files182d.source_file.id,
+      path: "/workspace/input/notes.txt",
+    });
+    expect(request.type === "file_id" ? request.file_id : "").toMatch(/^file-/);
+    expect(hosted.type).toBe("openai_hosted");
+    expect(hosted.status).toBe("connected");
+  });
+});
+
+describe("Parsar 182d333d Vault Credentials and Session attachments", () => {
+  it("pins safe Vault and Credential metadata without a token field", () => {
+    const vault = vaultCredentials182d.vault_list.data[0] as Vault;
+    const credential = vaultCredentials182d.credential_list.data[0] as VaultCredential;
+
+    expect(vaultCredentials182d.revision).toBe("182d333db6681e3e1ea7de26672f43daceef793d");
+    expect(vault.object).toBe("vault");
+    expect(credential.vault_id).toBe(vault.id);
+    expect(credential.auth).toEqual({
+      type: "static_bearer",
+      mcp_server_url: "https://mcp.example.com/endpoint",
+    });
+    expect("token" in credential.auth).toBe(false);
+    expect(vaultCredentials182d.write_evidence).toEqual({
+      credential_token_present: true,
+      credential_token_returned: false,
+      credential_token_recorded: false,
+    });
+  });
+
+  it("pins the owning Vault attachment on the public Session resource", () => {
+    const session = vaultCredentials182d.session as AgentSession;
+    expect(session.vault_ids).toEqual([vaultCredentials182d.vault_list.data[0]?.id]);
+    expect(session.environment).toEqual({ type: "none" });
+  });
+});
 
 describe("Parsar 8cc2898c Environment protocol types", () => {
   it("models none and the safe self_hosted Session response projection", () => {

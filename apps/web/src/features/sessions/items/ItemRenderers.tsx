@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Search, TerminalSquare, Wrench } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight, Search, TerminalSquare, Wrench } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import type { SessionItem } from "@agents-core-web/agents-client";
@@ -52,6 +52,18 @@ function firstString(value: unknown): string {
   return "";
 }
 
+const supportedWorkItemTypes = new Set<SessionItem["type"]>([
+  "command_execution",
+  "web_search_call",
+  "function_call_output",
+  "mcp_call",
+  "function_call",
+]);
+
+function isSupportedWorkItem(item: SessionItem): boolean {
+  return supportedWorkItemTypes.has(item.type);
+}
+
 function toolPresentation(item: SessionItem) {
   if (item.type === "command_execution") return { Icon: TerminalSquare, verb: "Run", target: item.command || "Command" };
   if (item.type === "web_search_call") {
@@ -60,13 +72,15 @@ function toolPresentation(item: SessionItem) {
   }
   if (item.type === "function_call_output") return { Icon: Wrench, verb: "Return", target: item.name || item.call_id || "Function result" };
   if (item.type === "mcp_call") return { Icon: Wrench, verb: "Use", target: [item.server_label, item.name, firstString(item.arguments)].filter(Boolean).join(" ") || "MCP tool" };
-  return { Icon: Wrench, verb: "Use", target: [item.name, firstString(item.arguments)].filter(Boolean).join(" ") || "Function" };
+  if (item.type === "function_call") return { Icon: Wrench, verb: "Use", target: [item.name, firstString(item.arguments)].filter(Boolean).join(" ") || "Function" };
+  return { Icon: AlertTriangle, verb: "Unsupported", target: `${item.type || "unknown"} Item` };
 }
 
 function toolArguments(item: SessionItem): unknown {
   if (item.type === "command_execution") return item.cwd ? { command: item.command, cwd: item.cwd } : { command: item.command };
   if (item.type === "web_search_call") return item.action;
-  return item.arguments;
+  if (item.type === "function_call" || item.type === "mcp_call") return item.arguments;
+  return undefined;
 }
 
 export function toolResult(item: SessionItem): unknown {
@@ -83,9 +97,12 @@ export function toolResult(item: SessionItem): unknown {
 function WorkStep({ item }: { item: SessionItem }) {
   const [open, setOpen] = useState(false);
   const { Icon, verb, target } = toolPresentation(item);
-  const args = toolArguments(item);
-  const result = item.status === "in_progress" ? undefined : toolResult(item);
-  const patch = item.type === "function_call" && item.name === "apply_patch" ? parseParsarApplyPatch(item.arguments) : null;
+  const supported = isSupportedWorkItem(item);
+  const args = supported ? toolArguments(item) : undefined;
+  const result = supported && (item.status !== "in_progress" || item.type === "command_execution")
+    ? toolResult(item)
+    : undefined;
+  const patch = supported && item.type === "function_call" && item.name === "apply_patch" ? parseParsarApplyPatch(item.arguments) : null;
   const expandable = args !== undefined && args !== null || result !== undefined && result !== null;
   const row = <><Icon className="trace-step-icon" size={14} strokeWidth={1.5} aria-hidden="true" /><span className="trace-step-verb">{verb}</span><span className="trace-step-target" title={target}>{target}</span>{item.status !== "completed" ? <StatusIcon status={itemStatusKind(item.status)} title={item.status.replaceAll("_", " ")} /> : null}{item.duration_ms ? <span className="trace-duration">{formatDuration(item.duration_ms)}</span> : null}{expandable ? <ChevronRight className={`trace-step-chevron ${open ? "open" : ""}`} size={14} strokeWidth={1.5} aria-hidden="true" /> : null}</>;
   return <li className="trace-step" data-trace-step={item.id}>{expandable ? <button className="trace-step-row" type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>{row}</button> : <div className="trace-step-row">{row}</div>}{expandable ? <TraceCollapse open={open}>{patch ? <ApplyPatchDiffViewer item={item} patch={patch} result={result} /> : <div className="trace-step-details">{args !== undefined && args !== null ? <div><p>Arguments</p><pre>{pretty(args)}</pre></div> : null}{result !== undefined && result !== null ? <div><p>Result</p><pre>{pretty(result)}</pre></div> : null}</div>}</TraceCollapse> : null}</li>;

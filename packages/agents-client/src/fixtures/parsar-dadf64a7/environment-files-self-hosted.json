@@ -1,0 +1,21 @@
+{
+  "revision": "dadf64a76bde58255281f3b6c3e939f8b556be09",
+  "workspace_directory": "/test",
+  "request": {
+    "environment_id": "0f745b0d-b545-49cd-8d7e-4c31c80dc564",
+    "path": "/test",
+    "limit": 20,
+    "order": "asc"
+  },
+  "page": {
+    "data": [
+      {
+        "environment_id": "0f745b0d-b545-49cd-8d7e-4c31c80dc564",
+        "object": "agent.environment.file",
+        "path": "/test/README.md",
+        "size_bytes": 128
+      }
+    ],
+    "next": null
+  }
+}

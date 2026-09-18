@@ -1,11 +1,12 @@
 # Connecting Agents Core Web to Agent Core
 
 > Snapshot baseline: Parsar
-> [`0438880ab21aa16d05cb91a4c7f91cc0abc12358`](https://github.com/MiniMax-AI-Dev/parsar/tree/0438880ab21aa16d05cb91a4c7f91cc0abc12358).
+> [`dadf64a76bde58255281f3b6c3e939f8b556be09`](https://github.com/MiniMax-AI-Dev/parsar/tree/dadf64a76bde58255281f3b6c3e939f8b556be09).
 > This guide describes that exact upstream snapshot. Re-check the pinned
-> [standalone service guide](https://github.com/MiniMax-AI-Dev/parsar/blob/0438880ab21aa16d05cb91a4c7f91cc0abc12358/services/agents-api/README.md),
-> [contract coverage](https://github.com/MiniMax-AI-Dev/parsar/blob/0438880ab21aa16d05cb91a4c7f91cc0abc12358/contracts/agents-api/README.md),
-> and [Environment contract](https://github.com/MiniMax-AI-Dev/parsar/blob/0438880ab21aa16d05cb91a4c7f91cc0abc12358/contracts/agents-api/environments.md)
+> [standalone service guide](https://github.com/MiniMax-AI-Dev/parsar/blob/dadf64a76bde58255281f3b6c3e939f8b556be09/services/agents-api/README.md),
+> [contract coverage](https://github.com/MiniMax-AI-Dev/parsar/blob/dadf64a76bde58255281f3b6c3e939f8b556be09/contracts/agents-api/README.md),
+> [Environment contract](https://github.com/MiniMax-AI-Dev/parsar/blob/dadf64a76bde58255281f3b6c3e939f8b556be09/contracts/agents-api/environments.md),
+> and [managed Docker-hosted release guide](https://github.com/MiniMax-AI-Dev/parsar/blob/dadf64a76bde58255281f3b6c3e939f8b556be09/services/agents-api/HOSTED-RELEASE.md)
 > before upgrading.
 
 Agents Core Web does not implement, copy, or embed Agent Core. It connects to the
@@ -27,6 +28,8 @@ flowchart LR
   postgres[("Dedicated PostgreSQL")]
   daemon["parsar-daemon"]
   harness["Codex app-server<br/>or Claude Agent SDK"]
+  executor["Caller-managed Linux executor<br/>self_hosted"]
+  managed["Core-owned Docker Runtime<br/>openai_hosted"]
   provider["Model provider / MCP / tools"]
 
   browser -->|"same-origin /v1"| proxy
@@ -35,6 +38,9 @@ flowchart LR
   daemon -->|"opens private reverse WebSocket"| core
   core -->|"bidirectional dispatch/events after connect"| daemon
   daemon --> harness --> provider
+  executor -->|"native registration + opaque relay"| core
+  core -->|"provision / lease / reclaim"| managed
+  managed --> provider
 ```
 
 The protocols are intentionally different:
@@ -44,6 +50,10 @@ The protocols are intentionally different:
   `OpenAI-Beta: agents=v1`.
 - Core to `parsar-daemon` uses a private Parsar reverse-WebSocket protocol and a
   separate device credential.
+- A `self_hosted` executor uses its separate native registry/relay protocol and
+  operator-issued executor principal key; it does not call the browser.
+- The basic `openai_hosted` profile is a Core-owned Docker placement; Web submits
+  only the public Environment discriminator and never controls Docker.
 - `parsar-daemon` drives Codex with `codex app-server --stdio`, JSON-RPC 2.0 over
   newline-delimited JSON. Claude uses a separate packaged SDK bridge.
 - Model/provider and tool credentials stay on the daemon/harness host.
@@ -52,12 +62,14 @@ The OpenAI Agents API, OpenAI Agents SDK, and Responses API are related but dist
 Agents Core Web calls the pinned Agents HTTP resource shape; it does not embed an Agents
 SDK loop or call the Responses API as its Core transport.
 
-## Two startup modes
+## Execution profiles
 
-| Mode | Configuration | Result |
+| Profile | Configuration | Result |
 | --- | --- | --- |
-| Full local chat | PostgreSQL, caller principal, Core with `AGENTS_API_DAEMON_WS_URL`, same-tenant device, connected daemon, native engine/provider setup | Agent CRUD, Sessions, Turns, Items, SSE, and supported execution |
+| Daemon-backed `environment:none` chat | PostgreSQL, caller principal, Core with `AGENTS_API_DAEMON_WS_URL`, same-tenant device, connected daemon, native engine/provider setup | Agent CRUD, Sessions, Turns, Items, SSE, and supported execution |
 | HTTP-only | PostgreSQL and caller principal; omit `AGENTS_API_DAEMON_WS_URL` | Agent CRUD and idle Session/history operations; input returns `503 execution_unavailable` |
+| Caller-managed `self_hosted` | Codex Core with native registry/executor origin plus an operator-issued executor principal key and caller-started Linux executor | Session-scoped Environment, caller Workspace, native execution after connection |
+| Core-managed `openai_hosted` | Linux amd64 Core host, qualified immutable Runtime image, local Docker provider, execution options, database/caller identity, and daemon gateway reachable from the Runtime | Core provisions, leases, resumes, and reclaims one basic managed Runtime per Session |
 
 Creating an Agent persists configuration only. It does not prove that a daemon, model,
 or provider credential can execute it.
@@ -76,9 +88,10 @@ For the source-based local path below, install:
 Keep every listener on loopback in local development. Remote deployment requires TLS,
 an authenticated reverse proxy/BFF, and an operator-reviewed secret/runtime design.
 
-The current `environment: {"type":"none"}` path is not a Docker or E2B sandbox. The
+The `environment: {"type":"none"}` path is not a Docker or E2B sandbox. The
 daemon and native harness run with the authority of their operating-system user and
-may invoke tools.
+may invoke tools. The managed Docker-hosted profile is a separate operator deployment
+and does not turn the Web browser into a Docker controller.
 
 ## 1. Start a dedicated PostgreSQL database
 
@@ -377,6 +390,18 @@ AGENTS_API_PROXY_TARGET=http://127.0.0.1:8091
 AGENTS_API_PROXY_TOKEN_FILE=/absolute/private/path/to/web-token
 ```
 
+The optional Environment choices are independent, non-secret presentation flags:
+
+```dotenv
+AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS=1
+AGENTS_CORE_WEB_OPENAI_HOSTED_SESSIONS=1
+```
+
+Enable each only after its pinned Core profile has been reviewed. Neither flag
+configures Core, starts an executor or Docker Runtime, discovers readiness, or proves
+that a model/provider or Tool can execute. Restart Vite or rebuild the production
+bundle after changing either flag.
+
 `AGENTS_API_PROXY_TOKEN` is a server-process alternative; never set it together with
 the file option. Never use `VITE_*` for a credential because Vite embeds those values
 in public browser JavaScript. Restart Vite after changing proxy configuration.
@@ -427,6 +452,8 @@ public resources are insufficient before deciding whether another submission is 
 | Caller bearer | Operator | Plaintext `web-token`; digest in Core `keys.json` | Authenticate Web or another Agents API caller |
 | Six-field principal binding | Operator | Core configuration and immutable project-scope records | Bind a caller to execution tenant/project/subject identity |
 | Daemon device credential | `cmd/device` | Plaintext daemon `auth.json`; digest in PostgreSQL | Authenticate one same-tenant execution device |
+| Self-hosted executor principal | `agents-api-environment-key` | Private executor JSON on caller-managed compute; digest/principal binding in PostgreSQL | Register a caller-managed executor for authorized Environment identities |
+| Managed Runtime/provider configuration | Core operator | Mode-0600 Core-side files plus the qualified immutable image | Select Core-owned Docker placement and trusted model options; never browser configuration |
 | PostgreSQL credential | Operator | Private deployment configuration | Access the dedicated execution database |
 | Model/provider credential | Provider/native engine operator | Executor host only | Authorize native model/tool access |
 | Product login/session | Parsar product | Parsar product services | Not accepted by standalone Agent Core |
@@ -478,9 +505,9 @@ Do not enable shell tracing while handling secrets.
 
 ### Optional self-hosted Session creation
 
-> This optional Web flow is newer than the legacy runbook snapshot at the top of
-> this file. Its immutable capability baseline is Parsar
-> [`2b34ea46`](https://github.com/MiniMax-AI-Dev/parsar/commit/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e).
+> This flow is audited against the same immutable Parsar
+> [`dadf64a7`](https://github.com/MiniMax-AI-Dev/parsar/commit/dadf64a76bde58255281f3b6c3e939f8b556be09)
+> baseline as the rest of this runbook.
 
 Agents Core Web keeps self-hosted Session creation hidden by default because Core
 does not expose a public capability-discovery resource. An operator may expose the
@@ -494,10 +521,9 @@ Restart the development server or rebuild the production bundle after changing i
 The flag enables a form; it does not configure Parsar or prove execution readiness.
 Before enabling it, the operator must separately configure a Codex Core with the
 executor registry and an externally reachable executor origin as described by the
-[pinned native executor prerequisite](https://github.com/MiniMax-AI-Dev/parsar/blob/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e/services/agents-api/README.md#native-executor-transport-prerequisite).
+[pinned native executor prerequisite](https://github.com/MiniMax-AI-Dev/parsar/blob/dadf64a76bde58255281f3b6c3e939f8b556be09/services/agents-api/README.md#native-executor-transport-prerequisite).
 
-The optional form creates an idle Session with no initial model input and this
-Environment input only:
+The optional form sends this Environment input only:
 
 ```json
 {
@@ -512,7 +538,9 @@ the executor host, not a path in the browser, Vite server, Agent Core, or
 `parsar-daemon` container. The current profile admits only empty/default
 `capability_directories`; Web does not expose other Environment input fields. Core
 remains authoritative and may reject the request when execution or its executor
-registry is unavailable. Web never retries an uncertain Session creation
+registry is unavailable. The same bounded initial-input surface may be omitted for
+an idle Session, contain one exact text string, or contain ordered user messages made
+only of `input_text` parts. Web never retries an uncertain Session creation
 automatically. A failed attempt keeps the exact form and idempotency key in memory;
 an explicit unchanged resubmission reuses that key, while changing the Agent or
 Environment draft creates a new operation.
@@ -560,7 +588,7 @@ Run the launcher on caller-managed Linux x86_64 executor compute, including an
 appropriately isolated Linux VM or container, not in the browser. The operator
 issues its connect-only credential with `agents-api-environment-key`, delivers the
 mode-0600 JSON file directly to that compute, and follows the
-[pinned launcher guide](https://github.com/MiniMax-AI-Dev/parsar/blob/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e/packages/codex-executor/README.md#connect-an-executor).
+[pinned launcher guide](https://github.com/MiniMax-AI-Dev/parsar/blob/dadf64a76bde58255281f3b6c3e939f8b556be09/packages/codex-executor/README.md#connect-an-executor).
 The credential is not the ordinary Core caller bearer. Never paste it into Web or
 place it in `AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS`, `VITE_*`, Session metadata, a
 URL, browser storage, fixture, log, screenshot, or Git.
@@ -573,7 +601,7 @@ preparation succeeded, a model/provider is usable, or a Turn completed.
 
 ### Read-only self-hosted Environment status
 
-At the `2b34ea46` feature baseline, a `self_hosted` Session exposes an Environment ID.
+At the `dadf64a7` feature baseline, a `self_hosted` Session exposes an Environment ID.
 Agents Core Web first retrieves the current Session and then makes one authenticated
 `GET /v1/agents/environments/{environment_id}`. The response is accepted only when it
 contains exactly `id`, `object`, `type`, `status`, `files`, `plugins`, and `skills`
@@ -587,6 +615,69 @@ A 401, 404, 5xx, network error, or malformed response makes only Environment sta
 unavailable; Session history and chat remain usable, and the Web performs no write or
 automatic retry. This read does not prove executor, native runtime, model, or provider
 readiness.
+
+### Optional managed Docker-hosted Session creation
+
+The `openai_hosted` choice is also hidden by default. Expose it only after the Core
+operator has completed the immutable
+[Docker-hosted release guide](https://github.com/MiniMax-AI-Dev/parsar/blob/dadf64a76bde58255281f3b6c3e939f8b556be09/services/agents-api/HOSTED-RELEASE.md)
+for this exact Core/Runtime combination:
+
+```dotenv
+AGENTS_CORE_WEB_OPENAI_HOSTED_SESSIONS=1
+```
+
+This flag changes the Web form only. Core must run on the qualified Linux amd64
+deployment, have its explicit local Docker socket and immutable Runtime image,
+managed-provider UUID, daemon/Core URLs, private execution options, caller identity,
+database, and cleanup ownership configured before it starts. Those operator files and
+model credentials remain outside Web. Agents Core Web never installs Docker, loads an
+image, writes managed-provider configuration, receives the Docker socket, starts a
+container, or exposes a Runtime credential.
+
+Web sends only the basic Codex request shapes:
+
+```json
+{"type":"openai_hosted"}
+{"type":"openai_hosted","network":{"access":"enabled"}}
+{"type":"openai_hosted","network":{"access":"disabled"}}
+```
+
+Omitted networking uses Core's enabled default. Disabled networking confines native
+tools while trusted model/Core connectivity remains operator-owned. Restricted
+domains, templates, populated startup packages/files/plugins/skills/setup, hosted
+MCP, other engines/providers, and public readiness discovery remain unavailable.
+Web blocks managed creation when the effective Agent contains MCP.
+
+Core provisions the Runtime automatically, so managed Sessions have no caller-run
+launcher, executor key, or `environment_connection` action. Web always consumes the
+creation SSE for this profile, including an idle create, before handing off to the
+ordinary live stream. A connected Environment proves authenticated transport only;
+durable Turn and Item state remains the execution result.
+
+For either supported Environment type, Web automatically retrieves the exact current
+Environment resource. Workspace file controls remain hidden unless the connected
+Core has been qualified for Files.list plus managed Files.create and the operator
+enables the independent flag:
+
+```dotenv
+AGENTS_CORE_WEB_ENVIRONMENT_FILES=1
+```
+
+Restart or rebuild Web after changing it. The flag is presentation policy, not a
+runtime probe: older Core revisions return `404 unsupported_operation`, which Web
+reports as unsupported without retrying. On the pinned implementation,
+`openai_hosted` reads use `/workspace`; `self_hosted` reads use and remain confined
+to the exact `workspace_directory` returned by the Session.
+
+When enabled, Web can explicitly list bounded direct file metadata. Managed
+inline and Source-`file_id` copy controls appear only when both the current Session
+projection and same-ID `openai_hosted` resource match the pinned basic shape, status
+is `pending`, `connected`, or `disconnected`, and `files`, `plugins`, and `skills`
+are empty. `failed`/`expired`, a wrong identity/type, populated installation metadata,
+or a future projection hides writes. A missing POST response is never replayed.
+Deleting a managed Session asks Core to revoke and reclaim owned resources; the public
+acknowledgement is not physical Docker-cleanup proof.
 
 ### End-to-end chat
 
@@ -685,7 +776,7 @@ those settings.
 
 SSE is live-only and does not replay missed history, including with `Last-Event-ID`.
 The current UI reconnects for future events, buffers them, then retrieves Session and
-Items and, for a current valid `self_hosted` ID, the durable Environment. It also
+Items and, for a current valid `self_hosted` or `openai_hosted` ID, the durable Environment. It also
 starts an independent all-pages Turn read so a slow Turn endpoint cannot delay
 conversation recovery. It applies the Session/Items/Environment snapshot before newer
 buffered events, merges Items by stable Item ID, and reconciles the eventual Turn list
@@ -700,9 +791,12 @@ For a normal local shutdown:
 
 1. stop Web from sending new input;
 2. allow active Turns to finish where practical;
-3. stop a foreground daemon with `Ctrl-C`, or use its profile-aware `stop` command;
-4. stop Core with `Ctrl-C`/`SIGINT`;
-5. stop PostgreSQL without deleting its volume:
+3. for managed hosted Sessions, keep Core and its original provider available until
+   requested per-Session cleanup has reclaimed labelled allocations; do not use broad
+   Docker pruning;
+4. stop a foreground daemon with `Ctrl-C`, or use its profile-aware `stop` command;
+5. stop Core with `Ctrl-C`/`SIGINT`;
+6. stop PostgreSQL without deleting its volume:
 
 ```bash
 cd /path/to/parsar

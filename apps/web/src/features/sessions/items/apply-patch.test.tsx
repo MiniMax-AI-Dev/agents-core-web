@@ -76,7 +76,8 @@ describe("protocol-aware Item rendering", () => {
       { id: "u", turn_id: "tools", type: "future_item" as SessionItem["type"], status: "completed", arguments: { raw: true } },
     ];
     const html = renderToStaticMarkup(<ThreadItems items={values} agentName="Agent" />);
-    for (const text of ["hello", "pwd", "other", "docs read", "Function result", "query", "Function"]) expect(html).toContain(text);
+    for (const text of ["hello", "pwd", "other", "docs read", "Function result", "query", "Unsupported", "future_item Item"]) expect(html).toContain(text);
+    expect(html).not.toContain("raw");
     expect(html).not.toContain("Parsar apply patch diff");
   });
 

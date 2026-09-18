@@ -18,6 +18,9 @@ export function EnvironmentDialog({
   connectionActions,
   dockerGuideProfile,
   defaultLauncherGuideOpen,
+  environmentFilesEnabled,
+  onListFiles,
+  onCreateFile,
 }: EnvironmentDialogProps) {
   const panelProps = {
     environment,
@@ -25,6 +28,9 @@ export function EnvironmentDialog({
     connectionActions,
     dockerGuideProfile,
     defaultLauncherGuideOpen,
+    environmentFilesEnabled,
+    onListFiles,
+    onCreateFile,
   };
   const dialog = (
     <div className="environment-dialog">

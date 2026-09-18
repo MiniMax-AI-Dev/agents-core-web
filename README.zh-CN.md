@@ -14,8 +14,14 @@ TypeScript 客户端。鉴权、持久化、调度和执行仍由 Core 负责；
 ## 能做什么
 
 - 创建、查看、编辑和删除可复用的 Agent 配置。
-- 启动持久化 Session，并查看其中保存的 Item。
+- 启动可带初始文本、可选标题和有限 Session 级 Agent 覆盖的持久化 Session，
+  并查看其中保存的 Item。
+- 查看所有 Agent 的 Session，或使用服务端 root-Agent 筛选。
 - 可选创建 Codex `self_hosted` Session，并查看运维方管理的 Linux executor 连接状态。
+- 可选通过运维方已验收的 managed Runtime 创建基础 Codex `openai_hosted`
+  Session，查看精确 Environment 状态，并显式列出或添加有界 `/workspace` 文件。
+- 通过 Dashboard 查看最近一次成功遍历到 Core 分页结束标记的 Agent/Session
+  加载结果，通过 System 查看实时 API 可达性、固定契约范围、Source Files 和所有权边界。
 - 通过 SSE 查看实时进度，并在重连后恢复已持久化的输出。
 - 取消正在执行的任务，并回传函数执行结果或错误。
 - 使用同一个 Web 客户端连接 Parsar Core 或其他经验证兼容的 Core。
@@ -24,7 +30,7 @@ TypeScript 客户端。鉴权、持久化、调度和执行仍由 Core 负责；
 
 | Core 或接口 | Web 能否连接？ | 说明 |
 | --- | --- | --- |
-| [Parsar Agents API Core](https://github.com/MiniMax-AI-Dev/parsar/tree/main/services/agents-api) | 可以 | 主要且经过测试的集成 |
+| [`dadf64a7` 的 Parsar Agents API Core](https://github.com/MiniMax-AI-Dev/parsar/tree/dadf64a76bde58255281f3b6c3e939f8b556be09/services/agents-api) | 可以 | 主要且经过测试的集成，也是不可变能力基线 |
 | 实现了 `/v1/agents/**` 已测试 HTTP/SSE 子集的其他 Core | 可以 | 必须符合[协议覆盖范围](docs/protocol-coverage.md)记录的资源和行为 |
 | OpenAI 托管的 Agents API | 不作承诺 | 本项目不承诺与托管 API 完全兼容 |
 | OpenAI Agents SDK、Responses API 或 Parsar daemon WebSocket | 不可以 | 它们分别是 SDK 接口、模型 API 和内部执行接口，不是可直接连接的 Core 协议 |
@@ -34,6 +40,10 @@ beta HTTP 资源形态中经过测试的子集：
 `/v1/agents/**` 下的 JSON 请求和鉴权 SSE，并携带
 `OpenAI-Beta: agents=v1`。这里的兼容是指已记录、已测试的子集，
 仅仅接受该请求头或名称相似，并不代表兼容。
+
+下文所有能力说明都以不可变 Parsar revision
+[`dadf64a7`](https://github.com/MiniMax-AI-Dev/parsar/commit/dadf64a76bde58255281f3b6c3e939f8b556be09)
+为审计基线，而不是跟随变化的上游分支。
 
 ## 已有 Core 时启动 Web
 
@@ -78,21 +88,69 @@ AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS=1
 该开关只暴露已支持的表单，不会探测 Core 能力，也不能证明 executor、原生运行时、
 模型或提供商已就绪。不得在其中放入 executor key 或其他凭据。
 
+基础 managed hosted Session 创建使用另一个默认关闭的展示开关。只有 Core 运维方已
+安装并验收固定 Codex Runtime 镜像、配置稳定的默认 managed provider，并接受 Docker
+隔离和模型提供商边界后才启用：
+
+```dotenv
+AGENTS_CORE_WEB_OPENAI_HOSTED_SESSIONS=1
+```
+
+该开关同样不会发现 Core 配置，也不能证明 Runtime、原生 harness、模型、提供商、
+Function 或 Tool 已就绪。Core 未配置合格 provider 时仍会拒绝创建。
+
 修改后重启 `pnpm dev`。凭据应保留在服务端。只有兼容 Core 通过 CORS
 明确允许 Web 的源、方法和请求头时，才能在连接对话框中使用 Core 直连 URL。
 
 还没有运行中的 Core？请使用不可变的
-[当前 Parsar 配置指南](https://github.com/MiniMax-AI-Dev/parsar/blob/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e/services/agents-api/README.md#standalone-http-service)。
-仓库内的[旧版 Web 连接手册](docs/core-connection.md)固定在文首标注的旧 revision；
-将其中 PostgreSQL、调用方凭据、执行设备、daemon、原生执行适配层（harness）、
-`CODEX_HOME`、验证和停止流程用于更新版 Core 前必须重新核对。
+[当前 Parsar 配置指南](https://github.com/MiniMax-AI-Dev/parsar/blob/dadf64a76bde58255281f3b6c3e939f8b556be09/services/agents-api/README.md#standalone-http-service)。
+仓库内的 [Web 连接手册](docs/core-connection.md)固定在同一 revision，并区分普通
+daemon/self-hosted 配置与 managed Docker-hosted 运维 profile。
 
 ## 第一次使用
 
 1. 打开 **Agents**，使用名称、指令（instructions）和 model ID 创建 Agent。
-2. 查看、编辑或删除已保存的 Agent，也可以从该 Agent 启动 Session。
-3. 打开 **Sessions**，选择 Session 并发送消息。
-4. 查看实时 Item、取消正在执行的任务，或回传请求的函数结果。
+2. 查看、编辑或删除已保存的 Agent，或打开 **Start Session**；默认不使用
+   Environment。
+3. 可以设置标题、输入第一条文本消息，或配置只作用于该 Session
+   的有限 whole-field Agent 覆盖。
+4. 在 **Sessions** 中选择 **All Agents** 或一个 root Agent，再选择 Session 并继续对话。
+5. 查看实时 Item、取消正在执行的任务，或回传请求的函数结果。
+6. 打开 **System → Source Files**，按 Core 返回的 ID 上传、查询、下载或删除一个
+   project-owned `user_data` 文件。Core 没有 Source Files 列表，Web 也不会在刷新后
+   持久保存该 ID。
+
+**Start Session** 接受精确保留的非空文本字符串，或按原顺序排列、仅包含
+`input_text` part 的 user message 数组；不支持图片、附件、非 user role 或其他
+content part。有效输入通过带 `stream:true` 的流式 `POST /v1/agents/sessions` 发送；Web 一边消费创建 SSE，一边对
+Session、Item 和合格 Environment 的持久状态执行协调，并独立启动 Turn 分页读取。
+POST 结束后，Web 把实时更新交接给 `GET .../events`。对 `none` 和 `self_hosted`，
+空输入或纯空白输入会被省略并走 JSON `stream:false` 创建路径，因此 Session 以 idle
+状态开始。Web 对 `openai_hosted`（包括 idle 创建）固定使用创建 SSE，以便在交接到
+`GET .../events` 前协调 provisioning 事件。可选标题写入 `metadata.title`；
+Start Session 不再暴露额外 metadata。额外字符串 metadata 仍可在已有 Session 的
+Actions 中编辑，并须符合固定 Core 限制；其中绝不能放入凭据或秘密。
+
+Session 级 Agent 覆盖是有限且按 whole-field 生效的集合：Web 可以替换 `model`、
+设置或清空 `instructions`、替换纯文本配置，将 saved-only 的 `multi_agent`、
+`reasoning` 或 `service_tier` 重置为 Core 默认值，并通过同一套受限的
+Function/HTTP MCP 编辑器继承、清空或完整替换 `tools`。未操作的字段不会发送；
+这里没有任意 Agent JSON 编辑器，也不提供 patch 风格的局部 Tool 更新。
+Environment 选项包括无 Environment、单独启用的 `self_hosted` 和单独启用的基础
+`openai_hosted`；effective Agent 含 MCP 时 managed
+选项会被阻止，因为 hosted MCP 尚未验收。
+
+创建失败后，只有显式发起且请求未变化的重试才会复用内存中的幂等 key。稳定
+request fingerprint 完整覆盖 `agent_id`、存在时的有限 `agent` 覆盖、
+`environment`、精确可选 `input`、规范化 `metadata`、`stream` 和排序后的派生
+`vault_ids`；投影请求发生任何变化都会换 key。Sessions 的 root-Agent 选择器同样在
+服务端生效：每个分页请求都携带相同 `agent_id`，而 **All Agents** 会省略该参数，
+不是在浏览器中只筛选已经加载的一页。
+
+HTTP MCP 需要静态 Bearer 时，先在 **Vaults** 中为精确 HTTPS 地址创建 Vault 和
+只写 Credential，再在 **Agent → HTTP MCP → Authentication** 中选择它。创建 Session
+时 Web 会附加所属 Vault，且永不读回 token。只有连接的 Core 成功暴露完整 Vault
+catalog 后才会显示这项能力；catalog 元数据本身不能证明运行时可访问 MCP 服务。
 
 启用运维开关后，**Start Session** 还会提供 **Self-hosted**。Workspace 是 executor
 主机或容器中的绝对路径，不是浏览器、Web 服务或 daemon 容器的目录。Web 只展示
@@ -104,6 +162,16 @@ Core 返回的 Environment ID、executor origin、连接状态和安全 launcher
 `AGENTS_CORE_WEB_DOCKER_GUIDE=1` 以及完整的非秘密 `AGENTS_CORE_WEB_DOCKER_*`
 参数。连接面板会在原生 launcher 之外提供可复制的 Docker 命令；Web 仍不会读取
 credential 文件或访问 Docker。若 Session 已有排队输入，运行命令可能立即触发付费调用。
+
+Source Files 与 Session 是否使用 Environment 无关。对于完整的基础 managed Session，
+Core 会自动配置 `openai_hosted` Runtime；Web 展示 managed ID、enabled/disabled 网络
+策略、空 startup-install 元数据、durable/live 状态和显式 `/workspace` 文件列表，绝不
+展示 self-hosted launcher 或调用方连接动作。Session 内联写入和 System 中的 Source-ID
+复制只有在精确查询当前 `openai_hosted` resource、确认非 terminal 状态且
+files/plugins/skills 元数据为空后才显示；写入响应丢失时不会重放。Templates、受限域名、
+非空启动安装、hosted MCP、readiness discovery 和其他 hosted engine 仍不可用。
+`self_hosted` Workspace Files 继续只读。Docker 是 Core 的私有 managed Runtime adapter，
+不是另一个公开 Environment discriminator。
 
 model ID 必须由已连接的执行运行时支持。Core 当前没有模型目录接口，
 因此 Web 建议项只是可编辑提示，不代表模型一定可用。成功保存 Agent 只能证明
@@ -135,15 +203,17 @@ WebSocket 当作 API URL。
 | `503 execution_unavailable` / `Execution is not enabled` | Core 拒绝执行；请检查其安全错误、运行时和 ownership 状态。worker、executor 或 daemon 可能未配置或已断连，也可能丢失了执行 lease |
 | Agent 保存成功但模型运行失败 | 使用已连接运行时支持的 model ID 和提供商凭据 |
 | Self-hosted 选项未显示 | 只有核对兼容 Codex Core 与 executor 链路后，设置非秘密 `AGENTS_CORE_WEB_SELF_HOSTED_SESSIONS=1` 并重启或重建 Web |
+| Managed hosted 选项未显示 | 只有固定 Core 的 managed Runtime provider 已验收后，设置 `AGENTS_CORE_WEB_OPENAI_HOSTED_SESSIONS=1` 并重启或重建 Web |
+| Workspace files 未显示 | 只有已验收当前 Core 的 Files.list、managed Files.create 和 Environment profile 后，设置 `AGENTS_CORE_WEB_ENVIRONMENT_FILES=1` 并重启或重建 Web；self-hosted 使用 Session 返回的实际 `workspace_directory` |
 
 `/healthz` 只能证明 HTTP 存活，不能证明聊天已就绪。重试结果不确定的请求前，
-请先核对 Core 持久状态和当前固定版本的 Parsar 指南；
-[旧版 043 故障排查快照](docs/core-connection.md#troubleshooting)仅供历史参考。
+请先核对 Core 持久状态和当前固定版本的 Parsar 指南；参见
+[连接故障排查手册](docs/core-connection.md#troubleshooting)。
 
 ## 文档入口
 
-- [当前 Parsar Core 配置](https://github.com/MiniMax-AI-Dev/parsar/blob/2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e/services/agents-api/README.md#standalone-http-service) — 不可变的当前上游指南
-- [旧版 Web 连接手册](docs/core-connection.md) — 历史 `0438880` 快照，使用前必须重新核对
+- [当前 Parsar Core 配置](https://github.com/MiniMax-AI-Dev/parsar/blob/dadf64a76bde58255281f3b6c3e939f8b556be09/services/agents-api/README.md#standalone-http-service) — 不可变的当前上游指南
+- [Web 连接手册](docs/core-connection.md) — 对齐 `dadf64a7` 的运维和浏览器边界
 - [协议覆盖范围](docs/protocol-coverage.md) — 准确的已支持 API 范围
 - [架构说明](docs/architecture.md) — 所有权、运行时和信任边界
 - [路线图](docs/roadmap.md) — 计划中的 Web 和 Core 集成

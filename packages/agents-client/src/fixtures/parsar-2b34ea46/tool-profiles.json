@@ -1,0 +1,71 @@
+{
+  "core_revision": "2b34ea4630a5a0daf90e745fe1af3edcfa4f0e9e",
+  "write_profiles": {
+    "function": {
+      "type": "function",
+      "name": "lookup_customer",
+      "description": "Look up a customer record.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "customer_id": { "type": "string" }
+        },
+        "required": ["customer_id"]
+      },
+      "defer_loading": false
+    },
+    "anonymous_http_mcp": {
+      "type": "mcp",
+      "server_label": "docs",
+      "transport": {
+        "type": "http",
+        "server_url": "https://mcp.example/tools"
+      },
+      "allowed_tools": [],
+      "connection_origin": "service",
+      "required": true
+    }
+  },
+  "items": {
+    "function_success": {
+      "id": "function_success",
+      "turn_id": "turn_function_success",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "function_success",
+      "name": "lookup_customer",
+      "arguments": { "customer_id": "customer_123" }
+    },
+    "function_failure": {
+      "id": "function_failure",
+      "turn_id": "turn_function_failure",
+      "type": "function_call",
+      "status": "failed",
+      "call_id": "function_failure",
+      "name": "lookup_customer",
+      "arguments": { "customer_id": "customer_404" }
+    },
+    "mcp_success": {
+      "id": "mcp_success",
+      "turn_id": "turn_mcp_success",
+      "type": "mcp_call",
+      "status": "completed",
+      "server_label": "docs",
+      "name": "read_document",
+      "arguments": { "id": "guide" },
+      "output": { "title": "Guide" },
+      "error": null
+    },
+    "mcp_failure": {
+      "id": "mcp_failure",
+      "turn_id": "turn_mcp_failure",
+      "type": "mcp_call",
+      "status": "failed",
+      "server_label": "docs",
+      "name": "read_document",
+      "arguments": { "id": "missing" },
+      "output": null,
+      "error": { "message": "Core could not call the MCP server." }
+    }
+  }
+}

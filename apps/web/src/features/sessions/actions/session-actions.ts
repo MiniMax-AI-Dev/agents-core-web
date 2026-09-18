@@ -278,6 +278,16 @@ function normalizeSessionActionError(
   if (error instanceof SessionActionError) return error;
   const label = actionLabel(action);
   if (error instanceof AgentCoreError) {
+    if (
+      phase === "read" &&
+      (error.code === "invalid_session_resource" || error.code === "invalid_session_vaults")
+    ) {
+      return new SessionActionError(
+        "Agent Core returned an invalid Session retrieval response. The Web kept its current durable view and did not send a write.",
+        "request_failed",
+        { cause: error },
+      );
+    }
     if (error.status === 404) {
       return new SessionActionError(
         "This Session was not found in Agent Core. The Web kept its current durable view; refresh Sessions before trying again.",

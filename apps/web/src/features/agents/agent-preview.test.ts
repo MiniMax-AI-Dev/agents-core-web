@@ -34,6 +34,52 @@ describe("Agent request preview", () => {
     expect(JSON.parse(preview.json)).toMatchObject({ reasoning: { effort: "high" } });
   });
 
+  it("previews an existing Agent update at the exact resource path", () => {
+    const preview = buildAgentRequestPreview({
+      ...valuesFromAgent(),
+      model: "provider/model",
+      name: "Existing Agent",
+    }, "/v1", "agent/with space");
+
+    expect(preview.curl).toContain("/agents/agent%2Fwith%20space");
+    expect(JSON.parse(preview.json)).toMatchObject({
+      model: "provider/model",
+      name: "Existing Agent",
+      reasoning: { effort: null, summary: null },
+    });
+  });
+
+  it("includes the exact bounded Function and anonymous HTTP MCP request profiles", () => {
+    const preview = buildAgentRequestPreview({
+      ...valuesFromAgent(),
+      model: "provider/model",
+      tools: [
+        { kind: "function", name: "lookup", description: "Lookup", parameters: '{"type":"object"}' },
+        {
+          kind: "mcp",
+          serverLabel: "docs",
+          serverUrl: "https://mcp.example/tools",
+          allowedToolsMode: "list",
+          allowedTools: "search",
+          allowedToolsValue: null,
+          required: true,
+        },
+      ],
+    }, "/v1");
+
+    expect(JSON.parse(preview.json).tools).toEqual([
+      { type: "function", name: "lookup", description: "Lookup", parameters: { type: "object" }, defer_loading: false },
+      {
+        type: "mcp",
+        server_label: "docs",
+        transport: { type: "http", server_url: "https://mcp.example/tools" },
+        allowed_tools: ["search"],
+        connection_origin: "service",
+        required: true,
+      },
+    ]);
+  });
+
   it("does not echo unsafe URL credentials or query values", () => {
     const preview = buildAgentRequestPreview(
       valuesFromAgent(),
