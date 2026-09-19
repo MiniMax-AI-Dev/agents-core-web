@@ -271,9 +271,55 @@ describe("Agent Core collection states", () => {
     expect(refreshFailed).toContain("Existing durable item");
     expect(refreshFailed).toContain("refresh failed");
     expect(refreshFailed).toContain("last loaded Items remain visible");
-    expect(sessionFailed).toContain("Session failed");
+    expect(sessionFailed).toContain("Latest attempt failed");
+    expect(sessionFailed).toContain("You can send another message to start a new Turn in this Session.");
     expect(sessionFailed).toContain("model execution failed");
     expect(sessionFailed).not.toContain("Session is ready");
+    expect(sessionFailed.match(/<textarea[^>]*aria-label="Message the Agent"[^>]*>/)?.[0]).not.toContain("disabled");
+    expect(sessionFailed).not.toContain("This Session has failed");
+  });
+
+  it("blocks new messages only when the selected Session has a proven terminal Environment", () => {
+    const environmentId = "0f745b0d-b545-49cd-8d7e-4c31c80dc564";
+    const html = renderToStaticMarkup(
+      <SessionsView
+        agents={[]}
+        sessions={[]}
+        selected={{
+          ...selectedSession,
+          status: "failed",
+          error: "The environment is no longer available for this input.",
+          environment: {
+            type: "self_hosted",
+            id: environmentId,
+            remote_url: "https://executor.example.test",
+            workspace_directory: "/workspace",
+            capability_directories: [],
+          },
+        }}
+        items={[]}
+        busy={false}
+        coreError={null}
+        coreState="ready"
+        detailError={null}
+        detailState="ready"
+        environmentObservation={{
+          source: "live",
+          environmentId,
+          environmentType: "self_hosted",
+          status: "failed",
+          error: null,
+          eventId: "environment-failed",
+        }}
+        streamError={null}
+        streamState="listening"
+        {...sessionsCallbacks}
+      />,
+    );
+
+    expect(html).toContain("Session cannot continue");
+    expect(html).toContain("Start a new Session to continue");
+    expect(html.match(/<textarea[^>]*aria-label="Message the Agent"[^>]*>/)?.[0]).toContain("disabled");
   });
 
   it.each([

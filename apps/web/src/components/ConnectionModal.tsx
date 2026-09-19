@@ -309,8 +309,8 @@ export function ConnectionModal({
           <div>
             <strong id={`${modeName}-guide-title`}>Operator-owned setup</strong>
             <p>
-              Core authentication and execution stay outside this browser. Use the operator guide for proxy,
-              caller-key, daemon, and provider setup.
+              This Web can configure and test an existing connection, but it does not start Docker or host
+              processes. Use the operator guide for Core, proxy, caller-key, daemon, executor, and provider setup.
             </p>
           </div>
         </div>

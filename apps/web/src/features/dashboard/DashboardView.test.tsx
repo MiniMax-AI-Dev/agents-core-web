@@ -55,6 +55,11 @@ function session(id: string, overrides: Partial<AgentSession> = {}): AgentSessio
 
 const callbacks = {
   onRefresh: () => undefined,
+  onCreateAgent: () => undefined,
+  onStartSession: () => undefined,
+  onViewAgents: () => undefined,
+  onViewSessions: () => undefined,
+  onConfigureConnection: () => undefined,
   onOpenSession: () => undefined,
 };
 
@@ -88,14 +93,16 @@ describe("Dashboard loaded-result presentation", () => {
       agentCollectionHasSnapshot: false,
     });
 
-    expect(staleEmpty).toContain("Refresh failed · last loaded result remains visible");
-    expect(staleEmpty).toContain("Loaded Agents");
+    expect(staleEmpty).toContain("Using the last successful snapshot");
+    expect(staleEmpty).toContain("Agents: refresh failed");
     expect(staleEmpty).toContain(">0<");
+    expect(unavailable).toContain("Snapshot incomplete");
     expect(unavailable).toContain("Unavailable");
-    expect(unavailable).not.toContain("Refresh failed · last loaded result remains visible");
+    expect(unavailable).toContain("Connection settings");
+    expect(unavailable).not.toContain("Using the last successful snapshot");
   });
 
-  it("renders qualified resource, status, Usage, and Environment facts", () => {
+  it("renders a compact actionable overview while preserving Environment qualifications", () => {
     const selfHosted: AgentSession["environment"] = {
       type: "self_hosted",
       id: "0f745b0d-b545-49cd-8d7e-4c31c80dc564",
@@ -124,37 +131,36 @@ describe("Dashboard loaded-result presentation", () => {
     });
 
     expect(html).toContain("Dashboard");
-    expect(html).toContain("Loaded Core results");
-    expect(html).toContain("last successfully traversed Agent and Session page-chain results");
-    expect(html).toContain("reached Core&#x27;s end marker within the 100-page safety limit");
-    expect(html).toContain("not an atomic snapshot or a current Core total");
-    expect(html).toContain("rejected instead of publishing its partial result");
-    expect(html).toContain("Loaded Agents");
+    expect(html).toContain("Agents and Sessions that may need your attention.");
+    expect(html).toContain("Snapshot ready");
+    expect(html).toContain("Latest complete paginated reads · not a live Core total or runtime-readiness signal");
+    expect(html).toContain('aria-label="Core resource snapshot"');
+    expect(html).toContain("Saved definitions");
+    expect(html).toContain("In this snapshot");
+    expect(html).toContain("Needs attention");
     expect(html).not.toContain("Session-admissible Agents");
-    expect(html).toContain("Count applies only to the last loaded page-chain result, not a current Core total");
-    expect(html).toContain("failed or incomplete refreshes keep the previous result");
-    expect(html).toContain("Loaded 1 record · reached Core end marker");
-    expect(html).toContain("Loaded 2 records · reached Core end marker");
-    expect(html).toContain("1 of 2 loaded Sessions report aggregate Usage.");
-    expect(html).toContain("42");
     expect(html).toContain("Requires action");
     expect(html).toContain("Self-hosted profile");
     expect(html).toContain("not proof that an executor is connected");
     expect(html).toContain('aria-label="Sessions needing attention"');
     expect(html).toContain('aria-label="Recent Sessions"');
-    expect(html).toContain('<button type="button">Needs a result</button>');
-    expect(html).toContain("2023-11-14 22:16:40 UTC");
+    expect(html).toContain("Needs a result");
+    expect(html).toContain("Waiting");
+    expect(html).toContain("2023-11-14 22:16 UTC");
+    expect(html).toContain("Create agent");
+    expect(html).toContain("Start session");
+    expect(html).not.toContain("Reported aggregate tokens");
+    expect(html).not.toContain("action-session");
     expect(html).not.toContain("Connected Environment");
     expect(html).not.toContain("Execution ready");
   });
 
-  it("keeps absent Usage unknown instead of presenting a zero", () => {
+  it("keeps partial Usage out of the primary overview", () => {
     const html = render({ sessions: [session("usage-unknown")] });
 
-    expect(html).toContain("Reported aggregate tokens");
-    expect(html).toContain("Unknown");
-    expect(html).toContain("No loaded Session reports aggregate Usage.");
-    expect(html).not.toContain("0 of 1 loaded Sessions report aggregate Usage.");
+    expect(html).not.toContain("Reported aggregate tokens");
+    expect(html).not.toContain("aggregate Usage");
+    expect(html).toContain("Sessions");
   });
 
   it("does not turn a failed empty collection into a zero-sized healthy snapshot", () => {
@@ -170,10 +176,9 @@ describe("Dashboard loaded-result presentation", () => {
     expect(html).toContain("agents unavailable");
     expect(html).toContain("sessions unavailable");
     expect(html).toContain("Unavailable");
-    expect(html).toContain("Session status is unavailable.");
-    expect(html).toContain("Recent Sessions are unavailable.");
-    expect(html).not.toContain("Loaded 0 records");
-    expect(html).not.toContain('aria-label="Loaded Session status counts"');
+    expect(html).toContain("Session snapshot unavailable.");
+    expect(html).toContain("Recent Sessions unavailable.");
+    expect(html).not.toContain('aria-label="Recent Sessions"');
   });
 
   it("retains stale loaded facts while making refresh failures explicit", () => {
@@ -186,12 +191,13 @@ describe("Dashboard loaded-result presentation", () => {
       sessionCollectionError: "Session refresh failed",
     });
 
-    expect(html.match(/Refresh failed · last loaded result remains visible/g)).toHaveLength(2);
+    expect(html).toContain("Using the last successful snapshot");
+    expect(html.match(/>Stale</g)).toHaveLength(2);
     expect(html).toContain("Agent refresh failed");
     expect(html).toContain("Session refresh failed");
     expect(html).toContain("Last loaded");
-    expect(html).toContain("Loaded Agents");
-    expect(html).toContain("Loaded Sessions");
+    expect(html).toContain("Saved definitions");
+    expect(html).toContain("In this snapshot");
   });
 
   it("keeps an existing snapshot visible during a refresh and disables duplicate refresh", () => {
@@ -202,7 +208,8 @@ describe("Dashboard loaded-result presentation", () => {
       sessionCollectionState: "connecting",
     });
 
-    expect(html.match(/Refreshing · last loaded result remains visible/g)).toHaveLength(2);
+    expect(html).toContain("Refreshing snapshot");
+    expect(html.match(/>Refreshing</g)).toHaveLength(2);
     expect(html).toContain('aria-label="Refresh Dashboard snapshot"');
     expect(html).toContain('type="button" disabled=""');
     expect(html).toContain("Last active");

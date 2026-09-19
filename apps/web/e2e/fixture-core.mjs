@@ -574,10 +574,11 @@ function emitTurnLifecycle(status) {
 }
 
 function emitSessionLifecycle(status) {
-  if (!["in_progress", "idle"].includes(status)) return false;
+  if (!["in_progress", "idle", "failed"].includes(status)) return false;
   const session = state.sessions.find((candidate) => candidate.id === "session_snapshot");
   if (!session) return false;
   session.status = status;
+  session.error = status === "failed" ? "The execution could not complete." : null;
   session.required_actions = [];
   state.sequence += 1;
   const event = `id: session_${state.sequence}\ndata: ${JSON.stringify({

@@ -2036,6 +2036,11 @@ export function App() {
               sessionCollectionError={sessionCollectionError}
               sessionCollectionHasSnapshot={sessionCollectionHasSnapshot}
               onRefresh={refreshDashboard}
+              onCreateAgent={openAgentSetup}
+              onStartSession={() => openSessionSetup()}
+              onViewAgents={() => setView("agents")}
+              onViewSessions={() => setView("sessions")}
+              onConfigureConnection={() => setConnectionOpen(true)}
               onOpenSession={(sessionId) => {
                 changeSessionAgentFilter(null);
                 selectedIdRef.current = sessionId;

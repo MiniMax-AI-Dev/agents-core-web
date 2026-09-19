@@ -112,7 +112,7 @@ describe("Dashboard loaded-snapshot model", () => {
     });
     expect(snapshot.attentionSessions.map((row) => row.id)).toEqual(["action", "failed"]);
     expect(snapshot.recentSessions.map((row) => row.id)).toEqual([
-      "progress", "action", "failed", "future", "idle",
+      "progress", "future", "idle",
     ]);
     expect(dashboardStatusLabel("idle")).toBe("Idle");
     expect(dashboardStatusLabel("unknown")).toBe("Unavailable");
@@ -201,7 +201,7 @@ describe("Dashboard loaded-snapshot model", () => {
     ]);
 
     expect(snapshot.recentSessions.map((row) => row.id)).toEqual(["known-time", "unknown-time"]);
-    expect(formatDashboardTimestamp(1_700_000_000)).toBe("2023-11-14 22:13:20 UTC");
+    expect(formatDashboardTimestamp(1_700_000_000)).toBe("2023-11-14 22:13 UTC");
     expect(formatDashboardTimestamp(-1)).toBe("Unknown");
     expect(formatDashboardTimestamp(null)).toBe("Unknown");
   });

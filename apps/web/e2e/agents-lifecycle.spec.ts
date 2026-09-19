@@ -54,7 +54,7 @@ async function emitTurnFixture(request: APIRequestContext, status: "completed" |
   expect(response.ok()).toBe(true);
 }
 
-async function emitSessionFixture(request: APIRequestContext, status: "in_progress" | "idle") {
+async function emitSessionFixture(request: APIRequestContext, status: "in_progress" | "idle" | "failed") {
   const response = await request.post(`${fixtureBaseUrl}/__fixture/emit-session`, { data: { status } });
   expect(response.ok()).toBe(true);
 }
@@ -1068,8 +1068,9 @@ test("keeps managed Environment resource and terminal event states fail-closed",
     environmentEventCount: 0,
   });
   await page.reload();
-  await expect(page.getByText("Session failed", { exact: true })).toBeVisible();
+  await expect(page.getByText("Session cannot continue", { exact: true })).toBeVisible();
   await expect(page.getByText("The environment is no longer available for this input.", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Message the Agent")).toBeDisabled();
   opened = await openEnvironmentDialog(page);
   await expect(opened.panel).toContainText("Managed Environment failed");
   await expect(opened.panel.getByText("Add inline Workspace file", { exact: true })).toHaveCount(0);
@@ -1432,7 +1433,7 @@ test("filters every Session page by Agent and aborts a stale filter read", async
 
   await page.getByRole("button", { name: "Dashboard", exact: true }).click();
   const dashboard = page.locator(".dashboard-page");
-  await expect(dashboard.locator(".dashboard-summary > div").filter({ hasText: "Loaded Sessions" })).toContainText("1");
+  await expect(dashboard.locator(".dashboard-summary > div").filter({ hasText: "Sessions" })).toContainText("1");
   await page.getByRole("button", { name: "Sessions", exact: true }).click();
   await expect(filter).toHaveValue("agent_b");
   await expect(page.locator(".conversation-header h2")).toHaveText("Second Agent");
@@ -1955,6 +1956,41 @@ test("deletes an inactive Session without disturbing the active composer or live
   ))).toHaveLength(activeStreamReads);
 });
 
+test("continues a Session with a new Turn after its latest attempt fails", async ({ page, request }) => {
+  await resetFixture(request);
+  await page.goto("/");
+  await expect(connectedLiveEvents(page)).toBeVisible();
+
+  await emitSessionFixture(request, "failed");
+  await expect(page.getByText("Latest attempt failed", { exact: true })).toBeVisible();
+  await expect(page.locator(".session-runtime-error")).toContainText(
+    "You can send another message to start a new Turn in this Session.",
+  );
+
+  const composer = page.getByLabel("Message the Agent");
+  await expect(composer).toBeEnabled();
+  await composer.fill("Continue after the failed Turn");
+  const send = page.getByRole("button", { name: "Send message" });
+  await expect(send).toBeEnabled();
+  await send.click();
+
+  await expect.poll(async () => (await fixtureRequests(request)).filter((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions/session_snapshot/events"
+  )).length).toBe(1);
+  const submission = (await fixtureRequests(request)).find((entry) => (
+    entry.method === "POST" && entry.path === "/v1/agents/sessions/session_snapshot/events"
+  ));
+  expect(submission?.body).toEqual({
+    events: [{
+      type: "agent.session.input.message",
+      input: [{
+        role: "user",
+        content: [{ type: "input_text", text: "Continue after the failed Turn" }],
+      }],
+    }],
+  });
+});
+
 for (const pendingRead of [
   {
     label: "Session",
@@ -2139,14 +2175,15 @@ test("presents Dashboard page-chain results and System boundaries without extra 
 
   const dashboard = page.locator(".dashboard-page");
   await expect(dashboard.getByRole("heading", { name: /Dashboard/ })).toBeVisible();
-  await expect(dashboard).toContainText("last successfully traversed Agent and Session page-chain results");
-  await expect(dashboard.locator(".dashboard-summary > div").filter({ hasText: "Loaded Agents" })).toContainText("3");
-  await expect(dashboard.locator(".dashboard-summary > div").filter({ hasText: "Loaded Sessions" })).toContainText("1");
-  await expect(dashboard.locator(".dashboard-summary > div").filter({ hasText: "Reported aggregate tokens" })).toContainText("Unknown");
-  await expect(
-    dashboard.getByRole("list", { name: "Loaded Session status counts" }).getByRole("listitem").filter({ hasText: "Idle" }),
-  ).toContainText("1");
-  await expect(dashboard).toContainText("No Sessions in the loaded result require attention.");
+  await expect(dashboard).toContainText("Latest complete paginated reads");
+  await expect(dashboard.locator(".dashboard-summary > div").filter({ hasText: "Agents" })).toContainText("3");
+  await expect(dashboard.locator(".dashboard-summary > div").filter({ hasText: "Sessions" })).toContainText("1");
+  await expect(dashboard.locator(".dashboard-summary > div").filter({ hasText: "In progress" })).toContainText("0");
+  await expect(dashboard.locator(".dashboard-summary > div").filter({ hasText: "Needs attention" })).toContainText("0");
+  await expect(dashboard).not.toContainText("Reported aggregate tokens");
+  await expect(dashboard).toContainText("No Sessions currently need attention.");
+  await expect(dashboard.getByRole("button", { name: /Create agent/ })).toBeVisible();
+  await expect(dashboard.getByRole("button", { name: /Start session/ })).toBeVisible();
 
   const before = await fixtureRequests(request);
   const count = (entries: FixtureRequest[], path: string) => entries.filter((entry) => (
@@ -2168,6 +2205,35 @@ test("presents Dashboard page-chain results and System boundaries without extra 
   expect(count(after, "/v1/agents/sessions")).toBe(count(before, "/v1/agents/sessions") + 1);
   for (const path of detailPaths) expect(count(after, path)).toBe(count(before, path));
   await attachScreenshot(page, testInfo, "desktop-dashboard-loaded-snapshot");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const dashboardBounds = await dashboard.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return {
+      viewportWidth: innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      bodyWidth: document.body.scrollWidth,
+      left: box.left,
+      right: box.right,
+    };
+  });
+  expect(dashboardBounds.documentWidth).toBeLessThanOrEqual(dashboardBounds.viewportWidth);
+  expect(dashboardBounds.bodyWidth).toBeLessThanOrEqual(dashboardBounds.viewportWidth);
+  expect(dashboardBounds.left).toBeGreaterThanOrEqual(0);
+  expect(dashboardBounds.right).toBeLessThanOrEqual(390);
+  await expect(dashboard.getByRole("button", { name: /Create agent/ })).toBeVisible();
+  await expect(dashboard.getByRole("button", { name: /Start session/ })).toBeVisible();
+  await attachScreenshot(page, testInfo, "narrow-dashboard-loaded-snapshot");
+  await page.setViewportSize({ width: 1280, height: 720 });
+
+  await dashboard.getByRole("button", { name: /Create agent/ }).click();
+  await expect(page.locator(".agent-setup-page").getByRole("heading", { name: "New Agent" })).toBeVisible();
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
+  await dashboard.getByRole("button", { name: /Start session/ }).click();
+  const sessionDialog = page.getByRole("dialog", { name: "Create a Session" });
+  await expect(sessionDialog).toBeVisible();
+  await sessionDialog.getByRole("button", { name: "Cancel" }).click();
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
 
   await dashboard.getByRole("table", { name: "Recent Sessions" }).getByRole("button", { name: "Lifecycle Agent" }).click();
   await expect(page.locator(".session-page")).toBeVisible();
@@ -2281,8 +2347,8 @@ test("publishes Dashboard counts only after every top-level Agent and Session pa
   await page.goto("/");
   await page.getByRole("button", { name: "Dashboard", exact: true }).click();
   const dashboard = page.locator(".dashboard-page");
-  await expect(dashboard.locator(".dashboard-summary > div").filter({ hasText: "Loaded Agents" })).toContainText("3");
-  await expect(dashboard.locator(".dashboard-summary > div").filter({ hasText: "Loaded Sessions" })).toContainText("2");
+  await expect(dashboard.locator(".dashboard-summary > div").filter({ hasText: "Agents" })).toContainText("3");
+  await expect(dashboard.locator(".dashboard-summary > div").filter({ hasText: "Sessions" })).toContainText("2");
   expect(agentAfters).toEqual([null, "agent_b"]);
   expect(sessionAfters).toEqual([null, "session_snapshot"]);
 });
@@ -2293,7 +2359,7 @@ test("keeps the previous Dashboard result when pagination exceeds the safety lim
   await page.getByRole("button", { name: "Dashboard", exact: true }).click();
 
   const dashboard = page.locator(".dashboard-page");
-  const loadedAgents = dashboard.locator(".dashboard-summary > div").filter({ hasText: "Loaded Agents" });
+  const loadedAgents = dashboard.locator(".dashboard-summary > div").filter({ hasText: "Agents" });
   await expect(loadedAgents).toContainText("3");
 
   let template: Record<string, unknown> | null = null;
@@ -2327,9 +2393,13 @@ test("keeps the previous Dashboard result when pagination exceeds the safety lim
   await refresh.click();
   await expect.poll(() => reads).toBe(100);
   await expect(refresh).toBeEnabled();
-  await expect(dashboard).toContainText("Refresh failed · last loaded result remains visible");
+  await expect(dashboard).toContainText("Using the last successful snapshot");
   await expect(dashboard).toContainText("collection pagination exceeded the Web safety limit");
   await expect(loadedAgents).toContainText("3");
+  await dashboard.getByRole("button", { name: "Connection settings" }).click();
+  const connectionDialog = page.getByRole("dialog", { name: "Connect an Agent Core" });
+  await expect(connectionDialog).toBeVisible();
+  await connectionDialog.getByRole("button", { name: "Cancel" }).click();
   expect(reads).toBe(100);
 });
 
