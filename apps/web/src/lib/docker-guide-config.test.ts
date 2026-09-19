@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { loadLocalDockerGuideProfile } from "./docker-guide-config";
+import {
+  loadLocalDockerBackendGuideProfile,
+  loadLocalDockerGuideProfile,
+} from "./docker-guide-config";
 
 const valid = {
   AGENTS_CORE_WEB_DOCKER_GUIDE: "1",
@@ -44,5 +47,49 @@ describe("local Docker guide configuration", () => {
     const partial: Record<string, string> = { ...valid };
     delete partial.AGENTS_CORE_WEB_DOCKER_RUNTIME_HOME_PATH;
     expect(() => loadLocalDockerGuideProfile(partial)).toThrow("AGENTS_CORE_WEB_DOCKER_RUNTIME_HOME_PATH is required");
+  });
+});
+
+const validBackend = {
+  AGENTS_CORE_WEB_DOCKER_BACKEND_GUIDE: "1",
+  AGENTS_CORE_WEB_DOCKER_DATABASE_CONTAINER: "parsar-agents-api-web-smoke-db",
+  AGENTS_CORE_WEB_DOCKER_API_CONTAINER: "agents-core-web-api",
+  AGENTS_CORE_WEB_DOCKER_DAEMON_CONTAINER: "agents-core-web-daemon",
+  AGENTS_CORE_WEB_DOCKER_CORE_PORT: "8091",
+};
+
+describe("local Docker backend guide configuration", () => {
+  it("is disabled unless the operator explicitly opts in", () => {
+    expect(loadLocalDockerBackendGuideProfile({})).toBeNull();
+    expect(loadLocalDockerBackendGuideProfile({
+      ...validBackend,
+      AGENTS_CORE_WEB_DOCKER_BACKEND_GUIDE: "true",
+    })).toBeNull();
+  });
+
+  it("accepts only non-secret container names and a loopback Core port", () => {
+    expect(loadLocalDockerBackendGuideProfile(validBackend)).toEqual({
+      databaseContainer: "parsar-agents-api-web-smoke-db",
+      apiContainer: "agents-core-web-api",
+      daemonContainer: "agents-core-web-daemon",
+      corePort: 8091,
+    });
+  });
+
+  it("fails closed for incomplete or command-bearing configuration", () => {
+    expect(() => loadLocalDockerBackendGuideProfile({
+      ...validBackend,
+      AGENTS_CORE_WEB_DOCKER_DAEMON_CONTAINER: "daemon; docker rm victim",
+    })).toThrow("safe Docker container name");
+    expect(() => loadLocalDockerBackendGuideProfile({
+      ...validBackend,
+      AGENTS_CORE_WEB_DOCKER_CORE_PORT: "70000",
+    })).toThrow("valid TCP port");
+
+    const partial: Record<string, string> = { ...validBackend };
+    delete partial.AGENTS_CORE_WEB_DOCKER_DATABASE_CONTAINER;
+    expect(() => loadLocalDockerBackendGuideProfile(partial)).toThrow(
+      "AGENTS_CORE_WEB_DOCKER_DATABASE_CONTAINER is required",
+    );
   });
 });

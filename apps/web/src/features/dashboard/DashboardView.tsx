@@ -11,6 +11,7 @@ import { useMemo, type ReactNode } from "react";
 import type { AgentSession, SavedAgent } from "@agents-core-web/agents-client";
 
 import { StatusIcon, type StatusKind } from "../../components/StatusIcon";
+import { backendFailureStatus } from "../../lib/core-readiness";
 import {
   buildDashboardSnapshot,
   dashboardEnvironmentLabel,
@@ -253,6 +254,11 @@ export function DashboardView({
     agentCollectionState === "failed" ? ["Agents", agentCollectionError] as const : null,
     sessionCollectionState === "failed" ? ["Sessions", sessionCollectionError] as const : null,
   ].filter((entry): entry is readonly ["Agents" | "Sessions", string | null] => entry !== null);
+  const backendFailureStatuses = sourceErrors.map(([, error]) => backendFailureStatus(error));
+  const backendUnavailable = sourceErrors.length > 0 && backendFailureStatuses.every(Boolean);
+  const backendFailureDetail = Array.from(new Set(backendFailureStatuses.filter(Boolean))).map((status) => (
+    status === "network" ? "network failure" : `HTTP ${status}`
+  )).join(" / ");
   const snapshotTitle = hasUnavailableSource
     ? "Snapshot incomplete"
     : hasStaleSnapshot
@@ -303,16 +309,40 @@ export function DashboardView({
 
           {sourceErrors.length ? (
             <div className="dashboard-snapshot-error" role="alert">
-              <span className="dashboard-snapshot-error-copy">
-                <AlertTriangle size={14} aria-hidden="true" />
-                <span>
-                  {sourceErrors.map(([label, error]) => `${label}: ${error || "Collection request failed."}`).join(" · ")}
-                </span>
-              </span>
-              <button className="dashboard-connection-action" type="button" onClick={onConfigureConnection}>
-                Connection settings
-                <ArrowRight size={13} strokeWidth={1.7} aria-hidden="true" />
-              </button>
+              {backendUnavailable ? (
+                <button
+                  className="dashboard-backend-recovery"
+                  type="button"
+                  onClick={onConfigureConnection}
+                  aria-label="Agent Core backend is not ready. Open Docker startup guide"
+                >
+                  <AlertTriangle size={16} aria-hidden="true" />
+                  <span>
+                    <strong>Agent Core backend is not ready</strong>
+                    <small>
+                      Web is running, but its local `/v1` proxy cannot reach a ready Core
+                      {backendFailureDetail ? ` (${backendFailureDetail})` : ""}. Start the Docker backend, then test the connection.
+                    </small>
+                  </span>
+                  <span className="dashboard-backend-recovery-action">
+                    Open startup guide
+                    <ArrowRight size={13} strokeWidth={1.7} aria-hidden="true" />
+                  </span>
+                </button>
+              ) : (
+                <>
+                  <span className="dashboard-snapshot-error-copy">
+                    <AlertTriangle size={14} aria-hidden="true" />
+                    <span>
+                      {sourceErrors.map(([label, error]) => `${label}: ${error || "Collection request failed."}`).join(" · ")}
+                    </span>
+                  </span>
+                  <button className="dashboard-connection-action" type="button" onClick={onConfigureConnection}>
+                    Connection settings
+                    <ArrowRight size={13} strokeWidth={1.7} aria-hidden="true" />
+                  </button>
+                </>
+              )}
             </div>
           ) : null}
 

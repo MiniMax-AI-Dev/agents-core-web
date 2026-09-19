@@ -6,18 +6,25 @@ import {
   ConnectionProbeStatus,
   type ConnectionProbeState,
 } from "./ConnectionModal";
+import type { LocalDockerBackendGuideProfile } from "../lib/docker-guide-config";
 
 const callbacks = {
   onClose: () => undefined,
   onSave: () => undefined,
 };
 
-function renderModal(baseUrl: string, proxyAuthEnabled: boolean, token = "") {
+function renderModal(
+  baseUrl: string,
+  proxyAuthEnabled: boolean,
+  token = "",
+  dockerBackendGuide: LocalDockerBackendGuideProfile | null = null,
+) {
   return renderToStaticMarkup(
     <ConnectionModal
       connection={{ baseUrl, token }}
       open
       proxyAuthEnabled={proxyAuthEnabled}
+      dockerBackendGuide={dockerBackendGuide}
       {...callbacks}
     />,
   );
@@ -85,15 +92,15 @@ describe("Agent Core connection modes", () => {
     expect(markup.match(/disabled=""/g)).toHaveLength(2);
   });
 
-  it("replaces inline credential tutorials with concise operator links", () => {
+  it("keeps credential tutorials in pinned operator links", () => {
     const markup = renderModal("/v1", true);
 
     expect(markup).toContain("Operator-owned setup");
-    expect(markup).toContain("Legacy Web guide · 043 snapshot");
-    expect(markup).toContain("Legacy troubleshooting · 043 snapshot");
+    expect(markup).toContain("Web connection guide · current snapshot");
+    expect(markup).toContain("Connection troubleshooting · current snapshot");
     expect(markup).toContain("Parsar Core setup");
-    expect(markup).toContain("98c5b3312ad33e1fae8b94283a011eb3e5f4ee2c");
-    expect(markup).toContain("c31f81677a8b16c53b665de9075181df837a0032");
+    expect(markup).toContain("agents-core-web/blob/main/docs/core-connection.md");
+    expect(markup).toContain("dadf64a76bde58255281f3b6c3e939f8b556be09");
     expect(markup).not.toContain("0438880ab21aa16d05cb91a4c7f91cc0abc12358");
     expect(markup).not.toContain("f7cdf591396529880d80f8211fc7a0f4768fdf46");
     expect(markup).not.toContain("8cc2898ca42b272cb3771234ee6a0ad0d2e932ba");
@@ -103,6 +110,40 @@ describe("Agent Core connection modes", () => {
     expect(markup).not.toContain("openssl rand");
     expect(markup).not.toContain("AGENTS_API_KEYS_FILE");
     expect(markup).not.toContain("AGENTS_API_DAEMON_WS_URL");
+  });
+
+  it("renders a copyable, non-executing Docker backend recovery guide", () => {
+    const markup = renderModal("/v1", true, "", {
+      databaseContainer: "parsar-agents-api-web-smoke-db",
+      apiContainer: "agents-core-web-api",
+      daemonContainer: "agents-core-web-daemon",
+      corePort: 8091,
+    });
+
+    expect(markup).toContain("Start a local Docker backend");
+    expect(markup).toContain("docker start parsar-agents-api-web-smoke-db");
+    expect(markup).toContain("docker start agents-core-web-api agents-core-web-daemon");
+    expect(markup).toContain("http://127.0.0.1:8091/healthz");
+    expect(markup).toContain("Already set up on this computer");
+    expect(markup).toContain("First time on this computer");
+    expect(markup).toContain("make docker-build-agents-api");
+    expect(markup).toContain("does not publish a safe zero-input bootstrap");
+    expect(markup).toContain("Parsar container setup · pinned revision");
+    expect(markup).toContain("Daemon provisioning · pinned revision");
+    expect(markup).toContain(`/parsar/blob/dadf64a76bde58255281f3b6c3e939f8b556be09/services/agents-api/CONTAINER.md`);
+    expect(markup).toContain("Web only displays the reviewed commands");
+    expect(markup).toContain("never receives Docker socket access or executes them");
+    expect(markup).toContain("A self-hosted executor is Session-specific");
+    expect(markup).not.toContain("docker run");
+    expect(markup).not.toContain("docker compose down");
+  });
+
+  it("fails closed to configuration help when container names are unavailable", () => {
+    const markup = renderModal("/v1", true);
+
+    expect(markup).toContain("Docker startup guide is not configured for this Web build");
+    expect(markup).toContain("AGENTS_CORE_WEB_DOCKER_BACKEND_*");
+    expect(markup).not.toContain("docker start");
   });
 
   it("states the GET-only probe boundary without disabling the current chat contract", () => {

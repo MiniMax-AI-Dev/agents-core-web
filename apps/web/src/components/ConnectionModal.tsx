@@ -1,4 +1,4 @@
-import { ExternalLink, Info, KeyRound } from "lucide-react";
+import { Check, Container, Copy, ExternalLink, Info, KeyRound } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
 import {
@@ -10,6 +10,7 @@ import {
   probeCore,
   type CoreProbeResult,
 } from "../lib/core-probe";
+import type { LocalDockerBackendGuideProfile } from "../lib/docker-guide-config";
 import { Modal } from "./Modal";
 import "./ConnectionModal.css";
 
@@ -17,6 +18,7 @@ interface ConnectionModalProps {
   connection: CoreConnection;
   open: boolean;
   proxyAuthEnabled?: boolean;
+  dockerBackendGuide?: LocalDockerBackendGuideProfile | null;
   onClose: () => void;
   onSave: (connection: CoreConnection) => void;
 }
@@ -28,11 +30,132 @@ export type ConnectionProbeState =
   | { status: "loading" }
   | { status: "complete"; result: CoreProbeResult };
 
-const webBaseline = "98c5b3312ad33e1fae8b94283a011eb3e5f4ee2c";
-const parsarBaseline = "c31f81677a8b16c53b665de9075181df837a0032";
-const operatorGuideUrl = `https://github.com/MiniMax-AI-Dev/agents-core-web/blob/${webBaseline}/docs/core-connection.md`;
+const parsarBaseline = "dadf64a76bde58255281f3b6c3e939f8b556be09";
+const operatorGuideUrl = "https://github.com/MiniMax-AI-Dev/agents-core-web/blob/main/docs/core-connection.md";
 const troubleshootingUrl = `${operatorGuideUrl}#troubleshooting`;
 const parsarCoreSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/services/agents-api/README.md#standalone-http-service`;
+const parsarContainerSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/services/agents-api/CONTAINER.md`;
+const parsarDaemonSetupUrl = `https://github.com/MiniMax-AI-Dev/parsar/blob/${parsarBaseline}/services/agents-api/README.md#internal-execution-device-connection`;
+
+function DockerCommand({ label, command }: { label: string; command: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    if (!navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_500);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  return (
+    <div className="connection-docker-command">
+      <code>{command}</code>
+      <button className="button outline" type="button" onClick={() => void copy()} aria-label={`Copy ${label}`}>
+        {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
+        {copied ? "Copied" : "Copy"}
+      </button>
+    </div>
+  );
+}
+
+function DockerBackendGuide({ profile }: { profile: LocalDockerBackendGuideProfile | null }) {
+  return (
+    <section className="connection-docker-guide" aria-labelledby="connection-docker-guide-title">
+      <div className="connection-guide-header">
+        <Container size={15} strokeWidth={1.5} aria-hidden="true" />
+        <div>
+          <strong id="connection-docker-guide-title">Start a local Docker backend</strong>
+          <p>
+            Run these commands in a terminal on the Docker host. Web only displays the reviewed commands;
+            it never receives Docker socket access or executes them.
+          </p>
+        </div>
+      </div>
+      {profile ? (
+        <>
+          <div className="connection-docker-path">
+            <div className="connection-docker-path-heading">
+              <strong>Already set up on this computer</strong>
+              <span>Start the existing containers</span>
+            </div>
+            <ol className="connection-docker-steps">
+              <li>
+                <span><strong>Start the dedicated database</strong><small>Wait until its Docker health status is healthy.</small></span>
+                <DockerCommand label="database start command" command={`docker start ${profile.databaseContainer}`} />
+              </li>
+              <li>
+                <span><strong>Start Core API and daemon</strong><small>The daemon reconnects to Core independently.</small></span>
+                <DockerCommand
+                  label="Core API and daemon start command"
+                  command={`docker start ${profile.apiContainer} ${profile.daemonContainer}`}
+                />
+              </li>
+              <li>
+                <span><strong>Verify Core process health</strong><small>A successful health response is liveness only; use Test connection next.</small></span>
+                <DockerCommand
+                  label="Core health command"
+                  command={`curl --fail --silent --show-error http://127.0.0.1:${profile.corePort}/healthz`}
+                />
+              </li>
+            </ol>
+          </div>
+          <div className="connection-docker-path connection-docker-first-use">
+            <div className="connection-docker-path-heading">
+              <strong>First time on this computer</strong>
+              <span>Create Core before trying <code>docker start</code></span>
+            </div>
+            <p>
+              Docker is assumed to be installed. Parsar still requires a dedicated PostgreSQL database, a private
+              caller principal, migrations, the Core API container, and a provisioned daemon profile. The pinned
+              Core revision does not publish a safe zero-input bootstrap, so Web will not invent credentials or
+              create containers with guessed settings.
+            </p>
+            <ol className="connection-docker-first-steps">
+              <li>
+                <span><strong>Build the Core image</strong><small>Run from the reviewed Parsar checkout.</small></span>
+                <DockerCommand label="Core image build command" command="make docker-build-agents-api" />
+              </li>
+              <li><span><strong>Create the private Core stack</strong><small>Prepare the dedicated database, caller key files, migrations, and API container using the pinned container guide.</small></span></li>
+              <li><span><strong>Provision and connect the daemon</strong><small>Issue a separate device profile; caller keys and daemon credentials are not interchangeable.</small></span></li>
+              <li><span><strong>Return here and test</strong><small>Configure Web&apos;s server-side caller-key file, restart Web, then use Test connection.</small></span></li>
+            </ol>
+            <div className="connection-docker-first-links">
+              <a href={parsarContainerSetupUrl} target="_blank" rel="noreferrer">
+                Parsar container setup · pinned revision
+                <ExternalLink size={12} strokeWidth={1.5} aria-hidden="true" />
+              </a>
+              <a href={parsarDaemonSetupUrl} target="_blank" rel="noreferrer">
+                Daemon provisioning · pinned revision
+                <ExternalLink size={12} strokeWidth={1.5} aria-hidden="true" />
+              </a>
+              <a href={operatorGuideUrl} target="_blank" rel="noreferrer">
+                Web proxy and caller-key setup
+                <ExternalLink size={12} strokeWidth={1.5} aria-hidden="true" />
+              </a>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="connection-docker-unconfigured">
+          <strong>Docker startup guide is not configured for this Web build.</strong>
+          <p>
+            Set the non-secret <code>AGENTS_CORE_WEB_DOCKER_BACKEND_*</code> values from <code>.env.example</code>,
+            then restart Web. Container names are operator configuration and are never guessed in the browser.
+          </p>
+        </div>
+      )}
+      <p className="connection-docker-boundary">
+        Existing-stack commands only start saved database/Core/daemon containers. First-time setup remains an
+        operator action because it creates durable state and credentials. A self-hosted executor is Session-specific
+        and must be connected from that Session&apos;s Environment instructions.
+      </p>
+    </section>
+  );
+}
 
 function initialMode(connection: CoreConnection): ConnectionMode {
   return isLocalProxyBaseUrl(connection.baseUrl) ? "local" : "advanced";
@@ -111,6 +234,7 @@ export function ConnectionModal({
   connection,
   open,
   proxyAuthEnabled = import.meta.env.DEV && __AGENTS_CORE_WEB_DEV_PROXY_AUTH__,
+  dockerBackendGuide = __AGENTS_CORE_WEB_DOCKER_BACKEND_GUIDE__,
   onClose,
   onSave,
 }: ConnectionModalProps) {
@@ -220,30 +344,33 @@ export function ConnectionModal({
       </fieldset>
 
       {mode === "local" ? (
-        <section className="connection-modal-local" aria-labelledby={`${modeName}-local-title`}>
-          <div className="connection-guide-header">
-            <KeyRound size={15} strokeWidth={1.5} aria-hidden="true" />
-            <div>
-              <strong id={`${modeName}-local-title`}>Local `/v1` proxy</strong>
-              <p>The Agents API base is fixed by this application. No URL is required.</p>
+        <>
+          <section className="connection-modal-local" aria-labelledby={`${modeName}-local-title`}>
+            <div className="connection-guide-header">
+              <KeyRound size={15} strokeWidth={1.5} aria-hidden="true" />
+              <div>
+                <strong id={`${modeName}-local-title`}>Local `/v1` proxy</strong>
+                <p>The Agents API base is fixed by this application. No URL is required.</p>
+              </div>
             </div>
-          </div>
-          <dl>
-            <div>
-              <dt>API base</dt>
-              <dd><code>/v1</code></dd>
-            </div>
-            <div>
-              <dt>Authentication</dt>
-              <dd>{proxyAuthEnabled ? "Server-managed key detected" : "Server-managed key not detected"}</dd>
-            </div>
-          </dl>
-          <p className="connection-modal-local-note">
-            {proxyAuthEnabled
-              ? "The Vite proxy supplies its key server-side. No bearer credential is exposed to browser JavaScript."
-              : "Configure the local proxy token file and restart Web. Local mode will not request a browser token."}
-          </p>
-        </section>
+            <dl>
+              <div>
+                <dt>API base</dt>
+                <dd><code>/v1</code></dd>
+              </div>
+              <div>
+                <dt>Authentication</dt>
+                <dd>{proxyAuthEnabled ? "Server-managed key detected" : "Server-managed key not detected"}</dd>
+              </div>
+            </dl>
+            <p className="connection-modal-local-note">
+              {proxyAuthEnabled
+                ? "The Vite proxy supplies its key server-side. No bearer credential is exposed to browser JavaScript."
+                : "Configure the local proxy token file and restart Web. Local mode will not request a browser token."}
+            </p>
+          </section>
+          <DockerBackendGuide profile={dockerBackendGuide} />
+        </>
       ) : (
         <div className="form-stack connection-modal-advanced">
           <label className="field">
@@ -316,11 +443,11 @@ export function ConnectionModal({
         </div>
         <div className="connection-guide-links">
           <a className="connection-guide-link" href={operatorGuideUrl} target="_blank" rel="noreferrer">
-            Legacy Web guide · 043 snapshot
+            Web connection guide · current snapshot
             <ExternalLink size={12} strokeWidth={1.5} aria-hidden="true" />
           </a>
           <a className="connection-guide-link" href={troubleshootingUrl} target="_blank" rel="noreferrer">
-            Legacy troubleshooting · 043 snapshot
+            Connection troubleshooting · current snapshot
             <ExternalLink size={12} strokeWidth={1.5} aria-hidden="true" />
           </a>
           <a className="connection-guide-link" href={parsarCoreSetupUrl} target="_blank" rel="noreferrer">
