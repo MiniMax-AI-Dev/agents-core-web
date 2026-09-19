@@ -199,7 +199,9 @@ export function buildDashboardSnapshot(
     attentionSessions: rows
       .filter((session) => session.status === "requires_action" || session.status === "failed")
       .slice(0, Math.max(0, attentionLimit)),
-    recentSessions: rows.slice(0, Math.max(0, recentLimit)),
+    recentSessions: rows
+      .filter((session) => session.status !== "requires_action" && session.status !== "failed")
+      .slice(0, Math.max(0, recentLimit)),
   };
 }
 
@@ -225,5 +227,5 @@ export function dashboardEnvironmentLabel(profile: DashboardEnvironmentProfile):
 export function formatDashboardTimestamp(value: number | null): string {
   const seconds = canonicalTimestamp(value);
   if (seconds === null) return "Unknown";
-  return `${new Date(seconds * 1_000).toISOString().slice(0, 19).replace("T", " ")} UTC`;
+  return `${new Date(seconds * 1_000).toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }

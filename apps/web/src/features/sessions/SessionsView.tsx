@@ -380,10 +380,38 @@ export function SessionsView({
     setPendingMessage((current) => current === pendingMessage ? null : current);
   }, [items, pendingMessage, selected?.id]);
 
+  const requiredActionsValue: unknown = selected?.required_actions;
+  const requiredActionsAreValid = Array.isArray(requiredActionsValue);
+  const requiredActions: unknown[] = requiredActionsAreValid ? requiredActionsValue : [];
+  const environmentConnections = requiredActions.filter(isEnvironmentConnectionAction);
+  const functionActions = requiredActions.filter(isFunctionCallAction);
+  const unsupportedActionCount = requiredActions.length - environmentConnections.length - functionActions.length + (
+    !requiredActionsAreValid || selected?.status === "requires_action" && !requiredActions.length ? 1 : 0
+  );
+  const showCancelOnly = Boolean(
+    (selected?.status === "in_progress" || selected?.status === "requires_action") &&
+    (unsupportedActionCount > 0 || environmentConnections.length > 0 && functionActions.length === 0),
+  );
+  const environmentPresentation = selected
+    ? resolveEnvironmentPresentation(selected.environment, environmentObservation, environmentConnections)
+    : null;
+  const inputBlockedByTerminalEnvironment = Boolean(
+    environmentPresentation?.visible &&
+    (environmentPresentation.status === "failed" || environmentPresentation.status === "expired"),
+  );
+
   const send = async (event?: FormEvent) => {
     event?.preventDefault();
     const value = message.trim();
-    if (sendingRef.current || busy || !value || !selected || detailState !== "ready" || streamState !== "listening") return;
+    if (
+      sendingRef.current ||
+      busy ||
+      !value ||
+      !selected ||
+      detailState !== "ready" ||
+      streamState !== "listening" ||
+      inputBlockedByTerminalEnvironment
+    ) return;
     const sessionId = selected.id;
     const pending = beginLocalPendingMessage(sessionId, value, items);
     sendingRef.current = true;
@@ -423,22 +451,6 @@ export function SessionsView({
   const cancel = () => {
     void onCancel().catch(() => undefined);
   };
-
-  const requiredActionsValue: unknown = selected?.required_actions;
-  const requiredActionsAreValid = Array.isArray(requiredActionsValue);
-  const requiredActions: unknown[] = requiredActionsAreValid ? requiredActionsValue : [];
-  const environmentConnections = requiredActions.filter(isEnvironmentConnectionAction);
-  const functionActions = requiredActions.filter(isFunctionCallAction);
-  const unsupportedActionCount = requiredActions.length - environmentConnections.length - functionActions.length + (
-    !requiredActionsAreValid || selected?.status === "requires_action" && !requiredActions.length ? 1 : 0
-  );
-  const showCancelOnly = Boolean(
-    (selected?.status === "in_progress" || selected?.status === "requires_action") &&
-    (unsupportedActionCount > 0 || environmentConnections.length > 0 && functionActions.length === 0),
-  );
-  const environmentPresentation = selected
-    ? resolveEnvironmentPresentation(selected.environment, environmentObservation, environmentConnections)
-    : null;
 
   const onViewTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     const tabs = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role=tab]") ?? []);
@@ -743,8 +755,10 @@ export function SessionsView({
                 {selected.status === "failed" ? (
                   <ErrorState
                     className="session-runtime-error"
-                    title="Session failed"
-                    description="The Agent Core reported a terminal failure for this Session."
+                    title={inputBlockedByTerminalEnvironment ? "Session cannot continue" : "Latest attempt failed"}
+                    description={inputBlockedByTerminalEnvironment
+                      ? "The Environment for this Session is failed or expired. Start a new Session to continue."
+                      : "The Agent Core reported that the latest input or Turn failed. You can send another message to start a new Turn in this Session."}
                     detail={selected.error ?? undefined}
                   />
                 ) : null}
@@ -809,10 +823,12 @@ export function SessionsView({
                   element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
                 }}
                 onKeyDown={onComposerKeyDown}
-                placeholder={selected.status === "failed" ? "This Session has failed" : `Message ${selected.agent.name || "the Agent"}…`}
+                placeholder={inputBlockedByTerminalEnvironment
+                  ? "Start a new Session to continue"
+                  : `Message ${selected.agent.name || "the Agent"}…`}
                 aria-label="Message the Agent"
                 rows={1}
-                disabled={detailState !== "ready" || selected.status === "failed"}
+                disabled={detailState !== "ready" || inputBlockedByTerminalEnvironment}
               />
               <div className="composer-bar">
                 <span className="composer-context">
@@ -827,7 +843,7 @@ export function SessionsView({
                     type="submit"
                     aria-label="Send message"
                     title="Send message"
-                    disabled={busy || detailState !== "ready" || !message.trim() || selected.status === "failed" || streamState !== "listening"}
+                    disabled={busy || detailState !== "ready" || !message.trim() || inputBlockedByTerminalEnvironment || streamState !== "listening"}
                   >
                     <ArrowUp size={16} strokeWidth={2} />
                   </button>
