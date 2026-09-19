@@ -102,6 +102,25 @@ describe("Dashboard loaded-result presentation", () => {
     expect(unavailable).not.toContain("Using the last successful snapshot");
   });
 
+  it("turns local proxy gateway failures into an explicit, clickable backend recovery path", () => {
+    const html = render({
+      agentCollectionState: "failed",
+      agentCollectionError: "Agent core request failed (502).",
+      agentCollectionHasSnapshot: false,
+      sessionCollectionState: "failed",
+      sessionCollectionError: "Agent core request failed (502).",
+      sessionCollectionHasSnapshot: false,
+    });
+
+    expect(html).toContain("Agent Core backend is not ready");
+    expect(html).toContain("local `/v1` proxy cannot reach a ready Core (HTTP 502)");
+    expect(html).toContain("Start the Docker backend, then test the connection");
+    expect(html).toContain("Open startup guide");
+    expect(html).toContain('aria-label="Agent Core backend is not ready. Open Docker startup guide"');
+    expect(html).not.toContain("Agents: Agent core request failed (502)");
+    expect(html).not.toContain("Sessions: Agent core request failed (502)");
+  });
+
   it("renders a compact actionable overview while preserving Environment qualifications", () => {
     const selfHosted: AgentSession["environment"] = {
       type: "self_hosted",

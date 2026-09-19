@@ -11,6 +11,12 @@ declare const __AGENTS_CORE_WEB_DOCKER_GUIDE__: null | {
   readonly credentialsHomePath: string;
   readonly runtimeHomePath: string;
 };
+declare const __AGENTS_CORE_WEB_DOCKER_BACKEND_GUIDE__: null | {
+  readonly databaseContainer: string;
+  readonly apiContainer: string;
+  readonly daemonContainer: string;
+  readonly corePort: number;
+};
 
 interface ImportMetaEnv {
   readonly VITE_AGENT_MODEL_PRESETS?: string;

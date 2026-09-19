@@ -87,6 +87,7 @@ import {
 } from "./lib/connection";
 import { settleCollection } from "./lib/collection-load";
 import { listStableCollectionPages } from "./lib/collection-pagination";
+import { BACKEND_NOT_READY_NOTICE, backendFailureStatus } from "./lib/core-readiness";
 import {
   beginPendingFunctionResult,
   failPendingFunctionResult,
@@ -119,6 +120,14 @@ import {
 } from "./lib/stream-reconnect";
 
 type View = ProductView | "system";
+
+function viewFromLocation(): View {
+  if (typeof window === "undefined") return "dashboard";
+  const candidate = window.location.hash.slice(1);
+  return candidate === "agents" || candidate === "sessions" || candidate === "vaults" || candidate === "system"
+    ? candidate
+    : "dashboard";
+}
 
 interface StreamConnection {
   sessionId: string | null;
@@ -214,9 +223,22 @@ function projectTextEvent(current: SessionItem[], event: SessionEvent): SessionI
 
 export function App() {
   const { show: showToast } = useToast();
-  const [view, setView] = useState<View>("sessions");
+  const [view, setView] = useState<View>(viewFromLocation);
   const [connection, setConnection] = useState<CoreConnection>(() => loadConnection());
   const [connectionOpen, setConnectionOpen] = useState(false);
+
+  useEffect(() => {
+    const hash = view === "dashboard" ? "" : `#${view}`;
+    const next = `${window.location.pathname}${window.location.search}${hash}`;
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (current !== next) window.history.replaceState(window.history.state, "", next);
+  }, [view]);
+
+  useEffect(() => {
+    const onHashChange = () => setView(viewFromLocation());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
   const [agents, setAgents] = useState<SavedAgent[]>([]);
   const [vaultCatalog, setVaultCatalog] = useState<VaultCatalog | null>(null);
   const [vaultCollectionState, setVaultCollectionState] = useState<CoreConnectionState>("connecting");
@@ -381,7 +403,7 @@ export function App() {
         const message = errorMessage(result.reason);
         setAgentCollectionState("failed");
         setAgentCollectionError(message);
-        notify(message, "error");
+        notify(backendFailureStatus(result.reason) ? BACKEND_NOT_READY_NOTICE : message, "error");
         return false;
       }
       if (result.value === null) {
@@ -425,7 +447,7 @@ export function App() {
         const message = errorMessage(result.reason);
         setSessionCollectionState("failed");
         setSessionCollectionError(message);
-        notify(message, "error");
+        notify(backendFailureStatus(result.reason) ? BACKEND_NOT_READY_NOTICE : message, "error");
         return false;
       }
       if (result.value === null) {
@@ -516,7 +538,7 @@ export function App() {
         const message = errorMessage(result.reason);
         setFilteredSessionCollectionState("failed");
         setFilteredSessionCollectionError(message);
-        notify(message, "error");
+        notify(backendFailureStatus(result.reason) ? BACKEND_NOT_READY_NOTICE : message, "error");
         return false;
       }
       if (result.value === null) {

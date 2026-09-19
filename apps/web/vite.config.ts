@@ -4,7 +4,10 @@ import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 
-import { loadLocalDockerGuideProfile } from "./src/lib/docker-guide-config.ts";
+import {
+  loadLocalDockerBackendGuideProfile,
+  loadLocalDockerGuideProfile,
+} from "./src/lib/docker-guide-config.ts";
 import { loadProxyBearerAuth } from "./vite-auth.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -16,6 +19,7 @@ export default defineConfig(({ command, mode }) => {
   const openAIHostedSessionsEnabled = env.AGENTS_CORE_WEB_OPENAI_HOSTED_SESSIONS === "1";
   const environmentFilesEnabled = env.AGENTS_CORE_WEB_ENVIRONMENT_FILES === "1";
   const localDockerGuide = loadLocalDockerGuideProfile(env);
+  const localDockerBackendGuide = loadLocalDockerBackendGuideProfile(env);
   const proxyAuth = command === "serve" && mode !== "test"
     ? loadProxyBearerAuth({
         token: env.AGENTS_API_PROXY_TOKEN,
@@ -31,6 +35,7 @@ export default defineConfig(({ command, mode }) => {
       __AGENTS_CORE_WEB_OPENAI_HOSTED_SESSIONS__: JSON.stringify(openAIHostedSessionsEnabled),
       __AGENTS_CORE_WEB_ENVIRONMENT_FILES__: JSON.stringify(environmentFilesEnabled),
       __AGENTS_CORE_WEB_DOCKER_GUIDE__: JSON.stringify(localDockerGuide),
+      __AGENTS_CORE_WEB_DOCKER_BACKEND_GUIDE__: JSON.stringify(localDockerBackendGuide),
     },
     envDir: repositoryRoot,
     plugins: [react()],

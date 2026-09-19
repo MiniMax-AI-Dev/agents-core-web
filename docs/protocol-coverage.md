@@ -377,6 +377,15 @@ upstream.
   reports that page 101 is required, the refresh fails closed and does not publish
   the partial result. Dashboard performs no additional Turn, Item, Environment,
   or execution-readiness requests and makes no writes.
+- When both top-level collection reads fail through a gateway/network condition,
+  Dashboard labels the local Agent Core backend as not ready and links the whole
+  notice to connection recovery. An explicitly configured local Docker guide may
+  display validated, non-secret `docker start` and loopback `/healthz` commands for
+  pre-existing database/Core/daemon containers. The same panel distinguishes first-time
+  setup and links the pinned Parsar container/daemon guides plus its non-secret image
+  build command. Web never executes those commands, accesses the Docker socket, creates
+  containers, invents credentials, or treats process health as authenticated API or
+  execution readiness.
 - A ready Agent or Session result means pagination reached Core's end marker within
   that safety limit. Loaded counts are exact only for that published page-chain
   result. Pages may change while they are traversed, so neither count is an atomic

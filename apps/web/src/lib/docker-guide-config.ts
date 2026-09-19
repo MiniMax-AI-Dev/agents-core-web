@@ -6,14 +6,25 @@ export interface LocalDockerGuideProfile {
   runtimeHomePath: string;
 }
 
+export interface LocalDockerBackendGuideProfile {
+  databaseContainer: string;
+  apiContainer: string;
+  daemonContainer: string;
+  corePort: number;
+}
+
 const dockerImagePattern = /^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/;
 const dockerContainerPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const dockerUserPattern = /^[1-9][0-9]*:[1-9][0-9]*$/;
 const homePathSegmentPattern = /^[A-Za-z0-9._-]+$/;
 
-function required(env: Record<string, string>, name: string): string {
+function required(
+  env: Record<string, string>,
+  name: string,
+  feature = "AGENTS_CORE_WEB_DOCKER_GUIDE",
+): string {
   const value = env[name];
-  if (!value) throw new Error(`${name} is required when AGENTS_CORE_WEB_DOCKER_GUIDE=1.`);
+  if (!value) throw new Error(`${name} is required when ${feature}=1.`);
   return value;
 }
 
@@ -55,4 +66,38 @@ export function loadLocalDockerGuideProfile(
   }
 
   return profile;
+}
+
+function validPort(value: string): number | null {
+  if (!/^[1-9][0-9]{0,4}$/.test(value)) return null;
+  const port = Number(value);
+  return port <= 65_535 ? port : null;
+}
+
+export function loadLocalDockerBackendGuideProfile(
+  env: Record<string, string>,
+): LocalDockerBackendGuideProfile | null {
+  if (env.AGENTS_CORE_WEB_DOCKER_BACKEND_GUIDE !== "1") return null;
+
+  const feature = "AGENTS_CORE_WEB_DOCKER_BACKEND_GUIDE";
+  const databaseContainer = required(env, "AGENTS_CORE_WEB_DOCKER_DATABASE_CONTAINER", feature);
+  const apiContainer = required(env, "AGENTS_CORE_WEB_DOCKER_API_CONTAINER", feature);
+  const daemonContainer = required(env, "AGENTS_CORE_WEB_DOCKER_DAEMON_CONTAINER", feature);
+  const corePortValue = required(env, "AGENTS_CORE_WEB_DOCKER_CORE_PORT", feature);
+  const corePort = validPort(corePortValue);
+
+  for (const [name, value] of [
+    ["AGENTS_CORE_WEB_DOCKER_DATABASE_CONTAINER", databaseContainer],
+    ["AGENTS_CORE_WEB_DOCKER_API_CONTAINER", apiContainer],
+    ["AGENTS_CORE_WEB_DOCKER_DAEMON_CONTAINER", daemonContainer],
+  ] as const) {
+    if (!dockerContainerPattern.test(value)) {
+      throw new Error(`${name} is not a safe Docker container name.`);
+    }
+  }
+  if (corePort === null) {
+    throw new Error("AGENTS_CORE_WEB_DOCKER_CORE_PORT must be a valid TCP port.");
+  }
+
+  return { databaseContainer, apiContainer, daemonContainer, corePort };
 }

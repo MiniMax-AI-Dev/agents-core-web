@@ -120,7 +120,7 @@ async function expectSelectedDeleteAbortsSessionRead(
 
 async function openAgents(page: Page, request: APIRequestContext) {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await page.getByRole("button", { name: "Agents" }).click();
   await expect(page.getByRole("list", { name: "Agents", exact: true })).toBeVisible();
 }
@@ -176,6 +176,61 @@ async function attachElementScreenshot(locator: Locator, testInfo: TestInfo, nam
     contentType: "image/png",
   });
 }
+
+async function openSessionsFromHome(page: Page) {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Sessions", exact: true }).click();
+}
+
+test("opens Dashboard as the default landing page", async ({ page, request }) => {
+  await resetFixture(request);
+  await page.goto("/");
+
+  await expect(page.getByRole("button", { name: "Dashboard", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("heading", { name: "Dashboard", exact: true })).toBeVisible();
+  await expect(page.locator(".dashboard-page")).toBeVisible();
+});
+
+test("explains a 502 Core backend failure and opens copyable Docker recovery steps", async ({ page }) => {
+  await page.route("**/v1/agents**", async (route) => {
+    await route.fulfill({
+      status: 502,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { message: "Agent core request failed (502).", type: "gateway_error" },
+      }),
+    });
+  });
+  await page.goto("/");
+
+  const recovery = page.getByRole("button", {
+    name: "Agent Core backend is not ready. Open Docker startup guide",
+  });
+  await expect(recovery).toBeVisible();
+  await expect(recovery).toContainText("HTTP 502");
+  await expect(page.getByText("Agents: Agent core request failed (502).", { exact: true })).toHaveCount(0);
+  await expect(page.getByText(
+    "Agent Core backend is not ready. Open the Dashboard startup guide.",
+    { exact: true },
+  )).toHaveCount(1);
+  await expect(page.getByText("Agent core request failed (502).", { exact: true })).toHaveCount(0);
+  await recovery.click();
+
+  const dialog = page.getByRole("dialog", { name: "Connect an Agent Core" });
+  await expect(dialog).toContainText("Start a local Docker backend");
+  await expect(dialog).toContainText("docker start parsar-agents-api-web-smoke-db");
+  await expect(dialog).toContainText("docker start agents-core-web-api agents-core-web-daemon");
+  await expect(dialog).toContainText("http://127.0.0.1:8091/healthz");
+  await expect(dialog).toContainText("First time on this computer");
+  await expect(dialog).toContainText("make docker-build-agents-api");
+  await expect(dialog.getByRole("link", { name: "Parsar container setup · pinned revision" })).toHaveAttribute(
+    "href",
+    /dadf64a76bde58255281f3b6c3e939f8b556be09\/services\/agents-api\/CONTAINER\.md$/,
+  );
+  await expect(dialog.getByRole("button", { name: "Copy database start command" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Copy Core image build command" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Test connection" })).toBeVisible();
+});
 
 test("retrieves the latest Agent and opens its validated edit setup directly", async ({ page, request }, testInfo) => {
   const browserErrors: string[] = [];
@@ -366,7 +421,7 @@ test("creates, previews, edits, and removes bounded Function and anonymous HTTP 
 
 test("keeps Source Files controls out of the System status page", async ({ page, request }) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await page.getByRole("button", { name: "System", exact: true }).click();
   await expect(page.getByRole("region", { name: "Source Files" })).toHaveCount(0);
   await expect(page.locator(".system-page")).not.toContainText("Source Files");
@@ -703,7 +758,7 @@ test("derives manual Vault attachments for anonymous and explicit MCP Credential
     expect(response.status()).toBe(201);
   }
 
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await page.getByRole("button", { name: "Agents", exact: true }).click();
   await expect(page.getByRole("list", { name: "Agents", exact: true })).toBeVisible();
 
@@ -792,7 +847,7 @@ test("clears manual Vault attachments when overrides remove HTTP MCP tools", asy
   } });
   expect(agentResponse.status()).toBe(201);
 
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await page.getByRole("button", { name: "Agents", exact: true }).click();
   await page.getByRole("button", { name: /^Start a Session with MCP Clear Agent/ }).click();
   const dialog = page.getByRole("dialog", { name: "Create a Session" });
@@ -995,7 +1050,7 @@ test("blocks hosted MCP before persistence while allowing a Function-only manage
   } });
   expect(fn.status()).toBe(201);
 
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await page.getByRole("button", { name: "Agents", exact: true }).click();
   const before = (await fixtureRequests(request)).filter((entry) => (
     entry.method === "POST" && entry.path === "/v1/agents/sessions"
@@ -1027,7 +1082,7 @@ test("blocks hosted MCP before persistence while allowing a Function-only manage
 test("keeps managed Environment resource and terminal event states fail-closed", async ({ page, request }) => {
   await resetFixture(request);
   await controlFixture(request, { environmentScenario: 8, environmentResourceStatus: "expired" });
-  await page.goto("/");
+  await openSessionsFromHome(page);
   let trigger = environmentTrigger(page);
   await expect(trigger).toContainText("Managed Environment expired");
   let opened = await openEnvironmentDialog(page);
@@ -1095,7 +1150,7 @@ test("creates an inline Session without saved Agents and preserves ordered user-
     expect(deleted.ok()).toBe(true);
   }
   await page.getByRole("button", { name: "Refresh Agents" }).click();
-  await expect(page.getByRole("heading", { name: "No saved Agents" })).toBeVisible();
+  await expect(page.getByText("No saved Agents", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Sessions", exact: true }).click();
   const newSession = page.getByRole("button", { name: "New Session" });
@@ -1403,7 +1458,7 @@ test("filters every Session page by Agent and aborts a stale filter read", async
   await resetFixture(request);
   await controlFixture(request, { sessionListPageSize: 1 });
 
-  await page.goto("/");
+  await openSessionsFromHome(page);
   const filter = page.getByLabel("Filter Sessions by Agent");
   await expect(filter).toBeVisible();
   await expect(page.locator(".session-row")).toHaveCount(1);
@@ -1482,7 +1537,7 @@ test("filters every Session page by Agent and aborts a stale filter read", async
 
 test("fences the filtered workspace across loading, errors, unavailable Agents, and deletes", async ({ page, request }) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(page.locator(".conversation-header h2")).toHaveText("Lifecycle Agent");
   await createFixtureSession(request, "delete-first");
   await createFixtureSession(request, "delete-second");
@@ -1617,7 +1672,7 @@ test("keeps one Session create attempt across response loss and an unchanged man
 
 test("shows composer activity only for a Core-reported in-progress Session", async ({ page, request }, testInfo) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
 
   const activity = page.locator(".conversation-activity");
@@ -1638,7 +1693,7 @@ test("shows composer activity only for a Core-reported in-progress Session", asy
 
 test("shows immediate local feedback while a message submission is waiting for Core", async ({ page, request }) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
 
   let releaseSend: (() => void) | undefined;
@@ -1679,7 +1734,7 @@ test("shows immediate local feedback while a message submission is waiting for C
 
 test("updates Session title and metadata after a latest read while preserving failed and unknown drafts", async ({ page, request }) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
   const manage = page.locator(".conversation-session-action");
   const streamReadsBefore = (await fixtureRequests(request)).filter((entry) => (
@@ -1741,7 +1796,7 @@ test("updates Session title and metadata after a latest read while preserving fa
 
 test("preserves and safely rebases a Session metadata draft after a same-key conflict", async ({ page, request }) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
   await page.locator(".conversation-session-action").click();
   const dialog = page.getByRole("dialog");
@@ -1776,7 +1831,7 @@ test("preserves and safely rebases a Session metadata draft after a same-key con
 
 test("rejects wrong-id and deep-malformed Session reads before writes or delete retries", async ({ page, request }) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
 
   await controlFixture(request, { sessionRetrieveVariant: "wrong_id" });
@@ -1816,7 +1871,7 @@ test("rejects wrong-id and deep-malformed Session reads before writes or delete 
 
 test("requires confirmation and reconciles unknown Session deletes once without retrying the write", async ({ page, request }) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
   const manage = page.locator(".conversation-session-action");
   await manage.click();
@@ -1894,7 +1949,7 @@ test("requires confirmation and reconciles unknown Session deletes once without 
 
 test("keeps a stale Session row and surfaces each explicit repeated 404 deletion", async ({ page, request }) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
   const manage = page.locator(".conversation-session-action");
   await manage.click();
@@ -1913,7 +1968,7 @@ test("keeps a stale Session row and surfaces each explicit repeated 404 deletion
 
 test("deletes an inactive Session without disturbing the active composer or live event stream", async ({ page, request }) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
   await page.getByRole("button", { name: "Agents" }).click();
   await startSessionWithSecondAgent(page);
@@ -1958,7 +2013,7 @@ test("deletes an inactive Session without disturbing the active composer or live
 
 test("continues a Session with a new Turn after its latest attempt fails", async ({ page, request }) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
 
   await emitSessionFixture(request, "failed");
@@ -2017,7 +2072,7 @@ for (const pendingRead of [
       }
     });
     await resetFixture(request);
-    await page.goto("/");
+    await openSessionsFromHome(page);
     await expect(connectedLiveEvents(page)).toBeVisible();
     await page.getByRole("button", { name: "Agents" }).click();
     await startSessionWithSecondAgent(page);
@@ -2060,7 +2115,7 @@ for (const pendingRead of [
 
 test("aborts a pending manual recovery read after deleting the selected Session", async ({ page, request }) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
   await controlFixture(request, { sessionRetrieveDelayMs: 5_000 });
 
@@ -2071,7 +2126,7 @@ test("aborts a pending manual recovery read after deleting the selected Session"
 
 test("aborts a pending detail retry read after deleting the selected Session", async ({ page, request }) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
   await controlFixture(request, { sessionRetrieveStatus: 503 });
   await page.getByRole("button", { name: "Recover durable state" }).click();
@@ -2086,7 +2141,7 @@ test("aborts a pending detail retry read after deleting the selected Session", a
 
 test("deletes the selected Session while its SSE is still connecting", async ({ page, request }) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
   await page.getByRole("button", { name: "Agents" }).click();
   await startSessionWithSecondAgent(page);
@@ -2119,7 +2174,7 @@ test("deletes the selected Session while its SSE is still connecting", async ({ 
 test("keeps Session actions accessible and contained at 390 px in dark mode", async ({ page, request }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
   await page.getByRole("button", { name: "Dark theme" }).click();
   const manage = page.locator(".conversation-session-action");
@@ -2157,7 +2212,7 @@ test("keeps Session actions accessible and contained at 390 px in dark mode", as
 
 test("presents Dashboard page-chain results and System boundaries without extra detail reads", async ({ page, request }, testInfo) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
   await expect(page.getByText("Session is ready", { exact: true })).toBeVisible();
   const initialDetailPaths = [
@@ -2344,7 +2399,7 @@ test("publishes Dashboard counts only after every top-level Agent and Session pa
     });
   });
 
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await page.getByRole("button", { name: "Dashboard", exact: true }).click();
   const dashboard = page.locator(".dashboard-page");
   await expect(dashboard.locator(".dashboard-summary > div").filter({ hasText: "Agents" })).toContainText("3");
@@ -2355,7 +2410,7 @@ test("publishes Dashboard counts only after every top-level Agent and Session pa
 
 test("keeps the previous Dashboard result when pagination exceeds the safety limit", async ({ page, request }) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await page.getByRole("button", { name: "Dashboard", exact: true }).click();
 
   const dashboard = page.locator(".dashboard-page");
@@ -2412,7 +2467,7 @@ test("renders self-hosted Environment and Workspace state safely across reconnec
     streamCloseCount: 1,
     streamCloseDelayMs: 1_000,
   });
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
 
   const { dialog, panel, trigger } = await openEnvironmentDialog(page);
@@ -2487,7 +2542,7 @@ test("renders self-hosted Environment and Workspace state safely across reconnec
 test("lists Workspace file metadata explicitly, paginates, fails closed, and fences Environment changes", async ({ page, request }, testInfo) => {
   await resetFixture(request);
   await controlFixture(request, { environmentScenario: 7 });
-  await page.goto("/");
+  await openSessionsFromHome(page);
 
   const { panel } = await openEnvironmentDialog(page);
   const files = panel.getByRole("region", { name: "Workspace files" });
@@ -2546,7 +2601,7 @@ test("hydrates durable expired and unavailable Environment states without a writ
     environmentResourceStatus: "expired",
     environmentEventStatus: 0,
   });
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
 
   let { panel, trigger } = await openEnvironmentDialog(page);
@@ -2605,7 +2660,7 @@ test("hydrates durable Environment state even when the live stream is rejected",
     environmentResourceStatus: "expired",
     streamStatus: 401,
   });
-  await page.goto("/");
+  await openSessionsFromHome(page);
 
   const { panel, trigger } = await openEnvironmentDialog(page);
   await expect(trigger).toHaveAccessibleName("Environment expired");
@@ -2628,7 +2683,7 @@ test("keeps canonical Environment UUID identity across Session and resource proj
     environmentResourceStatus: "connected",
     environmentEventStatus: 0,
   });
-  await page.goto("/");
+  await openSessionsFromHome(page);
 
   const { panel, trigger } = await openEnvironmentDialog(page);
   await expect(trigger).toHaveAccessibleName("Environment connected");
@@ -2656,7 +2711,7 @@ test("applies a buffered live Environment event after an earlier durable snapsho
     environmentEventStatus: 3,
     environmentEventCount: 1,
   });
-  await page.goto("/");
+  await openSessionsFromHome(page);
 
   const { panel, trigger } = await openEnvironmentDialog(page);
   await expect(trigger).toHaveAccessibleName("Environment connected");
@@ -2671,7 +2726,7 @@ test("loads every Turn page, reconciles terminal events, and keeps diagnostics o
     turnsScenario: 1,
     turnsPageSize: 2,
   });
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
 
   const conversationTab = page.getByRole("tab", { name: "Conversation" });
@@ -2762,7 +2817,7 @@ test("presents an honest searchable Trace workbench without changing the convers
     turnsPageSize: 2,
     itemsScenario: 2,
   });
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
 
   const viewTabs = page.getByRole("tablist", { name: "Session view" });
@@ -2876,7 +2931,7 @@ test("drops a delayed Turn page after switching Sessions", async ({ page, reques
     turnsRetrieveDelayMs: 700,
     turnsPageSize: 2,
   });
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(page.getByText("Completed Turn output remains in the conversation.")).toBeVisible({ timeout: 1_500 });
   await page.getByRole("tab", { name: "Trace" }).click();
   const diagnostics = page.locator("details.trace-turn-diagnostics");
@@ -2906,7 +2961,7 @@ test("drops a delayed Turn page after switching Sessions", async ({ page, reques
 test("renders Parsar patches as accessible read-only diffs in desktop and narrow themes", async ({ page, request }, testInfo) => {
   await resetFixture(request);
   await controlFixture(request, { itemsScenario: 1 });
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
 
   const completedTrace = page.locator('[data-work-trace="completed"]');
@@ -2955,7 +3010,7 @@ test("renders Parsar patches as accessible read-only diffs in desktop and narrow
 
 test("manually retries uncertain sends with the original key only while the payload is unchanged", async ({ page, request }, testInfo) => {
   await resetFixture(request);
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
   const composer = page.getByLabel("Message the Agent");
 
@@ -3004,7 +3059,7 @@ test("manually retries uncertain sends with the original key only while the payl
 test("reuses Function result identity only for an unchanged uncertain explicit retry", async ({ page, request }) => {
   await resetFixture(request);
   await controlFixture(request, { environmentScenario: 10 });
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
   const editor = page.getByLabel("Function result or error");
   const submit = page.getByRole("button", { name: "Submit result" });
@@ -3047,7 +3102,7 @@ test("reuses Function result identity only for an unchanged uncertain explicit r
 test("keeps cancellation available for an Environment-only required action", async ({ page, request }) => {
   await resetFixture(request);
   await controlFixture(request, { environmentScenario: 6 });
-  await page.goto("/");
+  await openSessionsFromHome(page);
   await expect(connectedLiveEvents(page)).toBeVisible();
   await expect(page.getByRole("region", { name: "Environment connection required" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Function result required" })).toHaveCount(0);

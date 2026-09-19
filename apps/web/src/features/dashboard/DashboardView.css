@@ -116,6 +116,58 @@
   border-top: 1px solid color-mix(in srgb, var(--danger) 22%, var(--line));
 }
 
+.dashboard-backend-recovery {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  padding: 2px 0;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  color: var(--danger);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+}
+
+.dashboard-backend-recovery > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.dashboard-backend-recovery strong {
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 17px;
+}
+
+.dashboard-backend-recovery small {
+  color: color-mix(in srgb, var(--danger) 82%, var(--fg-muted));
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.dashboard-backend-recovery-action {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dashboard-backend-recovery:hover,
+.dashboard-backend-recovery:focus-visible {
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
+}
+
+.dashboard-backend-recovery:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  outline-offset: 2px;
+}
+
 .dashboard-snapshot-error-copy,
 .dashboard-connection-action {
   display: flex;
@@ -593,6 +645,14 @@
   .dashboard-snapshot-error {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .dashboard-backend-recovery {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .dashboard-backend-recovery-action {
+    grid-column: 2;
   }
 
   .dashboard-connection-action {

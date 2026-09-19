@@ -74,6 +74,43 @@ SDK loop or call the Responses API as its Core transport.
 Creating an Agent persists configuration only. It does not prove that a daemon, model,
 or provider credential can execute it.
 
+### Web-guided recovery for a local Docker stack
+
+When the Dashboard receives HTTP `502`, `503`, or `504` while loading both top-level
+collections, it presents **Agent Core backend is not ready** instead of repeating the
+raw collection errors. The complete recovery notice opens the connection panel.
+
+For an operator-controlled stack whose containers already exist, the connection panel
+renders copyable commands to start its dedicated database, Core API, and daemon, then
+probe the loopback `/healthz` endpoint. The same panel now separates a prominent
+**First time on this computer** path: it shows the source-grounded Core image build
+command and immutable links to Parsar's container and daemon provisioning guides.
+
+The pinned Parsar revision has no safe zero-input bootstrap. First-time setup still
+requires an operator to create a dedicated PostgreSQL database, generate a private
+caller principal, run migrations, create the API container, and issue a distinct daemon
+device profile. Web does not invent those durable identities or secrets. Enable the
+local presentation profile in the Web server environment:
+
+```dotenv
+AGENTS_CORE_WEB_DOCKER_BACKEND_GUIDE=1
+AGENTS_CORE_WEB_DOCKER_DATABASE_CONTAINER=parsar-agents-api-web-smoke-db
+AGENTS_CORE_WEB_DOCKER_API_CONTAINER=agents-core-web-api
+AGENTS_CORE_WEB_DOCKER_DAEMON_CONTAINER=agents-core-web-daemon
+AGENTS_CORE_WEB_DOCKER_CORE_PORT=8091
+```
+
+Use the actual non-secret container names for the reviewed local stack and restart Web
+after changing them. The values are compiled into the local browser bundle. Strict
+container-name and TCP-port validation prevents them from becoming arbitrary shell
+fragments. Web does not access the Docker socket, execute a command, create a container,
+run migrations, issue a credential, or infer container readiness. It assumes Docker is
+already installed and gives the operator the pinned first-time path when containers are
+missing. A successful
+`/healthz` call is process liveness only; the operator must still use **Test connection**
+for the authenticated Agents API read. A Session-specific `self_hosted` executor is
+not part of this backend command and keeps its separate Environment connection flow.
+
 ## Prerequisites
 
 For the source-based local path below, install:

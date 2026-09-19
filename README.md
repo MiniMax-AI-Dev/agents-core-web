@@ -180,6 +180,15 @@ runs on caller-managed Linux executor compute. See
 [Connecting Agent Core](docs/core-connection.md#optional-self-hosted-session-creation)
 for the exact boundary.
 
+The separately opt-in `AGENTS_CORE_WEB_DOCKER_BACKEND_GUIDE=1` profile turns Dashboard
+gateway failures into an explicit recovery entry point. For an existing stack, the
+connection panel shows validated, copyable commands for the configured database, Core
+API, and daemon containers plus the loopback health check. For first-time use, it shows
+the Core image build command and immutable Parsar container/daemon setup links. Parsar
+still requires operator-created database and credential state; Web never runs these
+commands, accesses Docker, or invents secrets. Container names remain non-secret
+operator configuration from `.env.example`.
+
 For the reviewed local loopback stack, an operator can additionally enable the
 default-off `AGENTS_CORE_WEB_DOCKER_GUIDE=1` profile and its required non-secret
 `AGENTS_CORE_WEB_DOCKER_*` settings from `.env.example`. The connection panel then

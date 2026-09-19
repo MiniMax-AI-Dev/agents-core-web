@@ -158,6 +158,12 @@ Core 返回的 Environment ID、executor origin、连接状态和安全 launcher
 运维方签发的 executor credential 文件始终留在 Web 之外。完整边界见
 [连接 Agent Core](docs/core-connection.md#optional-self-hosted-session-creation)。
 
+可单独启用 `AGENTS_CORE_WEB_DOCKER_BACKEND_GUIDE=1`。Dashboard 遇到网关错误时会明确
+提示 Core 后端未就绪。已有容器时，连接面板会根据 `.env.example` 中经过校验的非秘密
+容器名，展示数据库、Core API、daemon 和 loopback 健康检查的可复制命令；首次使用时，
+则展示 Core 镜像构建命令以及固定 Parsar 版本的容器和 daemon 初始化文档。Parsar 首次
+初始化仍需要运维方创建独立数据库和凭据，Web 不执行命令、不访问 Docker，也不猜测密钥。
+
 对于已核对的本地 loopback 栈，还可以配置 `.env.example` 中默认关闭的
 `AGENTS_CORE_WEB_DOCKER_GUIDE=1` 以及完整的非秘密 `AGENTS_CORE_WEB_DOCKER_*`
 参数。连接面板会在原生 launcher 之外提供可复制的 Docker 命令；Web 仍不会读取
